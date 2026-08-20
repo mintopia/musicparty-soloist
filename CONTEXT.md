@@ -57,6 +57,23 @@ The Snapcast server, run inside the Docker image on host networking so LAN clien
 reach it. Its stream name is operator-configurable.
 _Avoid_: snapcast (that is the project/protocol; the process is snapserver).
 
+**Autoplay**:
+Opt-in Hub behavior (off by default). Once the upstream connection is up and Soloist
+reports `logged_in: true` (via an `auth_state` event), the Hub injects `activate` then
+`play` so this device becomes the active Spotify Connect player and starts playing.
+Fires once per upstream connection, on the first logged-in state seen; a Soloist restart
+(already paired) re-asserts on reconnect. No re-fire on later `auth_state` frames.
+_Avoid_: play (that is one Soloist command, not the behavior), resume, take-over.
+
+**Webhook**:
+An outbound HTTP POST the Hub sends when a Soloist event arrives downstream, carrying
+the raw event JSON verbatim. The operator maps event `type`s to URLs: a `default_url`
+catch-all for the ten state events, and per-`type` overrides that *replace* the default
+for that type. Optional single shared `secret` is sent as `Authorization: Bearer`.
+Best-effort: fire-and-forget with a short timeout, a global min-interval throttle
+(`delay_ms`) over a bounded drop-oldest FIFO queue. No retries.
+_Avoid_: callback; event (the *event* is the Soloist message — the Webhook is our POST of it).
+
 **Config File**:
 Our own YAML config (Soloist has no native config file). Holds Soloist settings,
 Proxy listen address, the Auth Token, and (Docker only) the Snapserver stream name.

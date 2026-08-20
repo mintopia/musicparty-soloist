@@ -18,3 +18,7 @@ to Soloist's localhost WS.
 The Proxy does no message rewriting; it is deliberately a dumb pipe. A future reader
 seeing a proxy that "does nothing" should know its sole job is authentication —
 that is why it exists.
+
+**Amended by ADR-0006**: the Hub now *reads* upstream frames (webhooks) and *originates*
+`activate`/`play` frames (autoplay). Relayed traffic is still never rewritten — that is
+the invariant this ADR protects.
