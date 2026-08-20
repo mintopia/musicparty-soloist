@@ -28,3 +28,12 @@ pipewire-enabled Snapserver ships only as a Debian .deb. The s6
 longrun execs `node dist/main.js` instead of `python -m soloist_proxy`. All
 `SOLOIST_*` / `PROXY_*` / `SNAPCAST_*` env var names are preserved, so existing
 configs and compose files keep working.
+
+## Amendment (Node 24)
+
+The runtime moved from Node 22 to Node 24. The Docker base is now
+`node:24-trixie-slim`, `@types/node` tracks `^24`, and CI (`checks.yml`,
+`publish.yml`) builds and tests on Node 24. Nothing else changes: same two runtime
+deps (`ws`, `yaml`), same built-ins, same behaviour. The trixie/`GLIBC_2.38+`
+rationale above still holds — only the Node major moved. Read "Node 22" in the
+original text as "Node 24".

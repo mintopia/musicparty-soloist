@@ -134,10 +134,11 @@ The example config wires these env vars.
 | `SOLOIST_DATA_DIR` | Session data dir that holds the login after pairing. | `./.soloist-data` | `/data` |
 | `SOLOIST_PIPEWIRE_DEVICE` | Null-sink Soloist plays into. Empty means no audio (standalone). | empty | `soloist-sink` |
 
-Two more are read directly, outside the config file, by the binary cache and download.
+Three more are read straight from the environment, outside the config file.
 
 | Variable | What it does | Default |
 |----------|--------------|---------|
+| `SOLOIST_PROXY_CONFIG` | Path to the config YAML the proxy loads. | `./config.yaml` |
 | `SOLOIST_CACHE_DIR` | Where the downloaded Soloist binary is cached. | `./.soloist-cache` |
 | `SOLOIST_DOWNLOAD_BASE` | Base URL the binary is fetched from. | `https://soloist-builds.spotifycdn.com` |
 
