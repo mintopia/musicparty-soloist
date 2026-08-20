@@ -1,5 +1,6 @@
 # Secrets & local config
 .env
+.hardware
 config.yaml
 
 # Node / TypeScript build
