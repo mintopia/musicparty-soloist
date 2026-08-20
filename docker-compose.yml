@@ -1,0 +1,19 @@
+# Runs the containerized standalone deliverable: Soloist supervisor + auth Proxy
+# under s6-overlay, on host networking so the Proxy is reachable on 8687 from the LAN.
+services:
+  soloist:
+    build: .
+    image: musicparty-soloist
+    network_mode: host          # Proxy on 8687 reachable from the LAN
+    restart: unless-stopped
+    environment:
+      SOLOIST_API_KEY: "${SOLOIST_API_KEY:?set SOLOIST_API_KEY}"  # Spotify API Key
+      PROXY_TOKEN: "${PROXY_TOKEN:?set PROXY_TOKEN}"              # Auth Token for the Proxy
+      # SOLOIST_DEVICE_NAME: "Party Speaker"   # override the baked default if you like
+    volumes:
+      - soloist-data:/data      # Soloist session data-dir
+      - soloist-cache:/cache    # downloaded-binary cache
+
+volumes:
+  soloist-data:
+  soloist-cache:
