@@ -1,0 +1,4 @@
+#!/command/with-contenv sh
+# Soloist supervisor + auth Proxy. s6 restarts this longrun if it exits.
+cd /app
+exec python -m soloist_proxy
