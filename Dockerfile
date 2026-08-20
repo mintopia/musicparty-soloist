@@ -4,7 +4,7 @@
 # Debian trixie (glibc 2.41): the Soloist binary needs GLIBC_2.38+, which bookworm
 # (2.36) does not have. Alpine is ruled out — Soloist is a glibc binary and the
 # pipewire-enabled Snapserver ships only as a .deb.
-FROM node:22-trixie-slim
+FROM node:24-trixie-slim
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
