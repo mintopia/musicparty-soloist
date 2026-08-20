@@ -2,13 +2,16 @@
 # Every value is env-overridable; env wins. Two ways to override:
 #   1. ${VAR} / ${VAR:-default} interpolation inside a value.
 #   2. A direct env var per key: SOLOIST_DEVICE_NAME, SOLOIST_API_KEY,
-#      SOLOIST_DATA_DIR, PROXY_LISTEN, PROXY_TOKEN, SOLOIST_WS, SNAPCAST_STREAM.
+#      SOLOIST_DATA_DIR, SOLOIST_PIPEWIRE_DEVICE, PROXY_LISTEN, PROXY_TOKEN,
+#      SOLOIST_WS, SNAPCAST_STREAM.
 
 soloist:
   device_name: "Party Speaker"
   api_key: "${SOLOIST_API_KEY}"   # Spotify API Key; supply via env, never commit
   data_dir: "${SOLOIST_DATA_DIR:-./.soloist-data}"  # persistent session state
   extra_args: []
+  # Docker-only: PipeWire null-sink to play into. Empty in standalone (no audio path).
+  pipewire_device: "${SOLOIST_PIPEWIRE_DEVICE:-}"
 
 proxy:
   listen: "${PROXY_LISTEN:-0.0.0.0:8687}"

@@ -38,10 +38,11 @@ A remote consumer that connects to the Proxy to observe playback and send comman
 _Avoid_: user, subscriber.
 
 **Audio Route** (Docker only):
-Soloist plays into a PipeWire null-sink; Snapserver captures that sink via its
-native `pipewire://` source (`capture_sink=true`, `48000:16:2`, FLAC). Requires a
-pipewire-enabled Snapserver build. No FIFO, no external capture process. The
-null-sink is the stable anchor between the two.
+Soloist plays into a PipeWire null-sink (`soloist-sink`); Snapserver captures that
+sink via its native `pipewire://` source (`capture_sink=true`, `48000:16:2`, FLAC).
+Requires a pipewire-enabled Snapserver build. A headless WirePlumber (see ADR-0003)
+is the session manager that gives the sink its ports and links each client onto it.
+No FIFO, no external capture process. The null-sink is the stable anchor between the two.
 _Avoid_: FIFO, pipe, bridge.
 
 **Snapserver**:

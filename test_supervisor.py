@@ -14,13 +14,14 @@ from soloist_proxy.config import Config, ProxyConfig, SoloistConfig
 from soloist_proxy.supervisor import build_argv, supervise
 
 
-def _cfg(data_dir="./data"):
+def _cfg(data_dir="./data", pipewire_device=""):
     return Config(
         soloist=SoloistConfig(
             device_name="Party Speaker",
             api_key="secret",
             data_dir=data_dir,
             extra_args=["--verbose"],
+            pipewire_device=pipewire_device,
         ),
         proxy=ProxyConfig(listen="0.0.0.0:8687", token="tok"),
         soloist_ws="127.0.0.1:3678",
@@ -35,7 +36,14 @@ def test_build_argv():
     assert argv[argv.index("--device-name") + 1] == "Party Speaker"
     assert argv[argv.index("--api-key") + 1] == "secret"
     assert argv[argv.index("--data-dir") + 1] == "/persist"
+    assert "--pipewire-device" not in argv  # omitted when unset (standalone)
     assert argv[-1] == "--verbose"  # extra_args appended last
+
+
+def test_build_argv_pipewire_device():
+    argv = build_argv("/bin/soloist", _cfg(pipewire_device="soloist-sink"))
+    assert argv[argv.index("--pipewire-device") + 1] == "soloist-sink"
+    assert argv[-1] == "--verbose"  # extra_args still last
 
 
 def _counter_script(path: Path, counter: Path):

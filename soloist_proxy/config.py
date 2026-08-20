@@ -29,6 +29,7 @@ _ENV_OVERRIDES = {
     "SOLOIST_DEVICE_NAME": ("soloist", "device_name"),
     "SOLOIST_API_KEY": ("soloist", "api_key"),
     "SOLOIST_DATA_DIR": ("soloist", "data_dir"),
+    "SOLOIST_PIPEWIRE_DEVICE": ("soloist", "pipewire_device"),
     "PROXY_LISTEN": ("proxy", "listen"),
     "PROXY_TOKEN": ("proxy", "token"),
     "SOLOIST_WS": ("soloist_ws",),
@@ -46,6 +47,7 @@ class SoloistConfig:
     api_key: str
     data_dir: str
     extra_args: list[str] = field(default_factory=list)
+    pipewire_device: str = ""  # Docker-only: null-sink to play into; empty = omit the flag
 
 
 @dataclass
@@ -135,6 +137,7 @@ def load_config(path: str | None = None, env=None) -> Config:
             api_key=_require(soloist.get("api_key"), "soloist.api_key (Spotify API Key)"),
             data_dir=soloist.get("data_dir") or DEFAULT_DATA_DIR,
             extra_args=[str(a) for a in extra_args],
+            pipewire_device=(soloist.get("pipewire_device") or "").strip(),
         ),
         proxy=ProxyConfig(
             listen=proxy.get("listen") or DEFAULT_PROXY_LISTEN,

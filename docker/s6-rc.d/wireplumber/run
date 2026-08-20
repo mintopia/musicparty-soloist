@@ -1,0 +1,5 @@
+#!/command/with-contenv sh
+# PipeWire session manager: gives soloist-sink its ports and links Soloist's stream
+# onto it. Runs under a private dbus session bus (why: see ADR-0003). Starts after
+# pipewire; if the socket isn't up yet it exits and s6 retries.
+exec dbus-run-session -- wireplumber

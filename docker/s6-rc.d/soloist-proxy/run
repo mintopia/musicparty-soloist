@@ -1,4 +1,21 @@
 #!/command/with-contenv sh
 # Soloist supervisor + auth Proxy. s6 restarts this longrun if it exits.
+# When an audio route is configured, wait until the PipeWire null-sink has its input
+# ports — i.e. WirePlumber has configured it and it can actually be played into —
+# before launching Soloist with --pipewire-device. (The node alone exists as soon as
+# the pipewire daemon starts; ports appear only once the session manager is up.)
+# Bounded: if the audio path is broken we start anyway (s6 keeps supervising) rather
+# than hang forever.
 cd /app
+if [ -n "$SOLOIST_PIPEWIRE_DEVICE" ]; then
+  i=0
+  until pw-link -i 2>/dev/null | grep -q "$SOLOIST_PIPEWIRE_DEVICE"; do
+    i=$((i + 1))
+    if [ "$i" -ge 30 ]; then
+      echo "soloist-proxy: PipeWire sink '$SOLOIST_PIPEWIRE_DEVICE' absent after ${i} checks; starting anyway" >&2
+      break
+    fi
+    sleep 1
+  done
+fi
 exec python -m soloist_proxy
