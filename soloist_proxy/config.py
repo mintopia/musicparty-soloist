@@ -18,6 +18,7 @@ DEFAULT_CONFIG_PATH = "./config.yaml"
 DEFAULT_PROXY_LISTEN = "0.0.0.0:8687"
 DEFAULT_SOLOIST_WS = "127.0.0.1:3678"
 DEFAULT_STREAM_NAME = "Spotify"
+DEFAULT_DATA_DIR = "./.soloist-data"
 
 # ${VAR} or ${VAR:-default}
 _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -27,6 +28,7 @@ _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _ENV_OVERRIDES = {
     "SOLOIST_DEVICE_NAME": ("soloist", "device_name"),
     "SOLOIST_API_KEY": ("soloist", "api_key"),
+    "SOLOIST_DATA_DIR": ("soloist", "data_dir"),
     "PROXY_LISTEN": ("proxy", "listen"),
     "PROXY_TOKEN": ("proxy", "token"),
     "SOLOIST_WS": ("soloist_ws",),
@@ -42,6 +44,7 @@ class ConfigError(Exception):
 class SoloistConfig:
     device_name: str
     api_key: str
+    data_dir: str
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -130,6 +133,7 @@ def load_config(path: str | None = None, env=None) -> Config:
         soloist=SoloistConfig(
             device_name=_require(soloist.get("device_name"), "soloist.device_name (device name)"),
             api_key=_require(soloist.get("api_key"), "soloist.api_key (Spotify API Key)"),
+            data_dir=soloist.get("data_dir") or DEFAULT_DATA_DIR,
             extra_args=[str(a) for a in extra_args],
         ),
         proxy=ProxyConfig(
@@ -154,6 +158,7 @@ def _main() -> int:
         return 1
     print(
         f"OK: device_name={cfg.soloist.device_name!r} api_key=<redacted> "
+        f"data_dir={cfg.soloist.data_dir} "
         f"listen={cfg.proxy.listen} token=<redacted> "
         f"soloist_ws={cfg.soloist_ws} stream_name={cfg.stream_name} "
         f"extra_args={cfg.soloist.extra_args}",
