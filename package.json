@@ -1,6 +1,6 @@
 {
-  "name": "musicparty-soloist",
-  "version": "1.0.0",
+  "name": "@mintopia/musicparty-soloist",
+  "version": "0.1.0",
   "description": "Authenticating WebSocket proxy + supervisor for Spotify Soloist.",
   "license": "MIT",
   "author": "Jessica Smith <jess@mintopia.net>",
@@ -8,11 +8,18 @@
   "bin": {
     "soloist-proxy": "dist/main.js"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
     "dev": "npm run build && node dist/main.js",
-    "test": "npm run build && node dist/selftest.js"
+    "test": "npm run build && node dist/selftest.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "ws": "^8.18.0",
