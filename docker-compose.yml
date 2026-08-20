@@ -1,18 +1,29 @@
-# Runs the containerized standalone deliverable: Soloist supervisor + auth Proxy
-# under s6-overlay, on host networking so the Proxy is reachable on 8687 from the LAN.
+# Runs the containerized deliverable: Soloist supervisor + auth Proxy + Snapserver
+# under s6-overlay. Host networking is REQUIRED on the deployment target: the
+# first-time Spotify login happens over Connect (zeroconf/mDNS on the LAN), which
+# does not cross Docker's bridge network — the device would never appear in your
+# Spotify app. Host mode also lets LAN Snapclients reach the audio ports directly.
 services:
   soloist:
     build: .
     image: musicparty-soloist
-    network_mode: host          # Proxy on 8687 reachable from the LAN
+    network_mode: host          # required for Spotify Connect login + LAN Snapcast
     restart: unless-stopped
-    environment:
-      SOLOIST_API_KEY: "${SOLOIST_API_KEY:?set SOLOIST_API_KEY}"  # Spotify API Key
-      PROXY_TOKEN: "${PROXY_TOKEN:?set PROXY_TOKEN}"              # Auth Token for the Proxy
-      # SOLOIST_DEVICE_NAME: "Party Speaker"   # override the baked default if you like
+    env_file:                   # copy .env.example -> .env and fill in the secrets
+      - path: .env
+        format: raw             # values are literal — keys containing '$' are NOT interpolated
     volumes:
-      - soloist-data:/data      # Soloist session data-dir
+      - soloist-data:/data      # Soloist session data-dir (holds the login after pairing)
       - soloist-cache:/cache    # downloaded-binary cache
+
+    # macOS / bridge alternative (proxy testing only — CANNOT complete the Spotify
+    # login, since Docker Desktop can't put mDNS on your physical LAN). Comment out
+    # network_mode above and use:
+    # ports:
+    #   - "8687:8687"           # auth Proxy (WebSocket control)
+    #   - "1704:1704"           # Snapcast audio stream
+    #   - "1705:1705"           # Snapcast control (TCP JSON-RPC)
+    #   - "1780:1780"           # Snapcast web UI
 
 volumes:
   soloist-data:

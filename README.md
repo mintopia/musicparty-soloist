@@ -1,0 +1,161 @@
+# Musicparty Soloist
+
+A wrapper around [Spotify Soloist](https://developer.spotify.com/documentation/soloist),
+the headless Linux Spotify Connect client. It adds authenticated remote access to
+Soloist's control WebSocket, and in its Docker form it pipes Soloist's audio into a
+[Snapcast](https://github.com/badaix/snapcast) server for multi-room playback.
+
+Two jobs:
+
+1. **Supervisor.** Downloads the Soloist binary at runtime, launches it with your
+   settings, and keeps it running. When a build expires it re-downloads and restarts.
+2. **Proxy.** A WebSocket server in front of Soloist's own control WS, which is
+   unauthenticated and bound to localhost. The proxy gates every connection on a shared
+   token, then relays frames unchanged. Many clients share one upstream connection.
+
+The Docker image also routes Soloist's audio through a PipeWire null-sink into a
+pipewire-enabled Snapserver, so LAN Snapclients can play it.
+
+## Requirements
+
+- A Spotify Premium account and a Soloist API Key from the Spotify for Developers
+  dashboard.
+- Docker on a Linux host for the full audio deployment. This will not work under Docker
+  Desktop on macOS or Windows. The networking note below explains why.
+- Node.js 22+ if you only want the standalone proxy.
+
+The Soloist binary is downloaded at runtime and never committed or baked into the image,
+because redistributing it is prohibited. Builds expire about 90 days after they are cut.
+The supervisor watches for that and re-downloads on its own.
+
+## Quick start (Docker, Linux)
+
+```bash
+cp .env.example .env          # then edit: set SOLOIST_API_KEY and PROXY_TOKEN
+docker compose up -d --build
+docker compose logs -f soloist
+```
+
+On first run the log stops at:
+
+```
+waiting for login — connect to "Music Party Docker" from your Spotify app
+```
+
+Now do the one-time login. Open Spotify on any device on the same LAN and pick your
+device from the Connect menu (the speaker icon). Soloist logs in and writes the session
+into the `/data` volume, so it stays logged in across restarts.
+
+After login:
+
+- Snapcast web UI at `http://<host>:1780`
+- Snapclients connect to `<host>:1704`
+- Control WebSocket at `ws://<host>:8687/?token=<PROXY_TOKEN>`
+
+### Host networking is required
+
+This is the part that trips people up. The first Spotify login runs over Spotify
+Connect, which is zeroconf/mDNS on the LAN. That traffic does not cross Docker's bridge
+network, so the device never shows up in your Spotify app and you can never log in. So
+`docker-compose.yml` uses `network_mode: host`, and that is why you need a Linux host.
+Docker Desktop runs containers in a VM that isn't on your physical LAN, so it cannot
+complete the login no matter how you wire it. The compose file keeps a commented
+bridge/`ports:` block, but that is only good for poking at the proxy in isolation.
+
+## Secrets
+
+These get confused constantly, so they each get a row.
+
+| Name | What it is | How you supply it |
+|------|-----------|-------------------|
+| API Key | Authorizes the Soloist app. It does not log a user in. | `SOLOIST_API_KEY`, passed as `--api-key` |
+| Spotify Login | The user session, obtained by pairing over Connect. | Tap the device in Spotify. Stored in `/data`. |
+| Auth Token | Gates our proxy. Nothing to do with Spotify. | `PROXY_TOKEN`. Clients send `Bearer` or `?token=`. |
+
+A valid API Key with no Spotify Login gives you `logged_in: false` and "Authentication
+required" on control commands. That means pair the device. It does not mean the key is
+wrong.
+
+## Configuration
+
+Config is a YAML file. Copy `config.example.yaml` to `config.yaml`. Any value can be
+overridden from the environment with `${VAR}` or `${VAR:-default}` interpolation, and the
+environment wins over the file default.
+
+```yaml
+soloist:
+  device_name: "${SOLOIST_DEVICE_NAME:-Party Speaker}"
+  api_key: "${SOLOIST_API_KEY}"
+  data_dir: "${SOLOIST_DATA_DIR:-./.soloist-data}"
+  extra_args: []
+  pipewire_device: "${SOLOIST_PIPEWIRE_DEVICE:-}"   # Docker audio route; empty standalone
+proxy:
+  listen: "${PROXY_LISTEN:-0.0.0.0:8687}"
+  token: "${PROXY_TOKEN}"
+soloist_ws: "127.0.0.1:3678"
+snapcast:
+  stream_name: "${SNAPCAST_STREAM:-Spotify}"        # Docker only
+```
+
+The example wires these env vars: `SOLOIST_DEVICE_NAME`, `SOLOIST_API_KEY`,
+`SOLOIST_DATA_DIR`, `SOLOIST_PIPEWIRE_DEVICE`, `PROXY_LISTEN`, `PROXY_TOKEN`,
+`SNAPCAST_STREAM`. The binary cache and download read `SOLOIST_CACHE_DIR` and
+`SOLOIST_DOWNLOAD_BASE` directly, outside the config file.
+
+Values in `.env` are read literally (compose `env_file` with `format: raw`), so paste
+keys exactly as they are, `$` and all, with no escaping.
+
+## Ports
+
+| Port | Service |
+|------|---------|
+| 8687 | Auth proxy (control WebSocket) |
+| 1704 | Snapcast audio stream |
+| 1705 | Snapcast control (TCP JSON-RPC) |
+| 1780 | Snapcast web UI |
+
+## Standalone proxy (no audio, any OS)
+
+Runs the supervisor and proxy without the Snapcast audio path.
+
+```bash
+npm install
+npm run build
+node dist/main.js --config config.yaml
+```
+
+The only flag is `--config`. `SIGINT` and `SIGTERM` shut it down cleanly. Soloist is
+terminated first, then the process exits.
+
+One catch: the standalone still needs the one-time Spotify login, which still needs LAN
+zeroconf. Run it on a host that sits on the LAN, not inside an isolated container.
+
+## Development
+
+```bash
+npm run build      # tsc -> dist/
+npm test           # build, then the assert-based self-check (auth gate, arch map, config)
+npm start          # node dist/main.js
+```
+
+TypeScript on Node 22. The only runtime dependencies are `ws` and `yaml`. Tar extraction
+shells out to the system `tar`. The constant-time token compare and the HTTPS download
+are Node built-ins.
+
+## How the pieces fit
+
+```
+Downstream clients ──ws (token)──> Proxy(8687) ──ws──> Soloist WS(127.0.0.1:3678)
+                                     │
+Supervisor ── spawns/restarts ──> soloist ── audio ──> PipeWire null-sink
+                                                          │
+                                              Snapserver (pipewire capture)
+                                                          │
+                                          Snapclients(1704) + web UI(1780)
+```
+
+See `CONTEXT.md` for the domain glossary and `docs/adr/` for the recorded decisions.
+
+## License
+
+[MIT](LICENSE) © 2026 Jessica Smith

@@ -1,7 +1,7 @@
 # A thin auth proxy fronts Soloist's WebSocket
 
 Soloist's control WebSocket (`-w`) is unauthenticated by design and meant to bind
-to localhost only. To expose control to remote clients we run our own Python
+to localhost only. To expose control to remote clients we run our own TypeScript/Node
 WebSocket server — the Proxy — that gates connections on a single shared Auth Token
 (`Bearer` header or `?token=`, 401 on failure) and then transparently relays frames
 to Soloist's localhost WS.

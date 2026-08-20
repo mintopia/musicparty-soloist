@@ -1,12 +1,10 @@
 # Soloist Proxy config. Copy to config.yaml and fill in the secrets via env.
-# Every value is env-overridable; env wins. Two ways to override:
-#   1. ${VAR} / ${VAR:-default} interpolation inside a value.
-#   2. A direct env var per key: SOLOIST_DEVICE_NAME, SOLOIST_API_KEY,
-#      SOLOIST_DATA_DIR, SOLOIST_PIPEWIRE_DEVICE, PROXY_LISTEN, PROXY_TOKEN,
-#      SOLOIST_WS, SNAPCAST_STREAM.
+# Override any value with ${VAR} / ${VAR:-default} interpolation; env wins over
+# the file default. (The binary cache/download read $SOLOIST_CACHE_DIR and
+# $SOLOIST_DOWNLOAD_BASE directly, not through this file.)
 
 soloist:
-  device_name: "Party Speaker"
+  device_name: "${SOLOIST_DEVICE_NAME:-Party Speaker}"
   api_key: "${SOLOIST_API_KEY}"   # Spotify API Key; supply via env, never commit
   data_dir: "${SOLOIST_DATA_DIR:-./.soloist-data}"  # persistent session state
   extra_args: []

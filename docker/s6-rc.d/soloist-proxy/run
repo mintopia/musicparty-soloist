@@ -4,4 +4,4 @@
 # Soloist with --pipewire-device (wait-for-sink no-ops when the var is empty).
 cd /app
 wait-for-sink "$SOLOIST_PIPEWIRE_DEVICE"
-exec python -m soloist_proxy
+exec node dist/main.js

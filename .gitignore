@@ -2,11 +2,9 @@
 .env
 config.yaml
 
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
+# Node / TypeScript build
+node_modules/
+dist/
 
 # Cached Soloist binary / data dirs
 .soloist-cache/

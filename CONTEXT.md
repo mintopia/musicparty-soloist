@@ -17,7 +17,7 @@ Unauthenticated by design; bound to localhost only.
 _Avoid_: upstream socket, control socket.
 
 **Proxy**:
-Our Python WebSocket server that sits in front of the Soloist WebSocket. Its only
+Our TypeScript/Node WebSocket server that sits in front of the Soloist WebSocket. Its only
 job is authentication: it gates connections on a shared token, then transparently
 relays frames both ways. No message rewriting.
 _Avoid_: gateway, bridge (bridge means the audio path — see Snapcast).
@@ -28,10 +28,17 @@ A single shared secret. A Downstream Client presents it as `Authorization: Beare
 _Avoid_: API key (that is the Spotify API Key — a different thing), password.
 
 **API Key**:
-The Spotify-for-Developers private key passed to Soloist as `--api-key`. Ties the
-daemon to a Premium account; it is the daemon's auth (no separate interactive
-pairing step is used). Supplied via env/config, never committed.
+The Spotify-for-Developers private key passed to Soloist as `--api-key`. It authorizes
+the *app*, not a user — it does not log anyone in. Supplied via env/config, never committed.
 _Avoid_: Auth Token (that gates our Proxy), Spotify credentials, secret.
+
+**Spotify Login** (Connect pairing):
+Separate from the API Key. Soloist starts `logged_in: false` and waits for a Spotify
+user to claim the device over Spotify Connect (zeroconf/mDNS on the LAN) — tap the device
+in your Spotify app, or run `soloist --pair` once. The session is then stored in the
+`--data-dir` (`/data` volume) and reused on restart. Because the handshake is zeroconf,
+first-time login only works with **host networking** on the LAN, not bridge networking.
+_Avoid_: API Key (authorizes the app, not the user), Auth Token (gates our Proxy).
 
 **Downstream Client**:
 A remote consumer that connects to the Proxy to observe playback and send commands.
@@ -53,5 +60,6 @@ _Avoid_: snapcast (that is the project/protocol; the process is snapserver).
 **Config File**:
 Our own YAML config (Soloist has no native config file). Holds Soloist settings,
 Proxy listen address, the Auth Token, and (Docker only) the Snapserver stream name.
-Every value is env-overridable; env wins.
+Any value is env-overridable via `${VAR}` / `${VAR:-default}` interpolation; env wins
+over the file default.
 _Avoid_: settings, manifest.

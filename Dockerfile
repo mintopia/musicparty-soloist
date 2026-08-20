@@ -1,7 +1,10 @@
 # Musicparty Soloist — containerized standalone deliverable (no audio path yet).
-# s6-overlay is PID 1: it reaps zombies and supervises/restarts the Python app.
+# s6-overlay is PID 1: it reaps zombies and supervises/restarts the Node app.
 # Run with host networking so the Proxy on 8687 is reachable from the LAN.
-FROM python:3.12-slim-bookworm
+# Debian trixie (glibc 2.41): the Soloist binary needs GLIBC_2.38+, which bookworm
+# (2.36) does not have. Alpine is ruled out — Soloist is a glibc binary and the
+# pipewire-enabled Snapserver ships only as a .deb.
+FROM node:22-trixie-slim
 
 ARG S6_OVERLAY_VERSION=3.2.0.2
 ARG TARGETARCH
@@ -32,7 +35,7 @@ RUN set -eux; \
 # portal-permissionstore plugins need one); machine-id lets that bus start.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends pipewire pipewire-bin wireplumber dbus; \
+    apt-get install -y --no-install-recommends pipewire pipewire-bin wireplumber dbus libatomic1; \
     dbus-uuidgen --ensure=/etc/machine-id; \
     rm -rf /var/lib/apt/lists/*
 COPY docker/pipewire/soloist-sink.conf /etc/pipewire/pipewire.conf.d/10-soloist-sink.conf
@@ -52,7 +55,7 @@ RUN set -eux; \
       arm)   SNAP_ARCH=armhf ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    deb="snapserver_${SNAPCAST_VERSION}-1_${SNAP_ARCH}_bookworm_with-pipewire.deb"; \
+    deb="snapserver_${SNAPCAST_VERSION}-1_${SNAP_ARCH}_trixie_with-pipewire.deb"; \
     curl -fsSL "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/${deb}" -o /tmp/snapserver.deb; \
     apt-get install -y --no-install-recommends /tmp/snapserver.deb; \
     ldd "$(command -v snapserver)" | grep -q pipewire; \
@@ -61,10 +64,11 @@ RUN set -eux; \
     rm -rf /tmp/snapserver.deb /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci
+COPY src ./src
+RUN npm run build && npm prune --omit=dev
 
-COPY soloist_proxy ./soloist_proxy
 COPY config.example.yaml ./config.yaml
 COPY docker/scripts/wait-for-sink /usr/local/bin/wait-for-sink
 RUN chmod +x /usr/local/bin/wait-for-sink
@@ -84,11 +88,11 @@ ENV SOLOIST_PROXY_CONFIG=/app/config.yaml \
     SOLOIST_PIPEWIRE_DEVICE=soloist-sink
 VOLUME ["/data", "/cache"]
 
-# 8687 Proxy; 1704 Snapcast stream, 1705 Snapcast control (host networking, so
-# these are documentation — the ports bind on the host directly).
-EXPOSE 8687 1704 1705
+# 8687 Proxy; 1704 Snapcast stream, 1705 Snapcast control, 1780 Snapcast web UI
+# (host networking, so these are documentation — the ports bind on the host directly).
+EXPOSE 8687 1704 1705 1780
 # start-period is generous: first boot downloads the Soloist binary before the Proxy binds.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD python -c "import socket; socket.create_connection(('127.0.0.1', 8687), 3).close()"
+    CMD node -e "require('net').createConnection({host:'127.0.0.1',port:8687},()=>process.exit(0)).on('error',()=>process.exit(1))"
 
 ENTRYPOINT ["/init"]
