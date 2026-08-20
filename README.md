@@ -118,11 +118,28 @@ minimum interval between POSTs via a bounded (1000) drop-oldest FIFO queue. Deli
 best-effort: fire-and-forget, ~5s timeout, non-2xx/timeout logged, never retried, and a
 webhook never blocks relay. Omit the section to disable. Off by default.
 
-The example wires these env vars: `SOLOIST_DEVICE_NAME`, `SOLOIST_API_KEY`,
-`SOLOIST_DATA_DIR`, `SOLOIST_PIPEWIRE_DEVICE`, `PROXY_LISTEN`, `PROXY_TOKEN`,
-`AUTOPLAY`, `WEBHOOK_URL`, `WEBHOOK_SECRET`, `WEBHOOK_DELAY_MS`, `SNAPCAST_STREAM`. The
-binary cache and download read `SOLOIST_CACHE_DIR` and
-`SOLOIST_DOWNLOAD_BASE` directly, outside the config file.
+The example config wires these env vars.
+
+| Variable | What it does | Default | Example |
+|----------|--------------|---------|---------|
+| `SOLOIST_API_KEY` | Soloist API Key that authorizes the app. Not a login. | required | `AbCdEf123...` |
+| `PROXY_TOKEN` | Auth token clients present to reach the proxy. | required | `long-random-string` |
+| `SOLOIST_DEVICE_NAME` | Connect device name shown in the Spotify app. | `Music Party` | `Music Party Docker` |
+| `AUTOPLAY` | Make the device active and start playing once it logs in. | `false` | `true` |
+| `WEBHOOK_URL` | Catch-all URL POSTed for the ten state events. Empty means off. | empty | `http://10.0.0.5:8002/s/music` |
+| `WEBHOOK_SECRET` | Sent as `Authorization: Bearer <secret>` on every POST. | empty | `s3cret` |
+| `WEBHOOK_DELAY_MS` | Global minimum interval between POSTs. 0 is off. | `0` | `250` |
+| `SNAPCAST_STREAM` | Snapcast stream name. Docker audio path only. | `Spotify` | `Spotify` |
+| `PROXY_LISTEN` | Address the proxy binds. | `0.0.0.0:8687` | `127.0.0.1:8687` |
+| `SOLOIST_DATA_DIR` | Session data dir that holds the login after pairing. | `./.soloist-data` | `/data` |
+| `SOLOIST_PIPEWIRE_DEVICE` | Null-sink Soloist plays into. Empty means no audio (standalone). | empty | `soloist-sink` |
+
+Two more are read directly, outside the config file, by the binary cache and download.
+
+| Variable | What it does | Default |
+|----------|--------------|---------|
+| `SOLOIST_CACHE_DIR` | Where the downloaded Soloist binary is cached. | `./.soloist-cache` |
+| `SOLOIST_DOWNLOAD_BASE` | Base URL the binary is fetched from. | `https://soloist-builds.spotifycdn.com` |
 
 Values in `.env` are read literally (compose `env_file` with `format: raw`), so paste
 keys exactly as they are, `$` and all, with no escaping.
