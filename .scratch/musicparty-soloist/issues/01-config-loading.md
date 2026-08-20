@@ -4,10 +4,14 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Loads YAML from `--config` / `$SOLOIST_PROXY_CONFIG`, defaulting to `./config.yaml`
-- [ ] `${VAR}` references resolve from the environment; env values override file values
-- [ ] Required fields (device name, API Key, Auth Token) missing → fail fast with a clear error
-- [ ] Sensible defaults applied (proxy `0.0.0.0:8687`, soloist_ws `127.0.0.1:3678`, stream name `Spotify`)
-- [ ] Self-test (assert-based) covers interpolation + env-wins precedence
+- [x] Loads YAML from `--config` / `$SOLOIST_PROXY_CONFIG`, defaulting to `./config.yaml`
+- [x] `${VAR}` references resolve from the environment; env values override file values
+- [x] Required fields (device name, API Key, Auth Token) missing → fail fast with a clear error
+- [x] Sensible defaults applied (proxy `0.0.0.0:8687`, soloist_ws `127.0.0.1:3678`, stream name `Spotify`)
+- [x] Self-test (assert-based) covers interpolation + env-wins precedence
+
+## Comments
+
+Implemented in `soloist_proxy/config.py` (loader) with `test_config.py` (7 assert-based checks). Env-override works two ways: `${VAR}`/`${VAR:-default}` interpolation and a direct per-key env layer (e.g. `SOLOIST_API_KEY`, `PROXY_TOKEN`) so plain file literals are overridable too — matching the CONTEXT.md "every value is env-overridable" contract. Merged to `main` in `dcd048a`.
