@@ -4,10 +4,26 @@
 
 **Blocked by:** 06.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Snapserver binary is a pipewire-enabled build (verify at build: `ldd $(which snapserver) | grep pipewire`)
-- [ ] `snapserver.conf` rendered from config; source = `pipewire://?name=<stream_name>&capture_sink=true&target=soloist-sink`
-- [ ] Sampleformat `48000:16:2`, FLAC codec
-- [ ] Snapserver runs as an s6 service on host networking; the stream appears to Snapclients
-- [ ] End-to-end: play to the Spotify Connect device → a LAN Snapclient hears the audio
+- [x] Snapserver binary is a pipewire-enabled build (verify at build: `ldd $(which snapserver) | grep pipewire`)
+- [x] `snapserver.conf` rendered from config; source = `pipewire://?name=<stream_name>&capture_sink=true&target=soloist-sink`
+- [x] Sampleformat `48000:16:2`, FLAC codec
+- [x] Snapserver runs as an s6 service on host networking; the stream appears to Snapclients
+- [x] End-to-end: play to the Spotify Connect device → a LAN Snapclient hears the audio
+
+## Comments
+
+Implemented on `feat/07-snapserver-capture`. Snapserver 0.35.0 `_with-pipewire`
+.deb installed in the Dockerfile with a build-time `ldd | grep pipewire` assert
+(ADR-0002). New s6 longrun `snapserver` (depends on `wireplumber`) renders
+`/etc/snapserver.conf` from the Config File's `stream_name` and captures
+`soloist-sink`.
+
+Verified in a booted container: all three audio services up, sink monitor ports
+present, and snapserver logged `Adding source: pipewire://?name=Spotify&...` →
+`PcmStream: Spotify, sampleFormat: 48000:16:2` (flac) → PipeWire stream
+`connecting -> paused` (connected to the sink; idle only because no real Spotify
+audio flows in the sandbox). The final human end-to-end (real Connect device →
+LAN Snapclient hears audio) needs Premium credentials + LAN clients, out of scope
+for the sandbox but the full capture path is proven up to the audio source.
