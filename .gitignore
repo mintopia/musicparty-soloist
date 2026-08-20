@@ -10,3 +10,7 @@ venv/
 
 # Cached Soloist binary / data dirs
 .soloist-cache/
+
+# macOS / IDE
+.DS_Store
+.idea/
