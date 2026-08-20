@@ -1,0 +1,17 @@
+#!/command/with-contenv sh
+# Wait (bounded) for WirePlumber to give the named PipeWire sink its input ports —
+# i.e. it can actually be played into / captured. The node alone exists as soon as
+# the pipewire daemon starts; ports appear only once the session manager configures
+# it. Give up after ~30s and let the caller start anyway (s6 keeps supervising)
+# rather than hang forever. No-op if no sink name is passed.
+sink="$1"
+[ -n "$sink" ] || exit 0
+i=0
+until pw-link -i 2>/dev/null | grep -q "$sink"; do
+  i=$((i + 1))
+  if [ "$i" -ge 30 ]; then
+    echo "wait-for-sink: PipeWire sink '$sink' absent after ${i} checks; continuing anyway" >&2
+    break
+  fi
+  sleep 1
+done

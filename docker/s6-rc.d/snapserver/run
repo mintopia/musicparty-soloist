@@ -1,0 +1,20 @@
+#!/command/with-contenv sh
+# Snapserver (ticket 07): captures the soloist-sink null-sink via its native
+# pipewire:// source (ADR-0002) and serves the stream to LAN Snapclients. Runs on
+# host networking (see docker-compose) so clients reach it on 1704/1705.
+#
+# Render snapserver.conf from the Config File's stream_name. Fall back to the
+# SNAPCAST_STREAM env / default if load_config raises (it validates the Proxy
+# secrets, which the stream name itself doesn't need) so a secrets gap doesn't
+# take the audio server down with it.
+name=$(cd /app && python -c 'from soloist_proxy.config import load_config; print(load_config().stream_name)' 2>/dev/null) \
+  || name="${SNAPCAST_STREAM:-Spotify}"
+
+wait-for-sink soloist-sink
+
+cat > /etc/snapserver.conf <<EOF
+[stream]
+source = pipewire://?name=${name}&sampleformat=48000:16:2&codec=flac&capture_sink=true&target=soloist-sink
+EOF
+
+exec snapserver -c /etc/snapserver.conf
