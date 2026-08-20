@@ -13,3 +13,5 @@ dist/
 # macOS / IDE
 .DS_Store
 .idea/
+
+.scratch/
