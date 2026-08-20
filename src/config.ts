@@ -1,9 +1,3 @@
-// Config loader for the Soloist Proxy.
-//
-// Reads the YAML Config File, resolves ${VAR} / ${VAR:-default} references from
-// the environment (env wins over any file-provided default), applies defaults,
-// and validates the required secrets. Missing required values fail fast.
-
 import { readFileSync, statSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 
@@ -13,7 +7,7 @@ export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
 
-// ${VAR} or ${VAR:-default}
+// matches ${VAR} and ${VAR:-default}
 const VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
 
 type Env = Record<string, string | undefined>;
@@ -25,23 +19,22 @@ export interface SoloistConfig {
   apiKey: string;
   dataDir: string;
   extraArgs: string[];
-  pipewireDevice: string; // Docker-only: null-sink to play into; empty = omit the flag
+  pipewireDevice: string;
 }
 
 export interface Config {
   soloist: SoloistConfig;
   proxy: { listen: string; token: string };
   soloistWs: string;
-  streamName: string; // Docker-only; the standalone ignores it
+  streamName: string;
 }
 
 function resolve(env: Env, name: string, def: string | undefined): string {
   const val = env[name];
-  if (val) return val; // env wins; unset or empty falls back to the file default
+  if (val) return val;
   return def ?? "";
 }
 
-// Recursively substitute ${VAR}/${VAR:-default} in every string.
 function interpolate(value: unknown, env: Env): unknown {
   if (typeof value === "string") {
     return value.replace(VAR_RE, (_m, name, def) => resolve(env, name, def));

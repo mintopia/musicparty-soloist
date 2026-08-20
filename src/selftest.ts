@@ -1,6 +1,3 @@
-// Runnable self-check (no framework): auth gate, arch map, config interpolation.
-// Run: npm test  (node --experimental-strip-types src/selftest.ts)
-
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,14 +11,12 @@ function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
 
-// --- arch map ---
 assert.equal(detectArch("x64"), "x86_64");
 assert.equal(detectArch("arm64"), "arm64");
 assert.equal(detectArch("arm"), "arm32");
 assert.throws(() => detectArch("sparc"), AcquisitionError);
 assert.equal(tarballUrl("arm64", "https://x/y/"), "https://x/y/soloist_release_arm64.tar.gz");
 
-// --- auth gate ---
 const T = "s3cret";
 assert.equal(checkAuth(req({ authorization: `Bearer ${T}` }), T), true, "good bearer passes");
 assert.equal(checkAuth(req({}, `/?token=${T}`), T), true, "good query token passes");
@@ -29,7 +24,6 @@ assert.equal(checkAuth(req({ authorization: "Bearer nope" }), T), false, "bad to
 assert.equal(checkAuth(req({}), T), false, "missing token rejected");
 assert.equal(checkAuth(req({ authorization: "Bearer " + T + "x" }), T), false, "wrong length rejected");
 
-// --- config: interpolation, env override, required ---
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");
 writeFileSync(

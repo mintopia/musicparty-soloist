@@ -1,15 +1,3 @@
-// Supervise the Soloist daemon.
-//
-// Launch `soloist` with the local control WebSocket (-w), device name, API Key,
-// data-dir, and any extra_args — this is what makes the Connect device appear.
-// Then keep it running:
-//   - exit 10 (build expired): re-acquire the binary and restart now.
-//   - other non-zero: log and restart with capped exponential backoff.
-//   - exit 0 (clean shutdown): stop; do not loop.
-//
-// Abort the passed signal to shut down; the child is terminated (SIGTERM, then
-// SIGKILL on timeout) on the way out.
-
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -19,16 +7,14 @@ import type { Config } from "./config.js";
 export const EXIT_EXPIRED = 10;
 export const BACKOFF_BASE = 1.0;
 export const BACKOFF_MAX = 60.0;
-export const HEALTHY_SECONDS = 60.0; // a run this long is "healthy" — reset backoff
+export const HEALTHY_SECONDS = 60.0;
 export const TERM_TIMEOUT = 10.0;
 
-// Sentinel thrown out of the run loop when the supervise signal is aborted.
 export class Aborted extends Error {}
 
 const log = (msg: string, ...args: unknown[]) =>
   console.log(`${new Date().toISOString()} soloist.supervisor ${msg}`, ...args);
 
-// Assemble the Soloist command line from the binary path and config.
 export function buildArgv(binary: string, cfg: Config): string[] {
   const argv = [
     "-w", cfg.soloistWs,
@@ -53,8 +39,6 @@ async function terminate(proc: ChildProcess, timeout = TERM_TIMEOUT): Promise<vo
   }
 }
 
-// Run soloist once; resolve with its exit code, or throw Aborted if the signal
-// fires first (after terminating the child).
 function runOnce(binary: string, cfg: Config, signal: AbortSignal): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const proc = spawn(binary, buildArgv(binary, cfg), { stdio: "inherit" });
@@ -78,9 +62,6 @@ export interface SuperviseOptions {
   signal?: AbortSignal;
 }
 
-// Run the Soloist daemon under supervision until it exits cleanly (returns 0) or
-// the signal is aborted (throws Aborted). Never returns on crashes — it restarts.
-// Binary cache dir / download base come from $SOLOIST_CACHE_DIR / $SOLOIST_DOWNLOAD_BASE.
 export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promise<number> {
   const { signal = new AbortController().signal } = opts;
 
@@ -103,9 +84,9 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
       log("soloist build expired (exit 10); re-acquiring binary");
       binary = await acquireSoloist(undefined, { force: true });
       backoff = BACKOFF_BASE;
-      continue; // restart immediately on a fresh binary
+      continue;
     }
-    if (ran >= HEALTHY_SECONDS) backoff = BACKOFF_BASE; // crash after healthy run — reset
+    if (ran >= HEALTHY_SECONDS) backoff = BACKOFF_BASE;
     log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), backoff);
     await sleep(backoff * 1000);
     backoff = Math.min(backoff * 2, BACKOFF_MAX);

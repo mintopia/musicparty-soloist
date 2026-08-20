@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-// Standalone entry point: supervise Soloist and serve the auth Proxy together.
-//
-// Run as `node dist/main.js [--config ...]`. Loads the Config, then runs the
-// Soloist supervisor and the Proxy concurrently. If either stops, the other is
-// cancelled and the process exits. No audio — that is the Docker deliverable.
-
 import { parseArgs } from "node:util";
 import { ConfigError, loadConfig } from "./config.js";
 import { serveProxy } from "./proxy.js";
