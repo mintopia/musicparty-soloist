@@ -48,6 +48,22 @@ function interpolate(value: unknown, env: Env): unknown {
   return value;
 }
 
+// env and ${VAR} interpolation only ever yield strings; these coerce to the
+// intended type, falling back to `def` for unset/empty/unrecognized values.
+export function coerceBool(value: unknown, def: boolean): boolean {
+  if (value == null || value === "") return def;
+  const s = String(value).trim().toLowerCase();
+  if (s === "true" || s === "1" || s === "yes") return true;
+  if (s === "false" || s === "0" || s === "no") return false;
+  return def;
+}
+
+export function coerceInt(value: unknown, def: number): number {
+  if (value == null || value === "") return def;
+  const n = Number.parseInt(String(value).trim(), 10);
+  return Number.isNaN(n) ? def : n;
+}
+
 function required(value: unknown, name: string): string {
   if (value == null || (typeof value === "string" && value.trim() === "")) {
     throw new ConfigError(`Missing required config value: ${name}`);

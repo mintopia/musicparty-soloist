@@ -30,9 +30,37 @@ export function checkAuth(req: IncomingMessage, token: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+// A decoded upstream frame handed to observers. Autoplay reads `message`;
+// webhooks POST `raw` verbatim. Only text frames with a string `type` decode.
+export interface UpstreamFrame {
+  type: string;
+  message: Record<string, unknown>;
+  raw: string;
+}
+
+export type FrameObserver = (frame: UpstreamFrame) => void;
+
+// Returns null for binary, non-JSON, or type-less frames — those bypass
+// observers but are still broadcast unchanged.
+export function decodeFrame(data: RawData, isBinary: boolean): UpstreamFrame | null {
+  if (isBinary) return null;
+  const raw = data.toString();
+  let message: unknown;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const type = (message as Record<string, unknown>).type;
+  if (typeof type !== "string") return null;
+  return { type, message: message as Record<string, unknown>, raw };
+}
+
 export class SoloistHub {
   readonly url: string;
   private clients = new Set<WebSocket>();
+  private observers = new Set<FrameObserver>();
   private conn: WebSocket | null = null;
   private ready: { promise: Promise<void>; resolve: () => void };
   private stopped = false;
@@ -40,6 +68,10 @@ export class SoloistHub {
   constructor(url: string) {
     this.url = url;
     this.ready = deferred();
+  }
+
+  observe(fn: FrameObserver): void {
+    this.observers.add(fn);
   }
 
   register(client: WebSocket): void {
@@ -57,6 +89,22 @@ export class SoloistHub {
     const conn = this.conn;
     if (!conn || conn.readyState !== WebSocket.OPEN) return;
     conn.send(data, { binary: isBinary });
+  }
+
+  // Decode once, dispatch to observers, then broadcast the original bytes
+  // unchanged. An observer throwing must never break relay.
+  private onUpstream(data: RawData, isBinary: boolean): void {
+    const frame = decodeFrame(data, isBinary);
+    if (frame) {
+      for (const obs of this.observers) {
+        try {
+          obs(frame);
+        } catch (err) {
+          log("frame observer error: %s", (err as Error).message);
+        }
+      }
+    }
+    this.broadcast(data, isBinary);
   }
 
   private broadcast(data: RawData, isBinary: boolean): void {
@@ -86,7 +134,7 @@ export class SoloistHub {
             this.ready.resolve();
             backoff = HUB_BACKOFF_BASE;
           });
-          conn.on("message", (data, isBinary) => this.broadcast(data, isBinary));
+          conn.on("message", (data, isBinary) => this.onUpstream(data, isBinary));
           conn.on("error", (err) => reject(err));
           conn.on("close", () => resolve());
         });
