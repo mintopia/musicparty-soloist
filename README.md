@@ -39,7 +39,7 @@ docker compose logs -f soloist
 On first run the log stops at:
 
 ```
-waiting for login — connect to "Music Party Docker" from your Spotify app
+waiting for login — connect to "Music Party" from your Spotify app
 ```
 
 Now do the one-time login. Open Spotify on any device on the same LAN and pick your
@@ -84,7 +84,7 @@ environment wins over the file default.
 
 ```yaml
 soloist:
-  device_name: "${SOLOIST_DEVICE_NAME:-Party Speaker}"
+  device_name: "${SOLOIST_DEVICE_NAME:-Music Party}"
   api_key: "${SOLOIST_API_KEY}"
   data_dir: "${SOLOIST_DATA_DIR:-./.soloist-data}"
   extra_args: []

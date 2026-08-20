@@ -4,7 +4,7 @@
 # $SOLOIST_DOWNLOAD_BASE directly, not through this file.)
 
 soloist:
-  device_name: "${SOLOIST_DEVICE_NAME:-Party Speaker}"
+  device_name: "${SOLOIST_DEVICE_NAME:-Music Party}"
   api_key: "${SOLOIST_API_KEY}"   # Spotify API Key; supply via env, never commit
   data_dir: "${SOLOIST_DATA_DIR:-./.soloist-data}"  # persistent session state
   extra_args: []
