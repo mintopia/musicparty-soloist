@@ -4,6 +4,12 @@
   "description": "Authenticating WebSocket proxy + supervisor for Spotify Soloist.",
   "license": "MIT",
   "author": "Jessica Smith <jess@mintopia.net>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mintopia/musicparty-soloist.git"
+  },
+  "homepage": "https://github.com/mintopia/musicparty-soloist#readme",
+  "bugs": "https://github.com/mintopia/musicparty-soloist/issues",
   "type": "module",
   "bin": {
     "soloist-proxy": "dist/main.js"
