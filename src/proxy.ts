@@ -196,8 +196,9 @@ function attachAutoplay(hub: SoloistHub): void {
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
     log("autoplay: logged in, injecting activate then play");
-    hub.inject({ type: "activate" });
-    hub.inject({ type: "play" });
+    // Soloist commands: type "command" + a command field (not type:"activate").
+    hub.inject({ type: "command", command: "activate" });
+    hub.inject({ type: "command", command: "play" });
   });
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@mintopia/musicparty-soloist",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Authenticating WebSocket proxy + supervisor for Spotify Soloist.",
   "license": "MIT",
   "author": "Jessica Smith <jess@mintopia.net>",
