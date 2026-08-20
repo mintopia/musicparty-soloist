@@ -4,13 +4,13 @@
 
 **Blocked by:** 06.
 
-**Status:** done
+**Status:** done (final human end-to-end verification pending real credentials/LAN)
 
 - [x] Snapserver binary is a pipewire-enabled build (verify at build: `ldd $(which snapserver) | grep pipewire`)
 - [x] `snapserver.conf` rendered from config; source = `pipewire://?name=<stream_name>&capture_sink=true&target=soloist-sink`
 - [x] Sampleformat `48000:16:2`, FLAC codec
-- [x] Snapserver runs as an s6 service on host networking; the stream appears to Snapclients
-- [x] End-to-end: play to the Spotify Connect device → a LAN Snapclient hears the audio
+- [x] Snapserver runs as an s6 service on host networking (stream registered; a live Snapclient attach not exercised in the sandbox)
+- [ ] End-to-end: play to the Spotify Connect device → a LAN Snapclient hears the audio (needs Premium creds + LAN clients; unverified in sandbox)
 
 ## Comments
 

@@ -9,20 +9,8 @@
 # take the audio server down with it.
 name=$(cd /app && python -c 'from soloist_proxy.config import load_config; print(load_config().stream_name)' 2>/dev/null) \
   || name="${SNAPCAST_STREAM:-Spotify}"
-[ -n "$name" ] || name="${SNAPCAST_STREAM:-Spotify}"
 
-# Wait (bounded) for WirePlumber to give soloist-sink its input ports before we
-# capture it — same race the soloist-proxy service guards. Start anyway after ~30s
-# (s6 keeps supervising) rather than hang forever.
-i=0
-until pw-link -i 2>/dev/null | grep -q "soloist-sink"; do
-  i=$((i + 1))
-  if [ "$i" -ge 30 ]; then
-    echo "snapserver: PipeWire sink 'soloist-sink' absent after ${i} checks; starting anyway" >&2
-    break
-  fi
-  sleep 1
-done
+wait-for-sink soloist-sink
 
 cat > /etc/snapserver.conf <<EOF
 [stream]

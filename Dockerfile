@@ -66,6 +66,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY soloist_proxy ./soloist_proxy
 COPY config.example.yaml ./config.yaml
+COPY docker/scripts/wait-for-sink /usr/local/bin/wait-for-sink
+RUN chmod +x /usr/local/bin/wait-for-sink
 COPY docker/s6-rc.d /etc/s6-overlay/s6-rc.d
 RUN chmod +x /etc/s6-overlay/s6-rc.d/soloist-proxy/run \
              /etc/s6-overlay/s6-rc.d/pipewire/run \
