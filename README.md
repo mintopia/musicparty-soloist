@@ -156,7 +156,7 @@ zeroconf. Run it on a host that sits on the LAN, not inside an isolated containe
 
 ```bash
 npm run build      # tsc -> dist/
-npm test           # build, then the assert-based self-check (auth gate, arch map, config)
+npm test           # build, then the assert-based self-check (auth gate, arch map, config, webhook routing/throttle)
 npm start          # node dist/main.js
 ```
 
@@ -168,13 +168,19 @@ are Node built-ins.
 
 ```
 Downstream clients ──ws (token)──> Proxy(8687) ──ws──> Soloist WS(127.0.0.1:3678)
-                                     │
+                                     │ Hub: broadcast + observe/inject frames
+                                     ├─ autoplay ─> injects activate/play on login
+                                     └─ webhooks ─> POST each event to configured URLs
 Supervisor ── spawns/restarts ──> soloist ── audio ──> PipeWire null-sink
                                                           │
                                               Snapserver (pipewire capture)
                                                           │
                                           Snapclients(1704) + web UI(1780)
 ```
+
+Inside the Proxy, the **Hub** holds the single upstream connection: it broadcasts every
+Soloist frame to all clients, and (when enabled) decodes each frame once to drive
+autoplay and webhooks. It never rewrites relayed client traffic — see ADR-0006.
 
 See `CONTEXT.md` for the domain glossary and `docs/adr/` for the recorded decisions.
 

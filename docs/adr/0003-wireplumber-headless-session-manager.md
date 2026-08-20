@@ -30,6 +30,16 @@ plugin that assumes a desktop it does not have:
 
 `dbus` is a build dependency of an "audio" image, which looks odd until you know
 WirePlumber needs a bus. The libcamera/v4l2 monitors still log benign "not supported"
-warnings — harmless, left alone. If a future base image ships WirePlumber 0.5+, the
-Lua drop-in mechanism changes (it moves to SPA-JSON `wireplumber.conf.d/`); revisit
-the bluez disable then.
+warnings — harmless, left alone.
+
+## Amendment (WirePlumber 0.5, trixie base)
+
+The base image now ships WirePlumber 0.5, so the predicted Lua-drop-in change landed:
+
+- The bluez disable moved from `bluetooth.lua.d/80-disable-bluez.lua` to the SPA-JSON
+  `wireplumber.conf.d/80-disable-bluez.conf`.
+- WP 0.5's policy classifies Snapserver's `capture_sink` node as an `Audio/Sink` device,
+  not a capture client, so it is **no longer auto-linked** to the null-sink monitor and
+  the stream stays silent. The snapserver service now `pw-link`s `soloist-sink:monitor_FL/FR`
+  to the capture node's `playback_FL/FR` explicitly, once those ports appear. Soloist's
+  own playback node still auto-links as before.

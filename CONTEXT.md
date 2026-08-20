@@ -22,6 +22,15 @@ job is authentication: it gates connections on a shared token, then transparentl
 relays frames both ways. No message rewriting.
 _Avoid_: gateway, bridge (bridge means the audio path — see Snapcast).
 
+**Hub** (`SoloistHub`):
+The single upstream connection inside the Proxy that reconnects to the Soloist WebSocket
+with backoff and broadcasts each frame to every Downstream Client. It decodes each frame's
+`type` once and dispatches to registered observers (Autoplay, Webhook), and can *originate*
+frames upstream (Autoplay's `activate`/`play`). Relayed client traffic is still never
+rewritten — the Hub only reads and, for injected frames, writes traffic that is not a
+client's (ADR-0006 amending ADR-0001).
+_Avoid_: Proxy (that is the auth front; the Hub is the frame core behind it).
+
 **Auth Token**:
 A single shared secret. A Downstream Client presents it as `Authorization: Bearer
 <token>` or `?token=<token>`; a bad/missing token is rejected 401 at the WS upgrade.
@@ -48,7 +57,9 @@ _Avoid_: user, subscriber.
 Soloist plays into a PipeWire null-sink (`soloist-sink`); Snapserver captures that
 sink via its native `pipewire://` source (`capture_sink=true`, `48000:16:2`, FLAC).
 Requires a pipewire-enabled Snapserver build. A headless WirePlumber (see ADR-0003)
-is the session manager that gives the sink its ports and links each client onto it.
+is the session manager that gives the sink its ports and links playback clients onto it.
+WirePlumber 0.5 treats Snapserver's capture node as a device, not a capture client, so it
+is *not* auto-linked — the snapserver service explicitly `pw-link`s the sink monitor to it.
 No FIFO, no external capture process. The null-sink is the stable anchor between the two.
 _Avoid_: FIFO, pipe, bridge.
 
