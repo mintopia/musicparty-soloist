@@ -111,7 +111,7 @@ With `webhooks` set, the Hub POSTs the raw event JSON (`Content-Type: applicatio
 to a URL per event. `default_url` catches the ten state events (`auth_state`,
 `playback_state`, `track_changed`, `playback_changed`, `volume_changed`, `device_changed`,
 `context_changed`, `options_changed`, `position_sync`, `queue_changed`); entries under
-`urls` **replace** the default for that `type`, so each event hits exactly one URL.
+`urls` replace the default for that `type`, so each event hits exactly one URL.
 `command_result`/`error` fire only when given an explicit `urls` entry. `secret`, if set,
 is sent as `Authorization: Bearer <secret>` on every POST. `delay_ms` enforces a global
 minimum interval between POSTs via a bounded (1000) drop-oldest FIFO queue. Delivery is
@@ -178,9 +178,9 @@ Supervisor ── spawns/restarts ──> soloist ── audio ──> PipeWire 
                                           Snapclients(1704) + web UI(1780)
 ```
 
-Inside the Proxy, the **Hub** holds the single upstream connection: it broadcasts every
+Inside the Proxy, the Hub holds the single upstream connection: it broadcasts every
 Soloist frame to all clients, and (when enabled) decodes each frame once to drive
-autoplay and webhooks. It never rewrites relayed client traffic — see ADR-0006.
+autoplay and webhooks. It never rewrites relayed client traffic. See ADR-0006.
 
 See `CONTEXT.md` for the domain glossary and `docs/adr/` for the recorded decisions.
 

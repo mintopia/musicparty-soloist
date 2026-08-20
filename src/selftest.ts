@@ -65,7 +65,6 @@ assert.equal(resolveWebhookUrl("error", whCfg), "http://err", "error only with e
 assert.equal(resolveWebhookUrl("command_result", whCfg), null, "command_result without override -> none");
 assert.equal(resolveWebhookUrl("auth_state", { defaultUrl: "", urls: {}, secret: "", delayMs: 0 }), null, "no default/override -> none");
 
-// Spacing: every fire is scheduled exactly delayMs apart, tasks run FIFO.
 const fires: number[] = [];
 const spaced: (() => void)[] = [];
 const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
@@ -78,7 +77,6 @@ spaced.shift()!();
 spaced.shift()!();
 assert.deepEqual(fires, [1, 2, 3], "queued tasks drain FIFO");
 
-// Drop-oldest at cap: a paused scheduler lets the queue fill past cap.
 const order: string[] = [];
 const drops: number[] = [];
 const held: (() => void)[] = [];
@@ -89,7 +87,6 @@ assert.equal(drops.length, 1, "one drop at cap");
 while (held.length) held.shift()!();
 assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest FIFO");
 
-// delayMs 0 = throttle off: tasks fire synchronously, no timer scheduled.
 const sync: number[] = [];
 const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
 q0.push(() => sync.push(1));

@@ -7,7 +7,6 @@ export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
 
-// matches ${VAR} and ${VAR:-default}
 const VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
 
 type Env = Record<string, string | undefined>;
@@ -57,8 +56,6 @@ function interpolate(value: unknown, env: Env): unknown {
   return value;
 }
 
-// env and ${VAR} interpolation only ever yield strings; these coerce to the
-// intended type, falling back to `def` for unset/empty/unrecognized values.
 export function coerceBool(value: unknown, def: boolean): boolean {
   if (value == null || value === "") return def;
   const s = String(value).trim().toLowerCase();
@@ -138,7 +135,7 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
     webhooks: {
       defaultUrl: String(webhooks.default_url ?? "").trim(),
       urls,
-      secret: String(webhooks.secret ?? ""), // untrimmed: a bearer secret may hold edge whitespace
+      secret: String(webhooks.secret ?? ""),
       delayMs: coerceInt(webhooks.delay_ms, 0),
     },
   };

@@ -30,8 +30,6 @@ export function checkAuth(req: IncomingMessage, token: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-// A decoded upstream frame handed to observers. Autoplay reads `message`;
-// webhooks POST `raw` verbatim. Only text frames with a string `type` decode.
 export interface UpstreamFrame {
   type: string;
   message: Record<string, unknown>;
@@ -40,8 +38,6 @@ export interface UpstreamFrame {
 
 export type FrameObserver = (frame: UpstreamFrame) => void;
 
-// Returns null for binary, non-JSON, or type-less frames — those bypass
-// observers but are still broadcast unchanged.
 export function decodeFrame(data: RawData, isBinary: boolean): UpstreamFrame | null {
   if (isBinary) return null;
   const raw = data.toString();
@@ -57,13 +53,10 @@ export function decodeFrame(data: RawData, isBinary: boolean): UpstreamFrame | n
   return { type, message: message as Record<string, unknown>, raw };
 }
 
-// Ref cell keeping shouldAutoplay a pure predicate; fired once per connection.
 export interface AutoplayState {
   fired: boolean;
 }
 
-// First auth_state reporting logged_in:true per connection. Latch (not edge)
-// so a later true after a drop-and-restore doesn't re-fire.
 export function shouldAutoplay(prev: AutoplayState, next: UpstreamFrame): boolean {
   return !prev.fired && next.type === "auth_state" && next.message.logged_in === true;
 }
@@ -90,8 +83,6 @@ export class SoloistHub {
     this.connectFn = fn;
   }
 
-  // Originate a frame upstream (autoplay's activate/play). Best-effort: dropped
-  // if the upstream isn't open. Not client traffic, so never relayed.
   inject(message: Record<string, unknown>): void {
     const conn = this.conn;
     if (conn && conn.readyState === WebSocket.OPEN) conn.send(JSON.stringify(message));
@@ -114,8 +105,6 @@ export class SoloistHub {
     conn.send(data, { binary: isBinary });
   }
 
-  // Decode once, dispatch to observers, then broadcast the original bytes
-  // unchanged. An observer throwing must never break relay.
   private onUpstream(data: RawData, isBinary: boolean): void {
     const frame = decodeFrame(data, isBinary);
     if (frame) {
@@ -199,13 +188,10 @@ export interface RunningProxy {
   close(): Promise<void>;
 }
 
-// Once per upstream connection, on the first logged_in:true, make the device the
-// active Connect player and start it. Latch resets on each (re)connect.
 function attachAutoplay(hub: SoloistHub): void {
   const state: AutoplayState = { fired: false };
   hub.onConnect(() => (state.fired = false));
   hub.observe((frame) => {
-    // activate/play failures surface as upstream error frames — log, no retry.
     if (frame.type === "error") log("autoplay: upstream error frame: %s", frame.raw);
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
@@ -215,16 +201,11 @@ function attachAutoplay(hub: SoloistHub): void {
   });
 }
 
-// The ten state events the default_url catches (source of truth: spec.md /
-// CONTEXT.md). command_result/error and any unknown type only POST when given an
-// explicit per-type override.
 const STATE_EVENTS = new Set([
   "auth_state", "playback_state", "track_changed", "playback_changed", "volume_changed",
   "device_changed", "context_changed", "options_changed", "position_sync", "queue_changed",
 ]);
 
-// Override replaces the default for its type; default only serves state events.
-// Returns null when nothing should be POSTed.
 export function resolveWebhookUrl(type: string, cfg: WebhooksConfig): string | null {
   const override = cfg.urls[type];
   if (override) return override;
@@ -235,8 +216,6 @@ export function resolveWebhookUrl(type: string, cfg: WebhooksConfig): string | n
 export const WEBHOOK_QUEUE_CAP = 1000;
 const WEBHOOK_TIMEOUT_MS = 5000;
 
-// Global FIFO throttle: fires one task per delayMs. Bounded, drop-oldest when
-// full. schedule is injectable so selftest can assert spacing/drop deterministically.
 export class WebhookQueue {
   private queue: (() => void)[] = [];
   private draining = false;
@@ -275,7 +254,6 @@ export class WebhookQueue {
       }
       this.draining = true;
       task();
-      // delayMs 0 = throttle off: drain the rest synchronously, no timer.
       if (this.delayMs > 0) {
         this.schedule(() => this.drain(), this.delayMs);
         return;
@@ -284,7 +262,6 @@ export class WebhookQueue {
   }
 }
 
-// Fire-and-forget POST of the raw event JSON. Never throws; non-2xx/timeout logged.
 async function postWebhook(url: string, body: string, secret: string): Promise<void> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (secret) headers.authorization = `Bearer ${secret}`;
