@@ -32,9 +32,11 @@ The supervisor watches for that and re-downloads on its own.
 
 ```bash
 cp .env.example .env          # then edit: set SOLOIST_API_KEY and PROXY_TOKEN
-docker compose up -d --build
+docker compose up -d          # pulls ghcr.io/mintopia/musicparty-soloist:latest
 docker compose logs -f soloist
 ```
+
+To upgrade later, pull the new image and recreate: `docker compose pull && docker compose up -d`.
 
 On first run the log stops at:
 

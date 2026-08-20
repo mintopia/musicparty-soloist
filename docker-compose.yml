@@ -5,8 +5,8 @@
 # Spotify app. Host mode also lets LAN Snapclients reach the audio ports directly.
 services:
   soloist:
-    build: .
-    image: musicparty-soloist
+    image: ghcr.io/mintopia/musicparty-soloist:latest
+    # build: .                  # uncomment (and comment the image line) to build locally
     network_mode: host          # required for Spotify Connect login + LAN Snapcast
     restart: unless-stopped
     env_file:                   # copy .env.example -> .env and fill in the secrets
