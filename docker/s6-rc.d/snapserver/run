@@ -12,6 +12,21 @@ name=$(cd /app && node -e 'import("./dist/config.js").then(m=>process.stdout.wri
 
 wait-for-sink soloist-sink
 
+# WirePlumber (0.5, trixie) does NOT auto-link snapserver's capture_sink node to
+# the null-sink monitor: the node registers as media.class=Audio/Sink, which WP's
+# policy treats as a device, not a capture client — so the stream stays paused and
+# silent. The graph is fixed and 2-channel, so link it explicitly once snapserver's
+# capture node ports appear. Backgrounded before exec; it self-exits after linking.
+( i=0
+  until pw-link -i 2>/dev/null | grep -q "^${name}:playback_FL"; do
+    i=$((i + 1))
+    [ "$i" -ge 30 ] && { echo "snapserver: capture node '${name}' absent; audio not linked" >&2; exit 0; }
+    sleep 1
+  done
+  pw-link "soloist-sink:monitor_FL" "${name}:playback_FL" 2>/dev/null
+  pw-link "soloist-sink:monitor_FR" "${name}:playback_FR" 2>/dev/null
+  echo "snapserver: linked soloist-sink monitor -> ${name}" >&2 ) &
+
 cat > /etc/snapserver.conf <<EOF
 [stream]
 source = pipewire://?name=${name}&sampleformat=48000:16:2&codec=flac&capture_sink=true&target=soloist-sink

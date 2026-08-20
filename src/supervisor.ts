@@ -76,10 +76,9 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     const code = await runOnce(binary, cfg, signal);
     const ran = (Date.now() - started) / 1000;
 
-    if (code === 0) {
-      log("soloist exited cleanly (0) after %ds; not restarting", Math.round(ran));
-      return code;
-    }
+    // Exit 0 here means Soloist quit on its own: our own shutdown goes through the
+    // abort path (rejects Aborted), never here. So relaunch it like any other exit
+    // rather than silently leaving the container up with no player.
     if (code === EXIT_EXPIRED) {
       log("soloist build expired (exit 10); re-acquiring binary");
       binary = await acquireSoloist(undefined, { force: true });
