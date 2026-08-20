@@ -6,6 +6,8 @@
 # pipewire-enabled Snapserver ships only as a .deb.
 FROM node:22-trixie-slim
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG S6_OVERLAY_VERSION=3.2.0.2
 ARG TARGETARCH
 

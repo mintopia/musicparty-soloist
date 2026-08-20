@@ -1,0 +1,4 @@
+ignored:
+  # DL3008: pinning apt versions against Debian's rolling repo makes the image
+  # un-buildable once the archive moves on. Deliberately unpinned.
+  - DL3008
