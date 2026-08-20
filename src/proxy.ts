@@ -5,9 +5,9 @@ import { timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config, WebhooksConfig } from "./config.js";
+import { makeLog } from "./log.js";
 
-const log = (msg: string, ...args: unknown[]) =>
-  console.log(`${new Date().toISOString()} soloist.proxy ${msg}`, ...args);
+const log = makeLog("proxy");
 
 const BEARER = "Bearer ";
 
@@ -97,9 +97,13 @@ export class SoloistHub {
   }
 
   async forward(data: RawData, isBinary: boolean): Promise<void> {
-    const timedOut = Symbol();
-    const winner = await Promise.race([this.ready.promise, sleep(HUB_READY_TIMEOUT * 1000).then(() => timedOut)]);
-    if (winner === timedOut) return;
+    const ac = new AbortController();
+    const timeout = sleep(HUB_READY_TIMEOUT * 1000, "timeout" as const, { signal: ac.signal }).catch(
+      () => "aborted" as const,
+    );
+    const winner = await Promise.race([this.ready.promise.then(() => "ready" as const), timeout]);
+    ac.abort();
+    if (winner !== "ready") return;
     const conn = this.conn;
     if (!conn || conn.readyState !== WebSocket.OPEN) return;
     conn.send(data, { binary: isBinary });
@@ -188,6 +192,12 @@ export interface RunningProxy {
   close(): Promise<void>;
 }
 
+// Soloist commands take type "command" + a command field (not type:"activate").
+export const AUTOPLAY_FRAMES: Record<string, unknown>[] = [
+  { type: "command", command: "activate" },
+  { type: "command", command: "play" },
+];
+
 function attachAutoplay(hub: SoloistHub): void {
   const state: AutoplayState = { fired: false };
   hub.onConnect(() => (state.fired = false));
@@ -196,9 +206,7 @@ function attachAutoplay(hub: SoloistHub): void {
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
     log("autoplay: logged in, injecting activate then play");
-    // Soloist commands: type "command" + a command field (not type:"activate").
-    hub.inject({ type: "command", command: "activate" });
-    hub.inject({ type: "command", command: "play" });
+    for (const frame of AUTOPLAY_FRAMES) hub.inject(frame);
   });
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, type UpstreamFrame } from "./proxy.js";
+import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, AUTOPLAY_FRAMES, type UpstreamFrame } from "./proxy.js";
 import type { RawData } from "ws";
 import { loadConfig, ConfigError, coerceBool, coerceInt } from "./config.js";
 
@@ -57,6 +57,12 @@ assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "false->true fire
 assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "already-true on connect fires");
 assert.equal(shouldAutoplay({ fired: true }, loggedIn), false, "once-per-connection guard");
 assert.equal(shouldAutoplay({ fired: false }, frame({ type: "playback_state", logged_in: true })), false, "non-auth_state ignored");
+
+assert.deepEqual(
+  AUTOPLAY_FRAMES,
+  [{ type: "command", command: "activate" }, { type: "command", command: "play" }],
+  "autoplay injects Soloist command envelopes (activate then play)",
+);
 
 const whCfg = { defaultUrl: "http://def", urls: { track_changed: "http://tc", error: "http://err" }, secret: "", delayMs: 0 };
 assert.equal(resolveWebhookUrl("auth_state", whCfg), "http://def", "state event -> default_url");

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { acquireSoloist } from "./acquire.js";
 import type { Config } from "./config.js";
+import { makeLog } from "./log.js";
 
 export const EXIT_EXPIRED = 10;
 export const BACKOFF_BASE = 1.0;
@@ -12,8 +13,7 @@ export const TERM_TIMEOUT = 10.0;
 
 export class Aborted extends Error {}
 
-const log = (msg: string, ...args: unknown[]) =>
-  console.log(`${new Date().toISOString()} soloist.supervisor ${msg}`, ...args);
+const log = makeLog("supervisor");
 
 export function buildArgv(binary: string, cfg: Config): string[] {
   const argv = [

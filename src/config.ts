@@ -37,7 +37,7 @@ export interface Config {
   webhooks: WebhooksConfig;
 }
 
-function resolve(env: Env, name: string, def: string | undefined): string {
+function lookupEnv(env: Env, name: string, def: string | undefined): string {
   const val = env[name];
   if (val) return val;
   return def ?? "";
@@ -45,7 +45,7 @@ function resolve(env: Env, name: string, def: string | undefined): string {
 
 function interpolate(value: unknown, env: Env): unknown {
   if (typeof value === "string") {
-    return value.replace(VAR_RE, (_m, name, def) => resolve(env, name, def));
+    return value.replace(VAR_RE, (_m, name, def) => lookupEnv(env, name, def));
   }
   if (Array.isArray(value)) return value.map((v) => interpolate(v, env));
   if (value && typeof value === "object") {
