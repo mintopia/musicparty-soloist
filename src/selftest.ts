@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame, shouldAutoplay, type UpstreamFrame } from "./proxy.js";
+import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, type UpstreamFrame } from "./proxy.js";
 import type { RawData } from "ws";
 import { loadConfig, ConfigError, coerceBool, coerceInt } from "./config.js";
 
@@ -58,6 +58,44 @@ assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "already-true on 
 assert.equal(shouldAutoplay({ fired: true }, loggedIn), false, "once-per-connection guard");
 assert.equal(shouldAutoplay({ fired: false }, frame({ type: "playback_state", logged_in: true })), false, "non-auth_state ignored");
 
+const whCfg = { defaultUrl: "http://def", urls: { track_changed: "http://tc", error: "http://err" }, secret: "", delayMs: 0 };
+assert.equal(resolveWebhookUrl("auth_state", whCfg), "http://def", "state event -> default_url");
+assert.equal(resolveWebhookUrl("track_changed", whCfg), "http://tc", "override replaces default");
+assert.equal(resolveWebhookUrl("error", whCfg), "http://err", "error only with explicit override");
+assert.equal(resolveWebhookUrl("command_result", whCfg), null, "command_result without override -> none");
+assert.equal(resolveWebhookUrl("auth_state", { defaultUrl: "", urls: {}, secret: "", delayMs: 0 }), null, "no default/override -> none");
+
+// Spacing: every fire is scheduled exactly delayMs apart, tasks run FIFO.
+const fires: number[] = [];
+const spaced: (() => void)[] = [];
+const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
+q1.push(() => fires.push(1));
+assert.deepEqual(fires, [1], "first task fires immediately");
+q1.push(() => fires.push(2));
+q1.push(() => fires.push(3));
+assert.deepEqual(fires, [1], "throttle holds queued tasks");
+spaced.shift()!();
+spaced.shift()!();
+assert.deepEqual(fires, [1, 2, 3], "queued tasks drain FIFO");
+
+// Drop-oldest at cap: a paused scheduler lets the queue fill past cap.
+const order: string[] = [];
+const drops: number[] = [];
+const held: (() => void)[] = [];
+const q2 = new WebhookQueue(50, { cap: 3, schedule: (fn) => held.push(fn), onDrop: () => drops.push(1) });
+for (const c of ["A", "B", "C", "D", "E"]) q2.push(() => order.push(c));
+assert.equal(q2.size(), 3, "queue bounded at cap");
+assert.equal(drops.length, 1, "one drop at cap");
+while (held.length) held.shift()!();
+assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest FIFO");
+
+// delayMs 0 = throttle off: tasks fire synchronously, no timer scheduled.
+const sync: number[] = [];
+const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
+q0.push(() => sync.push(1));
+q0.push(() => sync.push(2));
+assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
+
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");
 writeFileSync(
@@ -81,5 +119,32 @@ assert.equal(cfg.proxy.listen, "127.0.0.1:9000", "env value wins over ${:-defaul
 assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
 
 assert.throws(() => loadConfig(cfgPath, { TOK: "t" }), ConfigError, "missing api_key fails fast");
+assert.equal(cfg.webhooks.defaultUrl, "", "webhooks absent -> empty default_url");
+assert.deepEqual(cfg.webhooks.urls, {}, "webhooks absent -> no urls");
+assert.equal(cfg.webhooks.delayMs, 0, "delay_ms default 0");
+
+const whPath = join(dir, "webhooks.yaml");
+writeFileSync(
+  whPath,
+  [
+    "soloist:",
+    '  device_name: "d"',
+    '  api_key: "k"',
+    "  extra_args: []",
+    "proxy:",
+    '  token: "t"',
+    "webhooks:",
+    '  default_url: "https://hooks/${HOOK_ENV:-all}"',
+    "  urls:",
+    '    track_changed: "https://hooks/track"',
+    '  secret: "${WH_SECRET}"',
+    '  delay_ms: "${WH_DELAY:-250}"',
+  ].join("\n"),
+);
+const wh = loadConfig(whPath, { WH_SECRET: "ssh" });
+assert.equal(wh.webhooks.defaultUrl, "https://hooks/all", "default_url interpolated");
+assert.equal(wh.webhooks.urls.track_changed, "https://hooks/track");
+assert.equal(wh.webhooks.secret, "ssh", "secret interpolated");
+assert.equal(wh.webhooks.delayMs, 250, "delay_ms int-coerced from string");
 
 console.log("selftest OK");

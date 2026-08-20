@@ -22,12 +22,20 @@ export interface SoloistConfig {
   pipewireDevice: string;
 }
 
+export interface WebhooksConfig {
+  defaultUrl: string;
+  urls: Record<string, string>;
+  secret: string;
+  delayMs: number;
+}
+
 export interface Config {
   soloist: SoloistConfig;
   proxy: { listen: string; token: string };
   soloistWs: string;
   streamName: string;
   autoplay: boolean;
+  webhooks: WebhooksConfig;
 }
 
 function resolve(env: Env, name: string, def: string | undefined): string {
@@ -98,6 +106,14 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
   const soloist = d.soloist ?? {};
   const proxy = d.proxy ?? {};
   const snapcast = d.snapcast ?? {};
+  const webhooks = d.webhooks ?? {};
+
+  const urlsRaw = webhooks.urls ?? {};
+  if (typeof urlsRaw !== "object" || Array.isArray(urlsRaw)) {
+    throw new ConfigError("webhooks.urls must be a mapping");
+  }
+  const urls: Record<string, string> = {};
+  for (const [k, v] of Object.entries(urlsRaw)) urls[k] = String(v).trim();
 
   const extraArgs = soloist.extra_args ?? [];
   if (!Array.isArray(extraArgs)) {
@@ -119,5 +135,11 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
     soloistWs: d.soloist_ws || DEFAULT_SOLOIST_WS,
     streamName: snapcast.stream_name || DEFAULT_STREAM_NAME,
     autoplay: coerceBool(d.autoplay, false),
+    webhooks: {
+      defaultUrl: String(webhooks.default_url ?? "").trim(),
+      urls,
+      secret: String(webhooks.secret ?? ""), // untrimmed: a bearer secret may hold edge whitespace
+      delayMs: coerceInt(webhooks.delay_ms, 0),
+    },
   };
 }

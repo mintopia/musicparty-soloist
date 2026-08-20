@@ -94,6 +94,11 @@ proxy:
   token: "${PROXY_TOKEN}"
 soloist_ws: "127.0.0.1:3678"
 autoplay: "${AUTOPLAY:-false}"                       # start playing on login
+webhooks:
+  default_url: "${WEBHOOK_URL:-}"                    # catch-all for state events
+  urls: {}                                           # per-type overrides
+  secret: "${WEBHOOK_SECRET:-}"                      # Authorization: Bearer <secret>
+  delay_ms: "${WEBHOOK_DELAY_MS:-0}"                 # min ms between POSTs
 snapcast:
   stream_name: "${SNAPCAST_STREAM:-Spotify}"        # Docker only
 ```
@@ -102,9 +107,21 @@ With `autoplay` on, the first time Soloist reports `logged_in: true` on each ups
 connection the Hub injects `activate` then `play`, so the device becomes the active
 Spotify Connect player and starts playing without a client command. Off by default.
 
+With `webhooks` set, the Hub POSTs the raw event JSON (`Content-Type: application/json`)
+to a URL per event. `default_url` catches the ten state events (`auth_state`,
+`playback_state`, `track_changed`, `playback_changed`, `volume_changed`, `device_changed`,
+`context_changed`, `options_changed`, `position_sync`, `queue_changed`); entries under
+`urls` **replace** the default for that `type`, so each event hits exactly one URL.
+`command_result`/`error` fire only when given an explicit `urls` entry. `secret`, if set,
+is sent as `Authorization: Bearer <secret>` on every POST. `delay_ms` enforces a global
+minimum interval between POSTs via a bounded (1000) drop-oldest FIFO queue. Delivery is
+best-effort: fire-and-forget, ~5s timeout, non-2xx/timeout logged, never retried, and a
+webhook never blocks relay. Omit the section to disable. Off by default.
+
 The example wires these env vars: `SOLOIST_DEVICE_NAME`, `SOLOIST_API_KEY`,
 `SOLOIST_DATA_DIR`, `SOLOIST_PIPEWIRE_DEVICE`, `PROXY_LISTEN`, `PROXY_TOKEN`,
-`AUTOPLAY`, `SNAPCAST_STREAM`. The binary cache and download read `SOLOIST_CACHE_DIR` and
+`AUTOPLAY`, `WEBHOOK_URL`, `WEBHOOK_SECRET`, `WEBHOOK_DELAY_MS`, `SNAPCAST_STREAM`. The
+binary cache and download read `SOLOIST_CACHE_DIR` and
 `SOLOIST_DOWNLOAD_BASE` directly, outside the config file.
 
 Values in `.env` are read literally (compose `env_file` with `format: raw`), so paste

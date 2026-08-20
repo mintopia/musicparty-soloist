@@ -21,5 +21,16 @@ soloist_ws: "127.0.0.1:3678"
 # player and starts playing (injects activate then play, once per connection).
 autoplay: "${AUTOPLAY:-false}"
 
+# Outbound HTTP POST per Soloist event (raw event JSON, Content-Type application/json).
+# Best-effort: fire-and-forget, ~5s timeout, non-2xx/timeout logged, never retried.
+# Omit the section entirely to disable (relay behaves exactly as without it).
+webhooks:
+  default_url: "${WEBHOOK_URL:-}"   # catch-all for the ten state events; empty = off
+  urls: {}                          # per-type overrides that REPLACE the default, e.g.
+                                    #   track_changed: "https://example/track"
+                                    #   error: "https://example/errors"  # only fires if listed
+  secret: "${WEBHOOK_SECRET:-}"     # optional; sent as Authorization: Bearer <secret>
+  delay_ms: "${WEBHOOK_DELAY_MS:-0}"  # global min interval between POSTs (0 = off)
+
 snapcast:
   stream_name: "${SNAPCAST_STREAM:-Spotify}"   # Docker-only
