@@ -26,6 +26,18 @@ RUN set -eux; \
     rm -rf /tmp/s6-*.tar.xz /var/lib/apt/lists/*
 # ca-certificates stays: the runtime Soloist binary download is HTTPS.
 
+# Audio path (ticket 06): PipeWire null-sink Soloist plays into, WirePlumber to
+# route the stream onto it, and the pw-* CLI used to probe the sink at startup.
+# dbus: WirePlumber runs under a private session bus (reserve-device /
+# portal-permissionstore plugins need one); machine-id lets that bus start.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends pipewire pipewire-bin wireplumber dbus; \
+    dbus-uuidgen --ensure=/etc/machine-id; \
+    rm -rf /var/lib/apt/lists/*
+COPY docker/pipewire/soloist-sink.conf /etc/pipewire/pipewire.conf.d/10-soloist-sink.conf
+COPY docker/wireplumber/80-disable-bluez.lua /etc/wireplumber/bluetooth.lua.d/80-disable-bluez.lua
+
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -33,12 +45,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY soloist_proxy ./soloist_proxy
 COPY config.example.yaml ./config.yaml
 COPY docker/s6-rc.d /etc/s6-overlay/s6-rc.d
-RUN chmod +x /etc/s6-overlay/s6-rc.d/soloist-proxy/run
+RUN chmod +x /etc/s6-overlay/s6-rc.d/soloist-proxy/run \
+             /etc/s6-overlay/s6-rc.d/pipewire/run \
+             /etc/s6-overlay/s6-rc.d/wireplumber/run
 
 # Persistent volumes: Soloist session data-dir and the downloaded-binary cache.
+# XDG_RUNTIME_DIR: where PipeWire puts its socket; every client inherits it.
+# SOLOIST_PIPEWIRE_DEVICE: the null-sink Soloist plays into (Docker audio route).
 ENV SOLOIST_PROXY_CONFIG=/app/config.yaml \
     SOLOIST_DATA_DIR=/data \
-    SOLOIST_CACHE_DIR=/cache
+    SOLOIST_CACHE_DIR=/cache \
+    XDG_RUNTIME_DIR=/run/pipewire \
+    SOLOIST_PIPEWIRE_DEVICE=soloist-sink
 VOLUME ["/data", "/cache"]
 
 EXPOSE 8687

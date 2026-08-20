@@ -78,6 +78,16 @@ def test_env_overrides_plain_literal():
         assert cfg.stream_name == "Jazz"
 
 
+def test_pipewire_device_env_override():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write(tmp)
+        # unset -> empty (standalone: no audio path)
+        assert load_config(path, env=FULL_ENV).soloist.pipewire_device == ""
+        # env set -> flows through (Docker sets SOLOIST_PIPEWIRE_DEVICE=soloist-sink)
+        cfg = load_config(path, env={**FULL_ENV, "SOLOIST_PIPEWIRE_DEVICE": "soloist-sink"})
+        assert cfg.soloist.pipewire_device == "soloist-sink"
+
+
 def test_missing_required_fails_fast():
     with tempfile.TemporaryDirectory() as tmp:
         path = _write(tmp)

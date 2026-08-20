@@ -33,14 +33,17 @@ log = logging.getLogger("soloist.supervisor")
 
 def build_argv(binary: str | Path, cfg: Config) -> list[str]:
     """Assemble the Soloist command line from the binary path and config."""
-    return [
+    argv = [
         str(binary),
         "-w", cfg.soloist_ws,
         "--device-name", cfg.soloist.device_name,
         "--api-key", cfg.soloist.api_key,
         "--data-dir", cfg.soloist.data_dir,
-        *cfg.soloist.extra_args,
     ]
+    if cfg.soloist.pipewire_device:  # Docker audio route (ticket 06); unset in standalone
+        argv += ["--pipewire-device", cfg.soloist.pipewire_device]
+    argv += cfg.soloist.extra_args
+    return argv
 
 
 async def _terminate(proc, timeout: float = TERM_TIMEOUT) -> None:

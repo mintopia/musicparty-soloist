@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# PipeWire core daemon. Creates the soloist-sink null-sink from the drop-in in
+# /etc/pipewire/pipewire.conf.d/. s6 restarts this longrun if it exits.
+# Runtime dir must exist and be 0700 or PipeWire refuses to start.
+mkdir -p "${XDG_RUNTIME_DIR:?}"
+chmod 700 "$XDG_RUNTIME_DIR"
+exec pipewire
