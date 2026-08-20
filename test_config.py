@@ -57,6 +57,27 @@ def test_env_wins_over_file_default():
         assert cfg2.proxy.listen == "1.2.3.4:9"
 
 
+def test_env_overrides_plain_literal():
+    # A plain literal in the file (no ${VAR}) is still env-overridable; env wins.
+    literal = (
+        'soloist:\n  device_name: "Party Speaker"\n  api_key: "file-key"\n'
+        'proxy:\n  listen: "0.0.0.0:8687"\n  token: "file-token"\n'
+        'soloist_ws: "127.0.0.1:3678"\nsnapcast:\n  stream_name: "Spotify"\n'
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write(tmp, literal)
+        cfg = load_config(path, env={
+            "SOLOIST_API_KEY": "env-key",
+            "PROXY_TOKEN": "env-token",
+            "SOLOIST_WS": "10.0.0.1:9999",
+            "SNAPCAST_STREAM": "Jazz",
+        })
+        assert cfg.soloist.api_key == "env-key"
+        assert cfg.proxy.token == "env-token"
+        assert cfg.soloist_ws == "10.0.0.1:9999"
+        assert cfg.stream_name == "Jazz"
+
+
 def test_missing_required_fails_fast():
     with tempfile.TemporaryDirectory() as tmp:
         path = _write(tmp)

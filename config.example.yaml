@@ -1,5 +1,8 @@
 # Soloist Proxy config. Copy to config.yaml and fill in the secrets via env.
-# Every value is env-overridable; env wins. ${VAR:-default} supplies a fallback.
+# Every value is env-overridable; env wins. Two ways to override:
+#   1. ${VAR} / ${VAR:-default} interpolation inside a value.
+#   2. A direct env var per key: SOLOIST_DEVICE_NAME, SOLOIST_API_KEY,
+#      PROXY_LISTEN, PROXY_TOKEN, SOLOIST_WS, SNAPCAST_STREAM.
 
 soloist:
   device_name: "Party Speaker"
