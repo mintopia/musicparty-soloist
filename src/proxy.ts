@@ -57,10 +57,22 @@ export function decodeFrame(data: RawData, isBinary: boolean): UpstreamFrame | n
   return { type, message: message as Record<string, unknown>, raw };
 }
 
+// Ref cell keeping shouldAutoplay a pure predicate; fired once per connection.
+export interface AutoplayState {
+  fired: boolean;
+}
+
+// First auth_state reporting logged_in:true per connection. Latch (not edge)
+// so a later true after a drop-and-restore doesn't re-fire.
+export function shouldAutoplay(prev: AutoplayState, next: UpstreamFrame): boolean {
+  return !prev.fired && next.type === "auth_state" && next.message.logged_in === true;
+}
+
 export class SoloistHub {
   readonly url: string;
   private clients = new Set<WebSocket>();
   private observers = new Set<FrameObserver>();
+  private connectFn: (() => void) | null = null;
   private conn: WebSocket | null = null;
   private ready: { promise: Promise<void>; resolve: () => void };
   private stopped = false;
@@ -72,6 +84,17 @@ export class SoloistHub {
 
   observe(fn: FrameObserver): void {
     this.observers.add(fn);
+  }
+
+  onConnect(fn: () => void): void {
+    this.connectFn = fn;
+  }
+
+  // Originate a frame upstream (autoplay's activate/play). Best-effort: dropped
+  // if the upstream isn't open. Not client traffic, so never relayed.
+  inject(message: Record<string, unknown>): void {
+    const conn = this.conn;
+    if (conn && conn.readyState === WebSocket.OPEN) conn.send(JSON.stringify(message));
   }
 
   register(client: WebSocket): void {
@@ -133,6 +156,11 @@ export class SoloistHub {
             this.conn = conn;
             this.ready.resolve();
             backoff = HUB_BACKOFF_BASE;
+            try {
+              this.connectFn?.();
+            } catch (err) {
+              log("connect observer error: %s", (err as Error).message);
+            }
           });
           conn.on("message", (data, isBinary) => this.onUpstream(data, isBinary));
           conn.on("error", (err) => reject(err));
@@ -171,9 +199,26 @@ export interface RunningProxy {
   close(): Promise<void>;
 }
 
+// Once per upstream connection, on the first logged_in:true, make the device the
+// active Connect player and start it. Latch resets on each (re)connect.
+function attachAutoplay(hub: SoloistHub): void {
+  const state: AutoplayState = { fired: false };
+  hub.onConnect(() => (state.fired = false));
+  hub.observe((frame) => {
+    // activate/play failures surface as upstream error frames — log, no retry.
+    if (frame.type === "error") log("autoplay: upstream error frame: %s", frame.raw);
+    if (!shouldAutoplay(state, frame)) return;
+    state.fired = true;
+    log("autoplay: logged in, injecting activate then play");
+    hub.inject({ type: "activate" });
+    hub.inject({ type: "play" });
+  });
+}
+
 export function makeServer(cfg: Config): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(`ws://${cfg.soloistWs}`);
+  if (cfg.autoplay) attachAutoplay(hub);
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer();

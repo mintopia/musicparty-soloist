@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame } from "./proxy.js";
+import { checkAuth, decodeFrame, shouldAutoplay, type UpstreamFrame } from "./proxy.js";
 import type { RawData } from "ws";
 import { loadConfig, ConfigError, coerceBool, coerceInt } from "./config.js";
 
@@ -46,6 +46,18 @@ assert.equal(coerceInt("42", 0), 42);
 assert.equal(coerceInt("", 5), 5, "empty falls back to default");
 assert.equal(coerceInt("nope", 7), 7, "non-numeric falls back to default");
 
+const frame = (msg: Record<string, unknown>): UpstreamFrame => ({
+  type: String(msg.type),
+  message: msg,
+  raw: JSON.stringify(msg),
+});
+const loggedIn = frame({ type: "auth_state", logged_in: true });
+assert.equal(shouldAutoplay({ fired: false }, frame({ type: "auth_state", logged_in: false })), false, "not logged in: no autoplay");
+assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "false->true fires");
+assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "already-true on connect fires");
+assert.equal(shouldAutoplay({ fired: true }, loggedIn), false, "once-per-connection guard");
+assert.equal(shouldAutoplay({ fired: false }, frame({ type: "playback_state", logged_in: true })), false, "non-auth_state ignored");
+
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");
 writeFileSync(
@@ -66,6 +78,7 @@ assert.equal(cfg.soloist.deviceName, "Party Speaker", "default used when var uns
 assert.equal(cfg.soloist.apiKey, "key123", "interpolated from env");
 assert.equal(cfg.proxy.token, "tok123");
 assert.equal(cfg.proxy.listen, "127.0.0.1:9000", "env value wins over ${:-default}");
+assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
 
 assert.throws(() => loadConfig(cfgPath, { TOK: "t" }), ConfigError, "missing api_key fails fast");
 

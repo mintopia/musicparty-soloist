@@ -27,6 +27,7 @@ export interface Config {
   proxy: { listen: string; token: string };
   soloistWs: string;
   streamName: string;
+  autoplay: boolean;
 }
 
 function resolve(env: Env, name: string, def: string | undefined): string {
@@ -117,5 +118,6 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
     },
     soloistWs: d.soloist_ws || DEFAULT_SOLOIST_WS,
     streamName: snapcast.stream_name || DEFAULT_STREAM_NAME,
+    autoplay: coerceBool(d.autoplay, false),
   };
 }

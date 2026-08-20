@@ -17,5 +17,9 @@ proxy:
 
 soloist_ws: "127.0.0.1:3678"
 
+# When true, once Soloist logs in the Hub makes this device the active Connect
+# player and starts playing (injects activate then play, once per connection).
+autoplay: "${AUTOPLAY:-false}"
+
 snapcast:
   stream_name: "${SNAPCAST_STREAM:-Spotify}"   # Docker-only

@@ -93,13 +93,18 @@ proxy:
   listen: "${PROXY_LISTEN:-0.0.0.0:8687}"
   token: "${PROXY_TOKEN}"
 soloist_ws: "127.0.0.1:3678"
+autoplay: "${AUTOPLAY:-false}"                       # start playing on login
 snapcast:
   stream_name: "${SNAPCAST_STREAM:-Spotify}"        # Docker only
 ```
 
+With `autoplay` on, the first time Soloist reports `logged_in: true` on each upstream
+connection the Hub injects `activate` then `play`, so the device becomes the active
+Spotify Connect player and starts playing without a client command. Off by default.
+
 The example wires these env vars: `SOLOIST_DEVICE_NAME`, `SOLOIST_API_KEY`,
 `SOLOIST_DATA_DIR`, `SOLOIST_PIPEWIRE_DEVICE`, `PROXY_LISTEN`, `PROXY_TOKEN`,
-`SNAPCAST_STREAM`. The binary cache and download read `SOLOIST_CACHE_DIR` and
+`AUTOPLAY`, `SNAPCAST_STREAM`. The binary cache and download read `SOLOIST_CACHE_DIR` and
 `SOLOIST_DOWNLOAD_BASE` directly, outside the config file.
 
 Values in `.env` are read literally (compose `env_file` with `format: raw`), so paste
