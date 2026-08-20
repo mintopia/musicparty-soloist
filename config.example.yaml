@@ -1,0 +1,19 @@
+# Soloist Proxy config. Copy to config.yaml and fill in the secrets via env.
+# Every value is env-overridable; env wins. Two ways to override:
+#   1. ${VAR} / ${VAR:-default} interpolation inside a value.
+#   2. A direct env var per key: SOLOIST_DEVICE_NAME, SOLOIST_API_KEY,
+#      PROXY_LISTEN, PROXY_TOKEN, SOLOIST_WS, SNAPCAST_STREAM.
+
+soloist:
+  device_name: "Party Speaker"
+  api_key: "${SOLOIST_API_KEY}"   # Spotify API Key; supply via env, never commit
+  extra_args: []
+
+proxy:
+  listen: "${PROXY_LISTEN:-0.0.0.0:8687}"
+  token: "${PROXY_TOKEN}"          # Auth Token gating the Proxy; supply via env
+
+soloist_ws: "127.0.0.1:3678"
+
+snapcast:
+  stream_name: "${SNAPCAST_STREAM:-Spotify}"   # Docker-only
