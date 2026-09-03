@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lyrics Overlay</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Instrument+Sans:wght@500;600&display=swap');
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:transparent;overflow:hidden}
+    #overlay{position:fixed;inset:0;font-family:'Space Grotesk',system-ui,sans-serif}
+    @keyframes soloist-fade{from{opacity:0}}
+  </style>
+</head>
+<body>
+  <div id="overlay"></div>
+  <!--__OVERLAY_BOOTSTRAP__-->
+  <script type="module" src="/overlay.js"></script>
+</body>
+</html>

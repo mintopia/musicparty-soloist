@@ -22,11 +22,13 @@ const WEB_DIR = fileURLToPath(new URL("./web/", import.meta.url));
 // path segment ever reaches the filesystem, so path traversal is impossible.
 const STATIC: Record<string, string> = {
   "/app.css": "app.css",
+  "/overlay.js": "overlay.js",
 };
 
 const CONTENT_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8",
   html: "text/html; charset=utf-8",
+  js: "text/javascript; charset=utf-8",
 };
 
 function safeEqual(a: string, b: string): boolean {
@@ -101,6 +103,29 @@ function json(res: ServerResponse, status: number, obj: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" }).end(JSON.stringify(obj));
 }
 
+// Inline bootstrap embedded server-side into the Lyrics Overlay: only the
+// Read-only Token and the Overlay Config subset — never the whole Config File.
+// `<` is escaped so the JSON can't break out of the <script> element.
+export function overlayBootstrap(cfg: Config): string {
+  const data = { token: cfg.proxy.readonlyToken, overlay: cfg.overlay };
+  const payload = JSON.stringify(data).replace(/</g, "\\u003c");
+  return `<script>window.__SOLOIST_OVERLAY__=${payload};</script>`;
+}
+
+function serveOverlay(res: ServerResponse, cfg: Config): void {
+  let html: string;
+  try {
+    html = readFileSync(WEB_DIR + "overlay.html", "utf8");
+  } catch {
+    res.writeHead(404).end("Not found\n");
+    return;
+  }
+  // Function replacer: a `$` in an Overlay Config value must not be read as a
+  // replace-pattern token ($$, $&, ...).
+  html = html.replace("<!--__OVERLAY_BOOTSTRAP__-->", () => overlayBootstrap(cfg));
+  res.writeHead(200, { "content-type": CONTENT_TYPES.html }).end(html);
+}
+
 // Configured webhook destinations (never the secret value) plus live delivery stats.
 export function webhooksView(cfg: Config, stats: WebhookStats): unknown {
   const wh = cfg.webhooks;
@@ -170,6 +195,12 @@ export function handleWebRequest(req: IncomingMessage, res: ServerResponse, cfg:
 
   if (method === "GET" && STATIC[path]) {
     serveFile(res, STATIC[path]);
+    return true;
+  }
+
+  // Open (unauthenticated): the overlay embeds the Read-only Token server-side.
+  if (path === "/overlay" && method === "GET") {
+    serveOverlay(res, cfg);
     return true;
   }
 
