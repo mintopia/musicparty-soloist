@@ -199,10 +199,12 @@ export const AUTOPLAY_FRAMES: Record<string, unknown>[] = [
   { type: "command", command: "play" },
 ];
 
-function attachAutoplay(hub: SoloistHub): void {
+// Reads cfg.autoplay live so a PUT /api/config toggle applies without a restart.
+function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   const state: AutoplayState = { fired: false };
   hub.onConnect(() => (state.fired = false));
   hub.observe((frame) => {
+    if (!cfg.autoplay) return;
     if (frame.type === "error") log("autoplay: upstream error frame: %s", frame.raw);
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
@@ -233,10 +235,13 @@ export class WebhookQueue {
   private cap: number;
   private onDrop: () => void;
 
+  private getDelay: () => number;
+
   constructor(
-    private delayMs: number,
+    delay: number | (() => number),
     opts: { schedule?: (fn: () => void, ms: number) => void; cap?: number; onDrop?: () => void } = {},
   ) {
+    this.getDelay = typeof delay === "function" ? delay : () => delay;
     this.schedule = opts.schedule ?? ((fn, ms) => void setTimeout(fn, ms).unref?.());
     this.cap = opts.cap ?? WEBHOOK_QUEUE_CAP;
     this.onDrop = opts.onDrop ?? (() => {});
@@ -264,8 +269,9 @@ export class WebhookQueue {
       }
       this.draining = true;
       task();
-      if (this.delayMs > 0) {
-        this.schedule(() => this.drain(), this.delayMs);
+      const delay = this.getDelay();
+      if (delay > 0) {
+        this.schedule(() => this.drain(), delay);
         return;
       }
     }
@@ -283,26 +289,27 @@ async function postWebhook(url: string, body: string, secret: string): Promise<v
   }
 }
 
-function attachWebhooks(hub: SoloistHub, wh: WebhooksConfig): void {
-  const queue = new WebhookQueue(wh.delayMs, {
+// Reads cfg.webhooks live (urls, secret, delay) so PUT /api/config edits apply
+// without a restart.
+function attachWebhooks(hub: SoloistHub, cfg: Config): void {
+  const queue = new WebhookQueue(() => cfg.webhooks.delayMs, {
     onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
   });
   hub.observe((frame) => {
-    const url = resolveWebhookUrl(frame.type, wh);
-    if (url) queue.push(() => void postWebhook(url, frame.raw, wh.secret));
+    const url = resolveWebhookUrl(frame.type, cfg.webhooks);
+    if (url) queue.push(() => void postWebhook(url, frame.raw, cfg.webhooks.secret));
   });
 }
 
-export function makeServer(cfg: Config): Promise<RunningProxy> {
+export function makeServer(cfg: Config, configPath: string): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(`ws://${cfg.soloistWs}`);
-  if (cfg.autoplay) attachAutoplay(hub);
-  const wh = cfg.webhooks;
-  if (wh.defaultUrl || Object.keys(wh.urls).length > 0) attachWebhooks(hub, wh);
+  attachAutoplay(hub, cfg);
+  attachWebhooks(hub, cfg);
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
@@ -341,8 +348,8 @@ export function makeServer(cfg: Config): Promise<RunningProxy> {
   });
 }
 
-export async function serveProxy(cfg: Config, signal: AbortSignal): Promise<void> {
-  const running = await makeServer(cfg);
+export async function serveProxy(cfg: Config, configPath: string, signal: AbortSignal): Promise<void> {
+  const running = await makeServer(cfg, configPath);
   if (!signal.aborted) {
     await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
   }

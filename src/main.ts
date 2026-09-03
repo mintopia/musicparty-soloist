@@ -30,7 +30,7 @@ async function main(): Promise<number> {
   process.on("SIGTERM", shutdown);
 
   const sup = supervise(cfg, { signal: controller.signal });
-  const prx = serveProxy(cfg, controller.signal);
+  const prx = serveProxy(cfg, configPath, controller.signal);
 
   try {
     await Promise.race([sup, prx]);
