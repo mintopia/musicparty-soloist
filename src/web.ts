@@ -24,6 +24,7 @@ const WEB_DIR = fileURLToPath(new URL("./web/", import.meta.url));
 // path segment ever reaches the filesystem, so path traversal is impossible.
 const STATIC: Record<string, string> = {
   "/app.css": "app.css",
+  "/app.js": "app.js",
   "/overlay.js": "overlay.js",
 };
 

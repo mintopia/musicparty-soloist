@@ -21,6 +21,15 @@ const { parseLRC, currentIndex } = engine as {
   currentIndex(lines: { time: number }[], t: number): number;
 };
 
+// Landing-page view-model helpers, same browser-ESM dynamic-import pattern.
+const landing = await import(new URL("./web/app.js", import.meta.url).href);
+const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
+  fmtTime(ms: number): string;
+  readTrack(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string } | null;
+  readPlayback(msg: any): { positionMs: number | null; playing?: boolean; volume: number | null };
+  readQueue(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string }[] | null;
+};
+
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
@@ -511,6 +520,29 @@ assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []"
   const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
   assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
   assert.deepEqual(res.linked, [], "reconcile: absent node not linked");
+}
+
+// Landing-page view-model helpers.
+assert.equal(fmtTime(0), "0:00");
+assert.equal(fmtTime(194000), "3:14");
+assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
+assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
+{
+  const t = readTrack({ track: { name: "Blinding Lights", artists: [{ name: "The Weeknd" }], album: { name: "After Hours" }, duration_ms: 200000 } });
+  assert.deepEqual(t, { title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", durationMs: 200000, art: "" }, "readTrack: nested track shape");
+  assert.equal(readTrack({ type: "auth_state", logged_in: true }), null, "readTrack: no title/artist -> null");
+  assert.equal(readTrack({ artist: "Dua Lipa" })?.artist, "Dua Lipa", "readTrack: flat artist string");
+}
+{
+  const p = readPlayback({ position_ms: 4200, is_playing: false, volume: 55 });
+  assert.deepEqual(p, { positionMs: 4200, playing: false, volume: 55 }, "readPlayback: is_playing + volume");
+  assert.equal(readPlayback({ paused: true }).playing, false, "readPlayback: paused inverts");
+  assert.equal(readPlayback({}).positionMs, null, "readPlayback: absent position -> null");
+}
+{
+  const q = readQueue({ type: "queue_changed", queue: [{ name: "Levitating", artists: ["Dua Lipa"], duration_ms: 203000 }] });
+  assert.deepEqual(q, [{ title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }], "readQueue: reads queue list");
+  assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no list -> null");
 }
 
 console.log("selftest OK");
