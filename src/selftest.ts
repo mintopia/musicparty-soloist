@@ -8,7 +8,15 @@ import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, DEFAULT_OVERLAY, type Config } from "./config.js";
-import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, SESSION_COOKIE } from "./web.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, overlayBootstrap, SESSION_COOKIE } from "./web.js";
+
+// Overlay engine lives in src/web/ (browser ESM, copied to dist/web/). Computed
+// specifier so tsc treats it as `any` — it ships no .d.ts.
+const engine = await import(new URL("./web/overlay.js", import.meta.url).href);
+const { parseLRC, currentIndex } = engine as {
+  parseLRC(text: string): { time: number; text: string }[];
+  currentIndex(lines: { time: number }[], t: number): number;
+};
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -138,6 +146,44 @@ assert.equal(view.config.defaultUrl, "http://def", "default url reported");
 assert.ok(view.stats["http://a"], "live stats map included");
 const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
 assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
+
+// Lyrics Overlay engine: parseLRC + currentIndex (folded in from the prototype).
+{
+  const lrc = ["[ar:The Weeknd]", "[00:12.50]First line", "[00:15.00]Second line", "[00:15.00]Same time echo", "not a timed line", "[01:03.20]Later"].join("\n");
+  const lines = parseLRC(lrc);
+  assert.deepEqual(lines.map((l) => l.time), [12.5, 15, 15, 63.2], "parseLRC extracts sorted numeric timestamps, drops metadata + untimed");
+  assert.equal(lines[0].text, "First line", "parseLRC strips the timestamp tag");
+  assert.deepEqual(parseLRC("[00:05.00][00:20.00]Chorus").map((l) => l.time), [5, 20], "multi-timestamp line splits into one entry each");
+  assert.equal(parseLRC("").length, 0, "empty text -> no lines");
+
+  assert.equal(currentIndex(lines, 0), -1, "before the first line: no active index");
+  assert.equal(currentIndex(lines, 12.5), 0, "exact timestamp is active");
+  assert.equal(currentIndex(lines, 14), 0, "holds a line until the next fires");
+  assert.equal(currentIndex(lines, 15), 2, "ties resolve to the last matching line");
+  assert.equal(currentIndex(lines, 999), 3, "past the last line stays on it");
+  assert.equal(currentIndex([], 10), -1, "no lines -> -1");
+}
+
+// Overlay bootstrap: embeds only the Read-only Token + Overlay Config subset,
+// never other secrets, and escapes `<` so it can't break out of <script>.
+{
+  const ovCfg = {
+    proxy: { token: "CONTROL-SECRET", readonlyToken: "RO-TOKEN", listen: "x" },
+    soloist: { apiKey: "SPOTIFY-KEY" },
+    web: { password: "webpass", sessionSecret: "sess" },
+    webhooks: { secret: "whsecret" },
+    overlay: { ...DEFAULT_OVERLAY, effect: "</script><x>" },
+  } as unknown as Config;
+  const boot = overlayBootstrap(ovCfg);
+  assert.match(boot, /RO-TOKEN/, "read-only token embedded");
+  assert.equal(boot.includes("CONTROL-SECRET"), false, "Auth Token never embedded");
+  assert.equal(boot.includes("SPOTIFY-KEY"), false, "API Key never embedded");
+  assert.equal(boot.includes("webpass"), false, "web password never embedded");
+  assert.equal(boot.includes("sess"), false, "session secret never embedded");
+  assert.equal(boot.includes("whsecret"), false, "webhook secret never embedded");
+  assert.equal(boot.indexOf("</script>"), boot.lastIndexOf("</script>"), "only the wrapper's closing tag — no </script> breakout from config");
+  assert.match(boot, /\\u003c\/script>/, "`<` in overlay config escaped");
+}
 
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");
