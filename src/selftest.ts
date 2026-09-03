@@ -7,7 +7,7 @@ import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, type UpstreamFrame, type WebhookStats } from "./proxy.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, DEFAULT_OVERLAY, type Config } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, SESSION_COOKIE } from "./web.js";
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
@@ -218,6 +218,59 @@ const persisted = loadConfig(cfgPath);
 assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
 assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
 assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
+
+// Config API: GET masks secrets, config-summary never leaks, PUT round-trips.
+const sCfg = loadConfig(cfgPath);
+sCfg.soloist.apiKey = "SECRET_API";
+sCfg.proxy.token = "SECRET_TOK";
+sCfg.proxy.readonlyToken = "SECRET_RO";
+sCfg.webhooks.secret = "SECRET_WH";
+sCfg.web.password = "SECRET_PW";
+sCfg.web.sessionSecret = "SECRET_SESS";
+const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_PW", "SECRET_SESS"];
+
+const maskedJson = JSON.stringify(maskConfig(sCfg));
+for (const s of SECRETS) assert.ok(!maskedJson.includes(s), `maskConfig must not leak ${s}`);
+const masked = maskConfig(sCfg) as any;
+assert.equal(masked.soloist.apiKey, true, "set secret masks to true");
+assert.equal(masked.proxy.readonlyToken, true, "set secret masks to true");
+assert.equal(masked.soloist.deviceName, sCfg.soloist.deviceName, "non-secret preserved in mask");
+
+const summaryJson = JSON.stringify(configSummary(sCfg));
+for (const s of SECRETS) assert.ok(!summaryJson.includes(s), `configSummary must not leak ${s}`);
+const summary = configSummary(sCfg) as any;
+assert.equal(summary.secrets.apiKey, true, "summary flags set secret");
+assert.equal(summary.deviceName, sCfg.soloist.deviceName, "summary reports device name");
+assert.equal(summary.soloistWs, sCfg.soloistWs, "summary reports soloist_ws");
+assert.equal(summary.wsUrl, `ws://${sCfg.soloistWs}`, "summary reports WS URL");
+assert.equal((configSummary(loadConfig(cfgPath)) as any).secrets.webPassword, false, "unset secret flags false");
+
+const applied = applyApiConfig(sCfg, {
+  autoplay: true,
+  proxy: { token: true, readonlyToken: "NEW_RO", listen: "9.9.9.9:1" },
+  soloist: { apiKey: true, deviceName: "Renamed", dataDir: "/hacked" },
+  web: { password: false, sessionSecret: "" },
+});
+assert.equal(applied.proxy.token, "SECRET_TOK", "masked-true secret keeps stored value");
+assert.equal(applied.proxy.readonlyToken, "NEW_RO", "fresh string secret updates");
+assert.equal(applied.soloist.apiKey, "SECRET_API", "masked-true apiKey keeps stored value");
+assert.equal(applied.web.password, "SECRET_PW", "masked-false secret keeps stored value");
+assert.equal(applied.web.sessionSecret, "SECRET_SESS", "empty-string secret keeps stored value");
+assert.equal(applied.autoplay, true, "hot field applies");
+assert.equal(applied.soloist.deviceName, "Renamed", "editable field applies");
+assert.equal(applied.proxy.listen, sCfg.proxy.listen, "locked proxy.listen unchanged");
+assert.equal(applied.soloist.dataDir, sCfg.soloist.dataDir, "locked data_dir unchanged");
+assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
+assert.throws(() => applyApiConfig(sCfg, { soloist: { deviceName: "" } }), ConfigError, "invalid result rejected");
+
+// webhooks.urls is a full-replace map: a dropped URL disappears (not merged).
+const whCfgBase = loadConfig(cfgPath);
+whCfgBase.webhooks.urls = { track_changed: "http://a", error: "http://b" };
+const whApplied = applyApiConfig(whCfgBase, { webhooks: { urls: { track_changed: "http://a" } } });
+assert.deepEqual(whApplied.webhooks.urls, { track_changed: "http://a" }, "removed webhook URL dropped from config");
+// ...and the removal persists through saveConfig (mergeInto alone would keep it).
+saveConfig(cfgPath, whApplied);
+assert.deepEqual(loadConfig(cfgPath).webhooks.urls, { track_changed: "http://a" }, "webhook URL removal persisted to file");
 
 // Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed.
 const SECRET = "sessionsecret";

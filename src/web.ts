@@ -6,7 +6,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Config } from "./config.js";
+import { ConfigError, applyApiConfig, configSummary, maskConfig, saveConfig, type Config } from "./config.js";
 import type { WebhookStats } from "./proxy.js";
 import { makeLog } from "./log.js";
 
@@ -141,6 +141,50 @@ function setSession(res: ServerResponse, cfg: Config): void {
   res.setHeader("set-cookie", `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`);
 }
 
+// Gate the config/control API behind a valid Web Session. Writes the response and
+// returns false when unauthorized; returns true to proceed.
+function apiAuthed(req: IncomingMessage, res: ServerResponse, cfg: Config): boolean {
+  if (!webConfigured(cfg)) return failClosed(res), false;
+  if (!sessionUser(req, cfg)) return json(res, 401, { error: "unauthenticated" }), false;
+  return true;
+}
+
+// Validate → persist → apply hot fields live by mutating the shared Config in
+// place (tokens, sessionUser, webhooks, autoplay, overlay all read it live).
+async function handlePutConfig(
+  req: IncomingMessage,
+  res: ServerResponse,
+  cfg: Config,
+  configPath: string,
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch {
+    return json(res, 413, { error: "body too large" });
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return json(res, 400, { error: "invalid JSON" });
+  }
+  let next: Config;
+  try {
+    next = applyApiConfig(cfg, body);
+    saveConfig(configPath, next);
+  } catch (err) {
+    if (err instanceof ConfigError) return json(res, 400, { error: err.message });
+    // Handler is floated (void handlePutConfig); a re-throw here would be an
+    // unhandled rejection and the client would hang. Log and 500 instead.
+    log("config save failed: %s", (err as Error).message);
+    return json(res, 500, { error: "failed to save config" });
+  }
+  Object.assign(cfg, next);
+  log("config saved and applied live");
+  json(res, 200, maskConfig(cfg));
+}
+
 async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Config): Promise<void> {
   let body: string;
   try {
@@ -163,7 +207,13 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
 }
 
 // Returns true if it handled the request; false to let the caller 404/fall through.
-export function handleWebRequest(req: IncomingMessage, res: ServerResponse, cfg: Config, stats: WebhookStats = new Map()): boolean {
+export function handleWebRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  cfg: Config,
+  configPath: string,
+  stats: WebhookStats = new Map(),
+): boolean {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -177,6 +227,21 @@ export function handleWebRequest(req: IncomingMessage, res: ServerResponse, cfg:
     if (!webConfigured(cfg)) return failClosed(res), true;
     if (!sessionUser(req, cfg)) return json(res, 401, { error: "unauthorized" }), true;
     json(res, 200, webhooksView(cfg, stats));
+    return true;
+  }
+
+  if (path === "/api/config" && method === "GET") {
+    if (apiAuthed(req, res, cfg)) json(res, 200, maskConfig(cfg));
+    return true;
+  }
+
+  if (path === "/api/config" && method === "PUT") {
+    if (apiAuthed(req, res, cfg)) void handlePutConfig(req, res, cfg, configPath);
+    return true;
+  }
+
+  if (path === "/api/config-summary" && method === "GET") {
+    if (apiAuthed(req, res, cfg)) json(res, 200, configSummary(cfg));
     return true;
   }
 
