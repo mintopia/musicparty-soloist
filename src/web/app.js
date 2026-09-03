@@ -151,6 +151,38 @@ function setWsPill(up) {
   el.innerHTML = `<span class="dot" style="background:${up ? "var(--ok)" : "var(--warn)"}"></span>${up ? "Connected" : "Reconnecting…"}`;
 }
 
+// Set clip's text, and if it overflows, ping-pong scroll it (pausing at each end).
+// Idempotent per element+text so the 500ms render tick doesn't restart the scroll.
+function setScrollingText(clip, text) {
+  const t = text || "";
+  if (clip.dataset.mqText === t && clip.firstElementChild) return;
+  clip.dataset.mqText = t;
+  clip.style.overflow = "hidden";
+  clip.style.whiteSpace = "nowrap";
+  let span = clip.firstElementChild;
+  if (!span || !span.classList.contains("mq")) {
+    clip.textContent = "";
+    span = document.createElement("span");
+    span.className = "mq";
+    span.style.cssText = "display:inline-block;will-change:transform";
+    clip.appendChild(span);
+  }
+  span.textContent = t;
+  span.getAnimations().forEach((a) => a.cancel());
+  span.style.transform = "translateX(0)";
+  requestAnimationFrame(() => {
+    const overflow = span.scrollWidth - clip.clientWidth;
+    if (overflow <= 1) return;
+    span.animate([
+      { transform: "translateX(0)" },
+      { transform: "translateX(0)", offset: 0.12 },
+      { transform: `translateX(${-overflow}px)`, offset: 0.5 },
+      { transform: `translateX(${-overflow}px)`, offset: 0.62 },
+      { transform: "translateX(0)" },
+    ], { duration: Math.max(6000, overflow * 90), iterations: Infinity, easing: "ease-in-out" });
+  });
+}
+
 // ---- now playing (mini player is always present; the hero card only on the Now view) ----
 function renderNowPlaying() {
   const t = pb.track;
@@ -159,10 +191,12 @@ function renderNowPlaying() {
   if (mp) {
     mp.classList.toggle("hidden", !t);
     if (t) {
-      $("mpTitle").textContent = t.title || "Untitled";
+      setScrollingText($("mpTitle"), t.title || "Untitled");
       $("mpArtist").textContent = t.artist || "—";
       $("mpArt").style.backgroundImage = t.art ? `url("${encodeURI(t.art)}")` : "";
       $("mpPlayIcon").innerHTML = pb.playing ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>';
+      const dur = t.durationMs || 0;
+      $("mpProg").style.width = (dur ? Math.min(100, Math.max(0, (Math.min(nowMs(), dur) / dur) * 100)) : 0) + "%";
     }
   }
   if (!$("npTitle")) return; // Now view not mounted
@@ -170,7 +204,7 @@ function renderNowPlaying() {
   $("npStatus").textContent = t ? (pb.playing ? "Now playing" : "Paused") : "Idle";
   $("npDot").style.background = t && pb.playing ? "#34d399" : "#6b6b72";
   $("npDot").style.boxShadow = t && pb.playing ? "0 0 8px #34d399" : "none";
-  $("npTitle").textContent = t ? t.title || "Untitled" : "Nothing playing";
+  setScrollingText($("npTitle"), t ? t.title || "Untitled" : "Nothing playing");
   $("npArtist").textContent = t ? [t.artist, t.album].filter(Boolean).join(" — ") || "—" : "—";
   $("npArt").style.backgroundImage = t && t.art ? `url("${encodeURI(t.art)}")` : "";
   $("playIcon").innerHTML = pb.playing ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>';
@@ -1046,7 +1080,7 @@ function wireStatic() {
     try { await api("/api/restart-soloist", { method: "POST" }); await refreshSummary(); renderBanner(); }
     finally { $("restartBtn").disabled = false; }
   };
-  setInterval(() => { if (pb.track && $("npTitle")) renderNowPlaying(); tickPreview(); }, 500);
+  setInterval(() => { if (pb.track) renderNowPlaying(); tickPreview(); }, 500);
 }
 
 async function boot() {

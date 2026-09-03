@@ -59,7 +59,8 @@
     .tab:hover{color:var(--txt);background:rgba(0,0,0,.03)}
     .tab.act{background:var(--ind-s);color:var(--ind)}
     .spacer{flex:1}
-    #miniPlayer{display:flex;align-items:center;gap:10px;padding:5px 10px 5px 6px;background:var(--sub);border:1px solid var(--line);border-radius:14px;min-width:0}
+    #miniPlayer{position:relative;overflow:hidden;display:flex;align-items:center;gap:10px;padding:5px 10px 5px 6px;background:var(--sub);border:1px solid var(--line);border-radius:14px;min-width:0}
+    #mpProg{position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--ind);border-radius:0 2px 2px 0;transition:width .25s linear}
     #mpArt{width:34px;height:34px;border-radius:8px;background-size:cover;background-position:center;background-color:#e5e5e0;flex:0 0 auto}
     .mpmeta{min-width:0;max-width:150px}
     #mpTitle{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -107,6 +108,7 @@
         <button id="mpPlay" class="mpb mpplay" title="Play/Pause"><svg id="mpPlayIcon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
         <button id="mpNext" class="mpb" title="Next"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l11 6L4 18z"/></svg></button>
       </div>
+      <div id="mpProg"></div>
     </div>
     <a id="snapweb" class="btn" href="#" target="_blank" title="Open Snapweb" style="text-decoration:none"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4M7 6v12M11 3v18M15 8v8M19 5v14"/></svg>Snapweb</a>
     <span id="wsPill" class="pill" style="background:var(--warn-s);color:var(--warn)"><span class="dot" style="background:var(--warn)"></span>Connecting…</span>
