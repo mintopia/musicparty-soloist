@@ -279,7 +279,7 @@ function makeTrackRenderer(container) {
   let map = new Map();
   let lastCurrent = -1;
 
-  function clear() { map = new Map(); track.replaceChildren(); track.style.transform = ""; container.style.height = ""; lastCurrent = -1; }
+  function clear() { map = new Map(); track.replaceChildren(); track.style.transition = ""; track.style.transform = ""; container.style.height = ""; lastCurrent = -1; }
 
   function render(lines, idx, count, opts) {
     if (idx < 0 || lines.length === 0) { clear(); return; }
@@ -292,18 +292,21 @@ function makeTrackRenderer(container) {
     const start = Math.max(0, idx - half - pad);
     const end = Math.min(lines.length - 1, idx + (count - 1 - half) + pad);
 
+    // FLIP reference: where the incoming current line sits before we touch the DOM.
     const reuse = map.get(idx);
     const firstTop = reuse ? reuse.getBoundingClientRect().top : null;
 
+    // Update the DOM in place — drop out-of-window lines, insert only the newly exposed
+    // ones at their slot. Never re-append an element that's already positioned: moving a
+    // node resets its running CSS transitions, so the colour would snap instead of fading.
     for (const [i, el] of map) if (i < start || i > end) { el.remove(); map.delete(i); }
-    const frag = document.createDocumentFragment();
     for (let i = start; i <= end; i++) {
       let el = map.get(i);
       if (!el) { el = document.createElement("div"); el.textContent = lines[i].text; el.dataset.text = lines[i].text; map.set(i, el); }
-      el.className = "line " + motion + (i === idx ? " current" : "");
-      frag.appendChild(el);
+      const ref = track.children[i - start];
+      if (ref !== el) track.insertBefore(el, ref || null);
     }
-    track.appendChild(frag);
+    for (let i = start; i <= end; i++) map.get(i).className = "line " + motion + (i === idx ? " current" : "");
 
     const cur = map.get(idx);
     if (effect === "wipe") {
@@ -321,22 +324,30 @@ function makeTrackRenderer(container) {
     container.style.height = Math.round(vh) + "px";
     const tyTarget = Math.round(vh / 2 - (cur.offsetTop + cur.offsetHeight / 2));
 
-    track.getAnimations().forEach((a) => a.cancel());
-    track.style.transform = `translateY(${tyTarget}px)`;
+    // Glide with a CSS transition committed from an explicit start frame: pin the
+    // from-transform, force a reflow, then transition to the target. A WAAPI keyframe
+    // animation can paint one frame at the target before it starts — that was the
+    // "jumps half a line up" flash — whereas a committed transition never does.
     let snap = motion === "crossfade" || motion === "instant" || durMs <= 0 || firstTop == null || prefersReduce.matches;
-    let scrollAnim = null;
+    let glided = false;
+    track.style.transition = "none";
+    track.style.transform = `translateY(${tyTarget}px)`;
     if (!snap) {
       const fromTy = tyTarget + (firstTop - cur.getBoundingClientRect().top);
-      // Glide a normal advance so it eases into place; snap only a big jump (a seek, or
-      // lyrics loading mid-song) rather than flying it across the screen. Gauge by how far
-      // it actually travels, not the index delta — stacked timestamps often skip a line.
-      if (Math.abs(fromTy - tyTarget) > nominal * 3) snap = true;
-      else scrollAnim = track.animate([{ transform: `translateY(${fromTy}px)` }, { transform: `translateY(${tyTarget}px)` }], { duration: durMs, easing });
+      // Glide a normal advance; snap a big jump (a seek, or lyrics loading mid-song) by how
+      // far it travels — not the index delta, since stacked timestamps often skip a line.
+      if (Math.abs(fromTy - tyTarget) <= nominal * 3) {
+        track.style.transform = `translateY(${fromTy}px)`;
+        void track.offsetWidth;
+        track.style.transition = `transform ${durMs}ms ${easing}`;
+        track.style.transform = `translateY(${tyTarget}px)`;
+        glided = true;
+      }
     }
 
     if (effect === "sparkles" && idx !== lastCurrent && !prefersReduce.matches) {
       const burst = () => { if (cur.classList.contains("current")) sparkle(container, cur, opts); };
-      if (scrollAnim) scrollAnim.finished.then(burst).catch(() => {}); else burst();
+      if (glided) setTimeout(burst, durMs); else burst();
     }
     lastCurrent = idx;
   }
