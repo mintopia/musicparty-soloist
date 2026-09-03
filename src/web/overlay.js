@@ -160,7 +160,7 @@ const OVERLAY_CSS = `
 .lyric-viewport .line.current{opacity:1;color:var(--current)}
 .lyric-viewport .line.pop.current{transform:scale(1.14)}
 .lyric-viewport .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both}
-@keyframes sol-lineFocus{from{opacity:var(--dim);transform:translateY(.18em)}to{opacity:1;transform:none}}
+@keyframes sol-lineFocus{from{opacity:var(--dim)}to{opacity:1}}
 .lyric-viewport .line:empty::after{content:"\\00a0"}
 .lines-left .line{text-align:left;transform-origin:left center}
 .lines-center .line{text-align:center;transform-origin:center}
@@ -314,8 +314,10 @@ function makeTrackRenderer(container) {
     const cs = getComputedStyle(cur);
     let lineH = parseFloat(cs.lineHeight); if (!lineH) lineH = parseFloat(cs.fontSize) * 1.2;
     const nominal = lineH + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    let vh = 0;
-    for (let i = idx - half; i <= idx + half; i++) { const el = map.get(i); vh += el ? el.offsetHeight : nominal; }
+    // Fixed box (one nominal line per visible slot): its height must NOT change with the
+    // current window's actual heights, or a center/bottom anchor re-centers instantly on
+    // every advance and the block jumps. The track translate below owns all motion.
+    const vh = nominal * count;
     container.style.height = Math.round(vh) + "px";
     const tyTarget = Math.round(vh / 2 - (cur.offsetTop + cur.offsetHeight / 2));
 
