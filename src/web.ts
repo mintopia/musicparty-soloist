@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, maskConfig, saveConfig, type Config } from "./config.js";
 import type { WebhookStats } from "./proxy.js";
+import type { SoloistControl } from "./supervisor.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("web");
@@ -213,6 +214,7 @@ export function handleWebRequest(
   cfg: Config,
   configPath: string,
   stats: WebhookStats = new Map(),
+  control?: SoloistControl,
 ): boolean {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
@@ -241,7 +243,18 @@ export function handleWebRequest(
   }
 
   if (path === "/api/config-summary" && method === "GET") {
-    if (apiAuthed(req, res, cfg)) json(res, 200, configSummary(cfg));
+    if (apiAuthed(req, res, cfg)) {
+      json(res, 200, { ...configSummary(cfg), pendingRestart: control?.pendingRestart(cfg) ?? false });
+    }
+    return true;
+  }
+
+  if (path === "/api/restart-soloist" && method === "POST") {
+    if (apiAuthed(req, res, cfg)) {
+      control?.restart(cfg);
+      log("restart-soloist requested via API");
+      json(res, 200, { ok: true, pendingRestart: false });
+    }
     return true;
   }
 
