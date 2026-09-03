@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config, WebhooksConfig } from "./config.js";
 import { handleWebRequest, sessionUser } from "./web.js";
+import { reconcileOutputs } from "./pipewire.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("proxy");
@@ -376,6 +377,10 @@ export function makeServer(cfg: Config, configPath: string): Promise<RunningProx
 
   const hubRun = hub.run();
   hubRun.catch((e) => log("hub crashed: %s", (e as Error).message));
+
+  // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
+  // Fire-and-forget — it waits/retries for target nodes and must not block listen.
+  void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);

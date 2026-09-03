@@ -1,7 +1,7 @@
 #!/command/with-contenv sh
 # Soloist supervisor + auth Proxy. s6 restarts this longrun if it exits.
-# When an audio route is configured, wait for the null-sink's ports before launching
-# Soloist with --pipewire-device (wait-for-sink no-ops when the var is empty).
+# Wait for the soloist-sink null-sink's ports before launching, then the Proxy
+# reconciles the fan-out links to the configured Audio Outputs (ADR-0011).
 cd /app
-wait-for-sink "$SOLOIST_PIPEWIRE_DEVICE"
+wait-for-sink soloist-sink
 exec node dist/main.js

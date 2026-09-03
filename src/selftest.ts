@@ -9,6 +9,7 @@ import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, SESSION_COOKIE } from "./web.js";
+import { parseSinks, parseMonitorTargets, desiredTargets, pipewireSinksResponse, reconcileOutputs, SNAPCAST_KEY, type Runner } from "./pipewire.js";
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -330,6 +331,73 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
 
   hub.stop();
   upstream.close();
+}
+
+// PipeWire fan-out (ADR-0011, ticket T9).
+const pwDump = JSON.stringify([
+  { info: { props: { "media.class": "Audio/Sink", "node.name": "soloist-sink", "node.description": "Soloist" } } },
+  { info: { props: { "media.class": "Audio/Sink", "node.name": "Spotify", "node.description": "Snapserver" } } },
+  { info: { props: { "media.class": "Audio/Sink", "node.name": "alsa_output.hw_0", "node.description": "Speakers" } } },
+  { info: { props: { "media.class": "Audio/Sink", "node.name": "bare" } } },
+  { info: { props: { "media.class": "Audio/Source", "node.name": "mic" } } },
+  { other: true },
+]);
+assert.deepEqual(
+  parseSinks(pwDump, ["Spotify"]),
+  [{ name: "alsa_output.hw_0", description: "Speakers" }, { name: "bare", description: "bare" }],
+  "parseSinks: Audio/Sink only; soloist-sink + Snapserver capture node excluded; description falls back to name",
+);
+assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
+
+const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
+assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
+assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
+
+const dcfg = (snapcast: boolean, outputs: string[], streamName = "Spotify"): Config =>
+  ({ audio: { snapcast, outputs }, streamName }) as unknown as Config;
+assert.deepEqual(desiredTargets(dcfg(true, ["alsa_x"])), ["Spotify", "alsa_x"], "desiredTargets: snapcast->streamName + hardware");
+assert.deepEqual(desiredTargets(dcfg(false, ["alsa_x"])), ["alsa_x"], "desiredTargets: snapcast off drops stream node");
+assert.deepEqual(
+  desiredTargets(dcfg(true, ["snapcast", "soloist-sink", "alsa_x", "alsa_x"])),
+  ["Spotify", "alsa_x"],
+  "desiredTargets: reserved/internal names filtered, deduped",
+);
+
+const monitorListing = [
+  "soloist-sink:monitor_FL",
+  "  |-> old_sink:playback_FL",
+  "soloist-sink:monitor_FR",
+  "  |-> old_sink:playback_FR",
+  "other-node:capture_FL",
+  "  |-> unrelated:playback_FL",
+].join("\n");
+assert.deepEqual(parseMonitorTargets(monitorListing), ["old_sink"], "parseMonitorTargets: only soloist-sink monitor links");
+assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []");
+
+// reconcile happy path: link desired (Snapcast + hardware), unlink deselected old_sink.
+{
+  const calls: string[] = [];
+  const run: Runner = async (cmd, args) => {
+    calls.push([cmd, ...args].join(" "));
+    if (args[0] === "-i") return "Spotify:playback_FL\nalsa_x:playback_FL\n";
+    if (args.includes("-l")) return monitorListing;
+    return "";
+  };
+  const res = await reconcileOutputs(dcfg(true, ["alsa_x"]), { run, retries: 1, intervalMs: 0 });
+  assert.deepEqual(res.linked, ["Spotify", "alsa_x"], "reconcile: enabled outputs linked");
+  assert.deepEqual(res.removed, ["old_sink"], "reconcile: deselected link removed");
+  assert.deepEqual(res.missing, [], "reconcile: nothing missing when nodes present");
+  assert.ok(calls.includes("pw-link soloist-sink:monitor_FL Spotify:playback_FL"), "reconcile: snapcast FL linked");
+  assert.ok(calls.includes("pw-link soloist-sink:monitor_FR alsa_x:playback_FR"), "reconcile: hardware FR linked");
+  assert.ok(calls.includes("pw-link -d soloist-sink:monitor_FL old_sink:playback_FL"), "reconcile: deselected FL unlinked");
+}
+
+// reconcile: a configured output whose node never appears is skipped and flagged.
+{
+  const run: Runner = async (_cmd, args) => (args.includes("-l") ? "" : "");
+  const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
+  assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
+  assert.deepEqual(res.linked, [], "reconcile: absent node not linked");
 }
 
 console.log("selftest OK");

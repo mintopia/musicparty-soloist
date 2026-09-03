@@ -90,7 +90,7 @@ soloist:
   api_key: "${SOLOIST_API_KEY}"
   data_dir: "${SOLOIST_DATA_DIR:-./.soloist-data}"
   extra_args: []
-  pipewire_device: "${SOLOIST_PIPEWIRE_DEVICE:-}"   # Docker audio route; empty standalone
+  pipewire_device: ""                                # Docker audio route; empty standalone
 proxy:
   listen: "${PROXY_LISTEN:-0.0.0.0:8687}"
   token: "${PROXY_TOKEN}"
@@ -134,7 +134,6 @@ The example config wires these env vars.
 | `SNAPCAST_STREAM` | Snapcast stream name. Docker audio path only. | `Spotify` | `Spotify` |
 | `PROXY_LISTEN` | Address the proxy binds. | `0.0.0.0:8687` | `127.0.0.1:8687` |
 | `SOLOIST_DATA_DIR` | Session data dir that holds the login after pairing. | `./.soloist-data` | `/data` |
-| `SOLOIST_PIPEWIRE_DEVICE` | Null-sink Soloist plays into. Empty means no audio (standalone). | empty | `soloist-sink` |
 
 Three more are read straight from the environment, outside the config file.
 

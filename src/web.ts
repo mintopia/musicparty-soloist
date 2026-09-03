@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, maskConfig, saveConfig, type Config } from "./config.js";
 import type { WebhookStats } from "./proxy.js";
+import { listPipewireSinks, reconcileOutputs } from "./pipewire.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("web");
@@ -182,7 +183,19 @@ async function handlePutConfig(
   }
   Object.assign(cfg, next);
   log("config saved and applied live");
+  // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Runtime,
+  // idempotent, and fire-and-forget so the save response isn't held on pw-link.
+  void reconcileOutputs(cfg).catch((err) => log("reconcile after save failed: %s", (err as Error).message));
   json(res, 200, maskConfig(cfg));
+}
+
+async function handlePipewireSinks(res: ServerResponse, cfg: Config): Promise<void> {
+  try {
+    json(res, 200, await listPipewireSinks(cfg));
+  } catch (err) {
+    log("pw-dump failed: %s", (err as Error).message);
+    json(res, 500, { error: "failed to enumerate sinks" });
+  }
 }
 
 async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Config): Promise<void> {
@@ -242,6 +255,11 @@ export function handleWebRequest(
 
   if (path === "/api/config-summary" && method === "GET") {
     if (apiAuthed(req, res, cfg)) json(res, 200, configSummary(cfg));
+    return true;
+  }
+
+  if (path === "/api/pipewire-sinks" && method === "GET") {
+    if (apiAuthed(req, res, cfg)) void handlePipewireSinks(res, cfg);
     return true;
   }
 
