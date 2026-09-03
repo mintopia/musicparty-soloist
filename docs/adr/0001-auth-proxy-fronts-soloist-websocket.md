@@ -22,3 +22,7 @@ that is why it exists.
 **Amended by ADR-0006**: the Hub now *reads* upstream frames (webhooks) and *originates*
 `activate`/`play` frames (autoplay). Relayed traffic is still never rewritten — that is
 the invariant this ADR protects.
+
+**Amended by ADR-0007 and ADR-0008**: the Proxy's port also serves a web UI and browser
+control (ADR-0007), and a Read-only Token tier joins the Auth Token at the WS upgrade
+(ADR-0008). The relay invariant — Downstream Client frames never rewritten — still holds.

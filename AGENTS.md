@@ -31,8 +31,18 @@ Never fall back to Grep, Read, or Glob for indexed repos.
 
 ### Issue tracker
 
-Issues live as markdown files under `.scratch/<feature>/` in this repo. See `docs/agents/issue-tracker.md`.
+Issues live as GitHub issues (`gh` CLI), repo `mintopia/musicparty-soloist`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical roles, label string = role name. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Design
+
+Web UI (`src/web/`) must follow `DESIGN.md` (Clean & Light, teal) and the mockups in
+`docs/design/` — lift token values verbatim; match the per-surface mockup. See
+`docs/design/README.md`.

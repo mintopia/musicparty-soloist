@@ -54,14 +54,22 @@ A remote consumer that connects to the Proxy to observe playback and send comman
 _Avoid_: user, subscriber.
 
 **Audio Route** (Docker only):
-Soloist plays into a PipeWire null-sink (`soloist-sink`); Snapserver captures that
-sink via its native `pipewire://` source (`capture_sink=true`, `48000:16:2`, FLAC).
-Requires a pipewire-enabled Snapserver build. A headless WirePlumber (see ADR-0003)
-is the session manager that gives the sink its ports and links playback clients onto it.
-WirePlumber 0.5 treats Snapserver's capture node as a device, not a capture client, so it
-is *not* auto-linked — the snapserver service explicitly `pw-link`s the sink monitor to it.
-No FIFO, no external capture process. The null-sink is the stable anchor between the two.
+Soloist plays into a PipeWire null-sink (`soloist-sink`); its monitor is fanned out to one
+or more Audio Outputs. Snapserver is one such output, capturing via its native
+`pipewire://` source (`capture_sink=true`, `48000:16:2`, FLAC); local hardware sinks are
+others. Requires a pipewire-enabled Snapserver build. A headless WirePlumber (see ADR-0003)
+gives the sink its ports; it does *not* auto-link Snapserver's capture node (WirePlumber 0.5
+treats it as a device, not a capture client), so the Proxy owns the links — it `pw-link`s
+`soloist-sink:monitor` to each enabled output and unlinks disabled ones (ADR-0011). No FIFO,
+no external capture process. The null-sink is the stable anchor.
 _Avoid_: FIFO, pipe, bridge.
+
+**Audio Output** (Docker only):
+A PipeWire sink that Soloist's audio is routed to. The operator selects any number in the
+Landing Page: Snapcast is one (toggleable, on by default); local hardware sinks are others,
+present only if the operator maps audio devices into the container. Stored in the Config
+File by PipeWire `node.name`; the Proxy reconciles the `pw-link`s on save and on boot.
+_Avoid_: sink (generic), device, Audio Route (that is the whole path — an Output is one leg).
 
 **Snapserver**:
 The Snapcast server, run inside the Docker image on host networking so LAN clients
@@ -86,8 +94,68 @@ Best-effort: fire-and-forget with a short timeout, a global min-interval throttl
 _Avoid_: callback; event (the *event* is the Soloist message — the Webhook is our POST of it).
 
 **Config File**:
-Our own YAML config (Soloist has no native config file). Holds Soloist settings,
-Proxy listen address, the Auth Token, and (Docker only) the Snapserver stream name.
-Any value is env-overridable via `${VAR}` / `${VAR:-default}` interpolation; env wins
-over the file default.
-_Avoid_: settings, manifest.
+Our own YAML config (Soloist has no native config file) — the single source of truth for
+all settings: Soloist args, Proxy listen address, tokens, web credentials, webhooks, the
+Snapserver stream name (Docker), the Audio Outputs, and the Overlay Config. Both
+hand-editable (bind-mounted in Docker at `/config/config.yaml`) and UI-editable via the
+Landing Page, which writes it back preserving comments. No environment-variable
+configuration: no `${VAR}` interpolation and no env overrides — the file is authoritative.
+Path set by the `--config` flag (default `./config.yaml`). See ADR-0010.
+_Avoid_: settings, manifest, env.
+
+**Landing Page** (Web UI):
+The authenticated web app the Proxy serves on its own HTTP port (the same port as the
+control WebSocket). Behind a Web Session it shows the Soloist WebSocket details and
+current (non-secret) configuration, links to Snapweb, lists Webhooks and their Webhook
+Status, gives playback status and basic controls, and edits the Overlay Config. It never
+renders secrets — only whether each is set.
+_Avoid_: dashboard, admin panel, control socket (that is the Soloist WebSocket).
+
+**Web Session**:
+A signed, HttpOnly cookie proving a browser logged in to the Landing Page with the
+web username/password (from the Config File). Gates the Landing Page, its config/control
+API, and control-tier WebSocket upgrades from the browser. Separate from the Auth Token
+(programmatic clients) and the Read-only Token (the overlay).
+_Avoid_: Auth Token, API Key, login (Spotify Login is a different thing).
+
+**Setup Page** (first-run):
+An unauthenticated page the Proxy serves when the Config File has no web credentials (a
+fresh install). It sets the web username and password only, then writes the Config File;
+from then on the Landing Page login applies and the Setup Page disappears. While in this
+state the Proxy serves nothing else (fails closed) and Soloist is not started until the
+operator configures it in the Landing Page. See ADR-0010.
+_Avoid_: Landing Page (that is the authenticated app), wizard, installer.
+
+**Read-only Token**:
+A second Proxy token, distinct from the Auth Token. A connection presenting it may
+observe frames but the Hub drops any client→upstream frame from it — no commands. It is
+embedded server-side in the (unauthenticated) Lyrics Overlay page so the overlay can read
+playback without holding control. Anyone who can reach the overlay can read it and thus
+observe now-playing; that is accepted, since it grants observation only.
+_Avoid_: Auth Token (that grants control), password.
+
+**Lyrics Overlay**:
+An unauthenticated browser page the Proxy serves that renders time-synced lyrics for the
+current track over a transparent background (for a stream/game overlay). It reads playback
+from the Proxy WebSocket with the Read-only Token, fetches synced lyrics client-side from
+lrclib.net, and styles itself from the Overlay Config.
+_Avoid_: overlay (generic), builder (that is the authenticated editor in the Landing Page).
+
+**Overlay Config**:
+The global styling settings for the Lyrics Overlay (font, size, colours, effect,
+alignment, timing offset, line count, anchor). A section of the Config File. Edited via
+the Landing Page (authenticated); the Proxy embeds only this subset plus the Read-only
+Token into the served Lyrics Overlay HTML — the overlay never reads the Config File itself.
+_Avoid_: settings.
+
+**Webhook Status**:
+Runtime, in-memory delivery stats the Hub records per Webhook destination as it fires:
+last HTTP status, last delivery time, success/failure counts, last error. Shown on the
+Landing Page next to the configured Webhooks. Reset on restart; it is observed delivery
+history, not an active health probe.
+_Avoid_: Webhook (that is the outbound POST itself), health check.
+
+**Snapweb**:
+Snapcast's own built-in web UI, served by Snapserver on its web port (`1780`) in the
+Docker image. The Landing Page only links to it; the Proxy does not proxy it.
+_Avoid_: Snapserver (that is the process), Web UI (that is our Landing Page).
