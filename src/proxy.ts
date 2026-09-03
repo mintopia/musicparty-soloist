@@ -37,7 +37,9 @@ export type AuthTier = "control" | "readonly" | "none";
 export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
   const presented = presentedToken(req);
   if (presented !== null) {
-    if (tokenEquals(presented, cfg.proxy.token)) return "control";
+    // Guard the empty token: in setup mode proxy.token is "", and an empty presented
+    // token would timing-safe-equal it — never grant control on an unset token.
+    if (cfg.proxy.token && tokenEquals(presented, cfg.proxy.token)) return "control";
     if (cfg.proxy.readonlyToken && tokenEquals(presented, cfg.proxy.readonlyToken)) return "readonly";
   }
   if (sessionUser(req, cfg)) return "control";
