@@ -15,7 +15,7 @@ export class Aborted extends Error {}
 
 const log = makeLog("supervisor");
 
-export function buildArgv(binary: string, cfg: Config): string[] {
+export function buildArgv(cfg: Config): string[] {
   const argv = [
     "-w", cfg.soloistWs,
     "--device-name", cfg.soloist.deviceName,
@@ -25,6 +25,35 @@ export function buildArgv(binary: string, cfg: Config): string[] {
   if (cfg.soloist.pipewireDevice) argv.push("--pipewire-device", cfg.soloist.pipewireDevice);
   argv.push(...cfg.soloist.extraArgs);
   return argv;
+}
+
+// Shared handle between the supervisor loop and the web API: tracks what Soloist
+// was last spawned with (so the UI can show a "restart to apply" banner) and lets
+// POST /api/restart-soloist abort just the current iteration (Proxy stays up).
+export class SoloistControl {
+  private appliedArgv: string | null = null;
+  private iter: AbortController | null = null;
+
+  bindIteration(ac: AbortController): void {
+    this.iter = ac;
+  }
+
+  markApplied(cfg: Config): void {
+    this.appliedArgv = JSON.stringify(buildArgv(cfg));
+  }
+
+  // True once Soloist is running and the live config's Soloist args (device name,
+  // API Key, soloist_ws, ...) differ from what that process was started with.
+  pendingRestart(cfg: Config): boolean {
+    return this.appliedArgv !== null && this.appliedArgv !== JSON.stringify(buildArgv(cfg));
+  }
+
+  // Abort the current supervise iteration so the loop re-spawns Soloist with the
+  // live config; optimistically clears pending since the respawn uses this cfg.
+  restart(cfg: Config): void {
+    this.markApplied(cfg);
+    this.iter?.abort();
+  }
 }
 
 async function terminate(proc: ChildProcess, timeout = TERM_TIMEOUT): Promise<void> {
@@ -41,7 +70,7 @@ async function terminate(proc: ChildProcess, timeout = TERM_TIMEOUT): Promise<vo
 
 function runOnce(binary: string, cfg: Config, signal: AbortSignal): Promise<number> {
   return new Promise<number>((resolve, reject) => {
-    const proc = spawn(binary, buildArgv(binary, cfg), { stdio: "inherit" });
+    const proc = spawn(binary, buildArgv(cfg), { stdio: "inherit" });
     const onAbort = () => {
       log("shutdown requested; terminating soloist (pid %s)", proc.pid);
       terminate(proc).then(() => reject(new Aborted()), reject);
@@ -60,26 +89,53 @@ function runOnce(binary: string, cfg: Config, signal: AbortSignal): Promise<numb
 
 export interface SuperviseOptions {
   signal?: AbortSignal;
+  control?: SoloistControl;
+  acquire?: (force?: boolean) => Promise<string>;
 }
 
 export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promise<number> {
-  const { signal = new AbortController().signal } = opts;
+  const {
+    signal = new AbortController().signal,
+    control,
+    acquire = (force = false) => acquireSoloist(undefined, { force }),
+  } = opts;
 
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
-  let binary = await acquireSoloist();
+  let binary = await acquire();
   let backoff = BACKOFF_BASE;
 
   while (true) {
     if (signal.aborted) throw new Aborted();
+
+    // Per-iteration abort: fired by global shutdown OR by control.restart(). A
+    // restart aborts just this run and the loop re-spawns; shutdown propagates.
+    const iter = new AbortController();
+    const onShutdown = () => iter.abort();
+    signal.addEventListener("abort", onShutdown, { once: true });
+    control?.bindIteration(iter);
+    control?.markApplied(cfg);
+
     log("starting soloist: device=%s ws=%s data-dir=%s", cfg.soloist.deviceName, cfg.soloistWs, cfg.soloist.dataDir);
     const started = Date.now();
-    const code = await runOnce(binary, cfg, signal);
+    let code: number;
+    try {
+      code = await runOnce(binary, cfg, iter.signal);
+    } catch (err) {
+      signal.removeEventListener("abort", onShutdown);
+      if (err instanceof Aborted && !signal.aborted) {
+        log("restart requested; re-spawning soloist");
+        backoff = BACKOFF_BASE;
+        continue;
+      }
+      throw err;
+    }
+    signal.removeEventListener("abort", onShutdown);
     const ran = (Date.now() - started) / 1000;
 
     // Exit 0 = Soloist self-quit (our shutdown throws Aborted instead); restart so the container never runs playerless.
     if (code === EXIT_EXPIRED) {
       log("soloist build expired (exit 10); re-acquiring binary");
-      binary = await acquireSoloist(undefined, { force: true });
+      binary = await acquire(true);
       backoff = BACKOFF_BASE;
       continue;
     }

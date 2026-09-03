@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { ConfigError, DEFAULT_CONFIG_PATH, ensureSecrets, loadConfig } from "./config.js";
 import { serveProxy } from "./proxy.js";
-import { supervise, Aborted } from "./supervisor.js";
+import { supervise, Aborted, SoloistControl } from "./supervisor.js";
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -29,8 +29,9 @@ async function main(): Promise<number> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  const sup = supervise(cfg, { signal: controller.signal });
-  const prx = serveProxy(cfg, configPath, controller.signal);
+  const control = new SoloistControl();
+  const sup = supervise(cfg, { signal: controller.signal, control });
+  const prx = serveProxy(cfg, configPath, controller.signal, control);
 
   try {
     await Promise.race([sup, prx]);

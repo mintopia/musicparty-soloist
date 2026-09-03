@@ -9,6 +9,8 @@ import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, overlayBootstrap, SESSION_COOKIE } from "./web.js";
+import { buildArgv, supervise, SoloistControl, Aborted } from "./supervisor.js";
+import { rmSync } from "node:fs";
 
 // Overlay engine lives in src/web/ (browser ESM, copied to dist/web/). Computed
 // specifier so tsc treats it as `any` — it ships no .d.ts.
@@ -376,6 +378,71 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
 
   hub.stop();
   upstream.close();
+}
+
+// buildArgv reflects the Soloist command line; a change to any of the args means
+// the running Soloist is stale and needs a restart.
+{
+  const base = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
+  assert.deepEqual(
+    buildArgv(base),
+    ["-w", "127.0.0.1:3678", "--device-name", "d", "--api-key", "k", "--data-dir", "/data"],
+    "buildArgv renders the Soloist command line",
+  );
+}
+
+// SoloistControl: pending derives from live config vs last-spawned args; restart clears it.
+{
+  const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
+  const control = new SoloistControl();
+  assert.equal(control.pendingRestart(cfg), false, "no spawn yet -> not pending");
+  control.markApplied(cfg);
+  assert.equal(control.pendingRestart(cfg), false, "fresh spawn matches config -> not pending");
+  cfg.soloist.deviceName = "renamed";
+  assert.equal(control.pendingRestart(cfg), true, "device name change -> pending");
+  cfg.soloist.deviceName = "d";
+  assert.equal(control.pendingRestart(cfg), false, "reverted change -> not pending");
+  cfg.soloistWs = "127.0.0.1:9999";
+  assert.equal(control.pendingRestart(cfg), true, "soloist_ws change -> pending");
+  control.restart(cfg);
+  assert.equal(control.pendingRestart(cfg), false, "restart clears pending optimistically");
+}
+
+// Integration: restart aborts the current Soloist run and the supervise loop
+// re-spawns (the Proxy — driven by the same process — is never dropped), while a
+// real shutdown ends the loop.
+{
+  const sdir = mkdtempSync(join(tmpdir(), "sup-"));
+  const logf = join(sdir, "runs.log");
+  const script = join(sdir, "fake-soloist.sh");
+  writeFileSync(script, `#!/bin/sh\necho run >> ${logf}\nexec sleep 30\n`, { mode: 0o755 });
+  const supCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1" } as unknown as Config;
+  const control = new SoloistControl();
+  const ac = new AbortController();
+  const runs = () => { try { return readFileSync(logf, "utf8").trim().split("\n").filter(Boolean).length; } catch { return 0; } };
+  const waitFor = async (n: number) => { for (let i = 0; i < 150 && runs() < n; i++) await new Promise((r) => setTimeout(r, 20)); };
+
+  const supP = supervise(supCfg, { signal: ac.signal, control, acquire: async () => script });
+  let supErr: Error | null = null;
+  supP.catch((e) => (supErr = e as Error));
+
+  await waitFor(1);
+  assert.equal(runs(), 1, "soloist spawned once");
+  assert.equal(control.pendingRestart(supCfg), false, "fresh spawn -> not pending");
+
+  supCfg.soloist.deviceName = "renamed";
+  assert.equal(control.pendingRestart(supCfg), true, "soloist-arg change -> pending restart");
+
+  control.restart(supCfg);
+  await waitFor(2);
+  assert.equal(runs(), 2, "restart re-spawned soloist without ending the loop");
+  assert.equal(supErr, null, "supervise stays running across a restart");
+
+  ac.abort();
+  await supP.catch(() => {});
+  const finalErr: unknown = supErr;
+  assert.ok(finalErr instanceof Aborted, "shutdown ends the supervise loop with Aborted");
+  rmSync(sdir, { recursive: true, force: true });
 }
 
 console.log("selftest OK");

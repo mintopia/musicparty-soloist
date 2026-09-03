@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config, WebhooksConfig } from "./config.js";
+import type { SoloistControl } from "./supervisor.js";
 import { handleWebRequest, sessionUser } from "./web.js";
 import { makeLog } from "./log.js";
 
@@ -74,7 +75,9 @@ export function shouldAutoplay(prev: AutoplayState, next: UpstreamFrame): boolea
 }
 
 export class SoloistHub {
-  readonly url: string;
+  // Resolved live on each (re)connect so a soloist_ws change applies after a
+  // Soloist restart without restarting the Proxy.
+  private urlFn: () => string;
   private clients = new Set<WebSocket>();
   private readonlyClients = new WeakSet<WebSocket>();
   private latestState = new Map<string, UpstreamFrame>();
@@ -84,9 +87,13 @@ export class SoloistHub {
   private ready: { promise: Promise<void>; resolve: () => void };
   private stopped = false;
 
-  constructor(url: string) {
-    this.url = url;
+  constructor(url: string | (() => string)) {
+    this.urlFn = typeof url === "function" ? url : () => url;
     this.ready = deferred();
+  }
+
+  get url(): string {
+    return this.urlFn();
   }
 
   observe(fn: FrameObserver): void {
@@ -162,11 +169,12 @@ export class SoloistHub {
   async run(): Promise<void> {
     let backoff = HUB_BACKOFF_BASE;
     while (!this.stopped) {
+      const url = this.urlFn();
       try {
         await new Promise<void>((resolve, reject) => {
-          const conn = new WebSocket(this.url);
+          const conn = new WebSocket(url);
           conn.on("open", () => {
-            log("connected to soloist upstream %s", this.url);
+            log("connected to soloist upstream %s", url);
             this.conn = conn;
             this.ready.resolve();
             backoff = HUB_BACKOFF_BASE;
@@ -181,7 +189,7 @@ export class SoloistHub {
           conn.on("close", () => resolve());
         });
       } catch (err) {
-        log("soloist upstream %s error: %s", this.url, (err as Error).message);
+        log("soloist upstream %s error: %s", url, (err as Error).message);
       } finally {
         this.conn = null;
         this.ready = deferred();
@@ -347,15 +355,15 @@ function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookStats {
   return stats;
 }
 
-export function makeServer(cfg: Config, configPath: string): Promise<RunningProxy> {
+export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
-  const hub = new SoloistHub(`ws://${cfg.soloistWs}`);
+  const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
   attachAutoplay(hub, cfg);
   const stats = attachWebhooks(hub, cfg);
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg, configPath, stats)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath, stats, control)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
@@ -395,8 +403,8 @@ export function makeServer(cfg: Config, configPath: string): Promise<RunningProx
   });
 }
 
-export async function serveProxy(cfg: Config, configPath: string, signal: AbortSignal): Promise<void> {
-  const running = await makeServer(cfg, configPath);
+export async function serveProxy(cfg: Config, configPath: string, signal: AbortSignal, control?: SoloistControl): Promise<void> {
+  const running = await makeServer(cfg, configPath, control);
   if (!signal.aborted) {
     await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
   }
