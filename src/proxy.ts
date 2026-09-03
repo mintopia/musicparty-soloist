@@ -5,6 +5,9 @@ import { timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config, WebhooksConfig } from "./config.js";
+import type { SoloistControl } from "./supervisor.js";
+import { handleWebRequest, sessionUser } from "./web.js";
+import { reconcileOutputs } from "./pipewire.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("proxy");
@@ -22,12 +25,25 @@ export function presentedToken(req: IncomingMessage): string | null {
   return url.searchParams.get("token");
 }
 
-export function checkAuth(req: IncomingMessage, token: string): boolean {
-  const presented = presentedToken(req);
-  if (presented === null) return false;
+function tokenEquals(presented: string, token: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export type AuthTier = "control" | "readonly" | "none";
+
+// control = Auth Token or valid Web Session; readonly = Read-only Token; else none.
+export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
+  const presented = presentedToken(req);
+  if (presented !== null) {
+    // Guard the empty token: in setup mode proxy.token is "", and an empty presented
+    // token would timing-safe-equal it — never grant control on an unset token.
+    if (cfg.proxy.token && tokenEquals(presented, cfg.proxy.token)) return "control";
+    if (cfg.proxy.readonlyToken && tokenEquals(presented, cfg.proxy.readonlyToken)) return "readonly";
+  }
+  if (sessionUser(req, cfg)) return "control";
+  return "none";
 }
 
 export interface UpstreamFrame {
@@ -62,17 +78,25 @@ export function shouldAutoplay(prev: AutoplayState, next: UpstreamFrame): boolea
 }
 
 export class SoloistHub {
-  readonly url: string;
+  // Resolved live on each (re)connect so a soloist_ws change applies after a
+  // Soloist restart without restarting the Proxy.
+  private urlFn: () => string;
   private clients = new Set<WebSocket>();
+  private readonlyClients = new WeakSet<WebSocket>();
+  private latestState = new Map<string, UpstreamFrame>();
   private observers = new Set<FrameObserver>();
   private connectFn: (() => void) | null = null;
   private conn: WebSocket | null = null;
   private ready: { promise: Promise<void>; resolve: () => void };
   private stopped = false;
 
-  constructor(url: string) {
-    this.url = url;
+  constructor(url: string | (() => string)) {
+    this.urlFn = typeof url === "function" ? url : () => url;
     this.ready = deferred();
+  }
+
+  get url(): string {
+    return this.urlFn();
   }
 
   observe(fn: FrameObserver): void {
@@ -88,15 +112,21 @@ export class SoloistHub {
     if (conn && conn.readyState === WebSocket.OPEN) conn.send(JSON.stringify(message));
   }
 
-  register(client: WebSocket): void {
+  register(client: WebSocket, opts: { readOnly?: boolean } = {}): void {
     this.clients.add(client);
+    if (opts.readOnly) this.readonlyClients.add(client);
+    for (const frame of this.latestState.values()) {
+      if (client.readyState === WebSocket.OPEN) client.send(frame.raw);
+    }
   }
 
   unregister(client: WebSocket): void {
     this.clients.delete(client);
+    this.readonlyClients.delete(client);
   }
 
-  async forward(data: RawData, isBinary: boolean): Promise<void> {
+  async forward(client: WebSocket, data: RawData, isBinary: boolean): Promise<void> {
+    if (this.readonlyClients.has(client)) return; // read-only tier never reaches upstream
     const ac = new AbortController();
     const timeout = sleep(HUB_READY_TIMEOUT * 1000, "timeout" as const, { signal: ac.signal }).catch(
       () => "aborted" as const,
@@ -112,6 +142,7 @@ export class SoloistHub {
   private onUpstream(data: RawData, isBinary: boolean): void {
     const frame = decodeFrame(data, isBinary);
     if (frame) {
+      if (STATE_EVENTS.has(frame.type)) this.latestState.set(frame.type, frame);
       for (const obs of this.observers) {
         try {
           obs(frame);
@@ -141,11 +172,12 @@ export class SoloistHub {
   async run(): Promise<void> {
     let backoff = HUB_BACKOFF_BASE;
     while (!this.stopped) {
+      const url = this.urlFn();
       try {
         await new Promise<void>((resolve, reject) => {
-          const conn = new WebSocket(this.url);
+          const conn = new WebSocket(url);
           conn.on("open", () => {
-            log("connected to soloist upstream %s", this.url);
+            log("connected to soloist upstream %s", url);
             this.conn = conn;
             this.ready.resolve();
             backoff = HUB_BACKOFF_BASE;
@@ -160,7 +192,7 @@ export class SoloistHub {
           conn.on("close", () => resolve());
         });
       } catch (err) {
-        log("soloist upstream %s error: %s", this.url, (err as Error).message);
+        log("soloist upstream %s error: %s", url, (err as Error).message);
       } finally {
         this.conn = null;
         this.ready = deferred();
@@ -198,10 +230,12 @@ export const AUTOPLAY_FRAMES: Record<string, unknown>[] = [
   { type: "command", command: "play" },
 ];
 
-function attachAutoplay(hub: SoloistHub): void {
+// Reads cfg.autoplay live so a PUT /api/config toggle applies without a restart.
+function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   const state: AutoplayState = { fired: false };
   hub.onConnect(() => (state.fired = false));
   hub.observe((frame) => {
+    if (!cfg.autoplay) return;
     if (frame.type === "error") log("autoplay: upstream error frame: %s", frame.raw);
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
@@ -232,10 +266,13 @@ export class WebhookQueue {
   private cap: number;
   private onDrop: () => void;
 
+  private getDelay: () => number;
+
   constructor(
-    private delayMs: number,
+    delay: number | (() => number),
     opts: { schedule?: (fn: () => void, ms: number) => void; cap?: number; onDrop?: () => void } = {},
   ) {
+    this.getDelay = typeof delay === "function" ? delay : () => delay;
     this.schedule = opts.schedule ?? ((fn, ms) => void setTimeout(fn, ms).unref?.());
     this.cap = opts.cap ?? WEBHOOK_QUEUE_CAP;
     this.onDrop = opts.onDrop ?? (() => {});
@@ -263,55 +300,86 @@ export class WebhookQueue {
       }
       this.draining = true;
       task();
-      if (this.delayMs > 0) {
-        this.schedule(() => this.drain(), this.delayMs);
+      const delay = this.getDelay();
+      if (delay > 0) {
+        this.schedule(() => this.drain(), delay);
         return;
       }
     }
   }
 }
 
-async function postWebhook(url: string, body: string, secret: string): Promise<void> {
+export interface WebhookStat {
+  lastStatus: number | null;
+  lastAt: number | null;
+  ok: number;
+  fail: number;
+  lastError: string | null;
+}
+export type WebhookStats = Map<string, WebhookStat>;
+
+async function postWebhook(url: string, body: string, secret: string): Promise<{ status: number | null; error: string | null }> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (secret) headers.authorization = `Bearer ${secret}`;
   try {
     const res = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
     if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
+    return { status: res.status, error: null };
   } catch (err) {
     log("webhook %s failed: %s", url, (err as Error).message);
+    return { status: null, error: (err as Error).message };
   }
 }
 
-function attachWebhooks(hub: SoloistHub, wh: WebhooksConfig): void {
-  const queue = new WebhookQueue(wh.delayMs, {
+export function recordWebhookStat(stats: WebhookStats, url: string, status: number | null, error: string | null): void {
+  const s = stats.get(url) ?? { lastStatus: null, lastAt: null, ok: 0, fail: 0, lastError: null };
+  s.lastStatus = status;
+  s.lastAt = Date.now();
+  if (error === null && status !== null && status >= 200 && status < 300) {
+    s.ok++;
+  } else {
+    s.fail++;
+    s.lastError = error ?? `HTTP ${status}`;
+  }
+  stats.set(url, s);
+}
+
+// Reads cfg.webhooks live (urls, secret, delay) so PUT /api/config edits apply
+// without a restart.
+function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookStats {
+  const stats: WebhookStats = new Map();
+  const queue = new WebhookQueue(() => cfg.webhooks.delayMs, {
     onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
   });
   hub.observe((frame) => {
-    const url = resolveWebhookUrl(frame.type, wh);
-    if (url) queue.push(() => void postWebhook(url, frame.raw, wh.secret));
+    const url = resolveWebhookUrl(frame.type, cfg.webhooks);
+    if (url) queue.push(() => void postWebhook(url, frame.raw, cfg.webhooks.secret).then((r) => recordWebhookStat(stats, url, r.status, r.error)));
   });
+  return stats;
 }
 
-export function makeServer(cfg: Config): Promise<RunningProxy> {
+export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
-  const hub = new SoloistHub(`ws://${cfg.soloistWs}`);
-  if (cfg.autoplay) attachAutoplay(hub);
-  const wh = cfg.webhooks;
-  if (wh.defaultUrl || Object.keys(wh.urls).length > 0) attachWebhooks(hub, wh);
+  const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
+  attachAutoplay(hub, cfg);
+  const stats = attachWebhooks(hub, cfg);
   const wss = new WebSocketServer({ noServer: true });
 
-  const server = createServer();
+  const server = createServer((req, res) => {
+    if (!handleWebRequest(req, res, cfg, configPath, stats, control)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+  });
 
   server.on("upgrade", (req, socket, head) => {
-    if (!checkAuth(req, cfg.proxy.token)) {
+    const tier = checkAuth(req, cfg);
+    if (tier === "none") {
       log("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (client) => {
-      hub.register(client);
-      client.on("message", (data, isBinary) => hub.forward(data, isBinary));
+      hub.register(client, { readOnly: tier === "readonly" });
+      client.on("message", (data, isBinary) => hub.forward(client, data, isBinary));
       client.on("close", () => hub.unregister(client));
       client.on("error", () => hub.unregister(client));
     });
@@ -319,6 +387,10 @@ export function makeServer(cfg: Config): Promise<RunningProxy> {
 
   const hubRun = hub.run();
   hubRun.catch((e) => log("hub crashed: %s", (e as Error).message));
+
+  // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
+  // Fire-and-forget — it waits/retries for target nodes and must not block listen.
+  void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -338,8 +410,8 @@ export function makeServer(cfg: Config): Promise<RunningProxy> {
   });
 }
 
-export async function serveProxy(cfg: Config, signal: AbortSignal): Promise<void> {
-  const running = await makeServer(cfg);
+export async function serveProxy(cfg: Config, configPath: string, signal: AbortSignal, control?: SoloistControl): Promise<void> {
+  const running = await makeServer(cfg, configPath, control);
   if (!signal.aborted) {
     await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
   }
