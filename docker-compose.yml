@@ -9,10 +9,11 @@ services:
     # build: .                  # uncomment (and comment the image line) to build locally
     network_mode: host          # required for Spotify Connect login + LAN Snapcast
     restart: unless-stopped
-    env_file:                   # copy .env.example -> .env and fill in the secrets
-      - path: .env
-        format: raw             # values are literal — keys containing '$' are NOT interpolated
     volumes:
+      # Config File — the single source of truth (ADR-0010). No env: edit
+      # ./config/config.yaml by hand or in the Landing Page, which writes it back.
+      # First boot seeds it from the packaged example if the file is absent.
+      - ./config:/config        # holds config.yaml (bind-mount the dir, not the file)
       - soloist-data:/data      # Soloist session data-dir (holds the login after pairing)
       - soloist-cache:/cache    # downloaded-binary cache
 
@@ -20,7 +21,7 @@ services:
     # login, since Docker Desktop can't put mDNS on your physical LAN). Comment out
     # network_mode above and use:
     # ports:
-    #   - "8687:8687"           # auth Proxy (WebSocket control)
+    #   - "8687:8687"           # auth Proxy (WebSocket control + web UI)
     #   - "1704:1704"           # Snapcast audio stream
     #   - "1705:1705"           # Snapcast control (TCP JSON-RPC)
     #   - "1780:1780"           # Snapcast web UI

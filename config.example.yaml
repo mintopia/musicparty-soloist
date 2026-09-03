@@ -7,7 +7,8 @@
 soloist:
   device_name: "Music Party"      # name shown in Spotify Connect
   api_key: ""                     # Spotify API Key (required) — kept in cleartext here
-  data_dir: "./.soloist-data"     # persistent session state
+  data_dir: "/data"               # persistent session state (Docker volume);
+                                  # use "./.soloist-data" when running standalone
   extra_args: []
   # Docker-only: PipeWire null-sink to play into. Empty in standalone (no audio path).
   pipewire_device: ""
