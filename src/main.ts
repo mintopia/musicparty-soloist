@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ConfigError, DEFAULT_CONFIG_PATH, defaultConfig, ensureSecrets, loadConfig, soloistReady } from "./config.js";
 import { serveProxy } from "./proxy.js";
-import { supervise, Aborted, SoloistControl } from "./supervisor.js";
+import { supervise, Aborted, SoloistControl, setPipewireDeviceOverride } from "./supervisor.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("main");
@@ -12,8 +12,13 @@ async function main(): Promise<number> {
   const { values } = parseArgs({
     options: {
       config: { type: "string" },
+      // Docker-only: pin Soloist's output to the soloist-sink null-sink (ADR-0011).
+      // Not env (ADR-0010) and not in the Config File — set by the s6 run script.
+      "pipewire-device": { type: "string" },
     },
   });
+
+  if (values["pipewire-device"]) setPipewireDeviceOverride(values["pipewire-device"]);
 
   const configPath = values.config ?? DEFAULT_CONFIG_PATH;
   let cfg;
@@ -34,15 +39,15 @@ async function main(): Promise<number> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // The Proxy HTTP/WS server always starts; Soloist is supervised only once web creds
-  // and Soloist args are present. Otherwise we serve the Setup Page and wait (T3).
+  // The Proxy HTTP/WS server always starts. The supervisor also always starts but
+  // parks until the config is minimally valid (web creds + Soloist args): first-run
+  // setup and PUT /api/config mutate cfg in place, so completing setup starts Soloist
+  // without a process restart (T3).
   const control = new SoloistControl();
   const prx = serveProxy(cfg, configPath, controller.signal, control);
-  const tasks: Promise<unknown>[] = [prx];
-  if (soloistReady(cfg)) {
-    tasks.push(supervise(cfg, { signal: controller.signal, control }));
-  } else {
-    log("first-run setup mode: web creds/Soloist args incomplete — serving Setup Page, Soloist not started");
+  const tasks: Promise<unknown>[] = [prx, supervise(cfg, { signal: controller.signal, control })];
+  if (!soloistReady(cfg)) {
+    log("first-run setup mode: web creds/Soloist args incomplete — serving Setup Page, Soloist parked until configured");
   }
 
   try {

@@ -9,7 +9,17 @@ services:
     # build: .                  # uncomment (and comment the image line) to build locally
     network_mode: host          # required for Spotify Connect login + LAN Snapcast
     restart: unless-stopped
+    # Pass the host's ALSA devices through so the container's PipeWire enumerates the
+    # sound cards (e.g. a HAT DAC) as selectable hardware Audio Outputs. Remove if you
+    # only ever stream via Snapcast. The container is PID-1'd by s6 as root, so it can
+    # open /dev/snd without an explicit audio group.
+    devices:
+      - /dev/snd:/dev/snd
     volumes:
+      # WirePlumber discovers ALSA cards through udev; the container has no udevd, so
+      # mount the host's populated udev runtime read-only or hardware sinks won't
+      # enumerate (you'd only get the Snapcast output). Harmless if absent.
+      - /run/udev:/run/udev:ro
       # Config File — the single source of truth (ADR-0010). No env: edit
       # ./config/config.yaml by hand or in the Landing Page, which writes it back.
       # First boot seeds it from the packaged example if the file is absent.

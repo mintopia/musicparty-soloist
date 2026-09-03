@@ -54,14 +54,22 @@ audio:
   outputs: []
   snapcast: true
 
-# Lyrics Overlay styling. The Proxy embeds this subset into the served overlay page.
+# Lyrics Overlay styling. The Proxy embeds this into the served overlay page; edit
+# here or in the Landing Page (Overlay section) with a live preview.
 overlay:
-  font: "sans-serif"
-  font_size: 48
-  color: "#ffffff"
-  highlight_color: "#1db954"
-  effect: "fade"
-  alignment: "center"
+  font: "system-ui, sans-serif" # or Inter / Roboto / Montserrat / Bebas Neue / monospace
+  font_size: 40                 # px at 1080p
+  color: "#ffffff"              # current line
+  neighbour_color: "#ffffff"    # other lines
+  dim_opacity: 0.35             # other-line opacity, 0..1
+  motion: "slide"               # slide | crossfade | pop | instant
+  easing: "cubic-bezier(.16,1,.3,1)"
+  transition_ms: 350            # line-advance duration
+  effect: "none"                # none|glow|shimmer|rainbow|sparkles|wipe|neon|glitch|pulse
+  fx_color: "#ffd24a"
+  fx_intensity: 50              # 0..100
+  fx_dur_ms: 1600               # effect period
+  alignment: "center"           # left | center | right
+  anchor: "bottom"              # top | center | bottom
+  line_count: 3                 # visible lines (odd)
   timing_offset_ms: 0
-  line_count: 3
-  anchor: "bottom"

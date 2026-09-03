@@ -112,6 +112,15 @@ export class SoloistHub {
     if (conn && conn.readyState === WebSocket.OPEN) conn.send(JSON.stringify(message));
   }
 
+  // Push a proxy-originated message (not from upstream) to every connected client —
+  // e.g. live overlay-config updates so open overlays restyle on save.
+  broadcastMessage(obj: Record<string, unknown>): void {
+    const raw = JSON.stringify(obj);
+    for (const client of this.clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(raw);
+    }
+  }
+
   register(client: WebSocket, opts: { readOnly?: boolean } = {}): void {
     this.clients.add(client);
     if (opts.readOnly) this.readonlyClients.add(client);
@@ -365,8 +374,11 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   const stats = attachWebhooks(hub, cfg);
   const wss = new WebSocketServer({ noServer: true });
 
+  // Broadcast the (possibly changed) Overlay Config to open overlays so they restyle
+  // live on save — no reload needed in OBS.
+  const onConfigChange = (c: Config) => hub.broadcastMessage({ type: "overlay_config", overlay: c.overlay });
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg, configPath, stats, control)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath, stats, control, onConfigChange)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {

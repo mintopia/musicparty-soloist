@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lyrics Overlay</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Instrument+Sans:wght@500;600&display=swap');
+    /* Transparent for OBS/browser-source compositing; the engine injects its own
+       styles + fonts and reads styling from the server-embedded Overlay Config. */
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:transparent;overflow:hidden}
-    #overlay{position:fixed;inset:0;font-family:'Space Grotesk',system-ui,sans-serif}
-    @keyframes soloist-fade{from{opacity:0}}
+    #overlay{position:fixed;inset:0}
   </style>
 </head>
 <body>

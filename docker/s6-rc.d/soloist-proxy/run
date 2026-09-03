@@ -8,4 +8,6 @@ cd /app
 # starting point; thereafter the file (hand- or UI-edited) is authoritative.
 [ -f /config/config.yaml ] || cp config.example.yaml /config/config.yaml
 wait-for-sink soloist-sink
-exec node dist/main.js --config /config/config.yaml
+# Pin Soloist's output to the null-sink so it never follows the default sink onto a
+# hardware card once ALSA devices enumerate (ADR-0011); hardware is fed by the fan-out.
+exec node dist/main.js --config /config/config.yaml --pipewire-device soloist-sink

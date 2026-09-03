@@ -46,153 +46,414 @@ export function escapeHtml(s) {
 
 // --- browser-only below ---
 
-// Pull the current-track identity out of a Soloist state frame. Soloist's exact
-// schema isn't pinned here, so read the plausible shapes defensively; a frame we
-// can't read leaves the last track in place.
+// Current track from a Soloist frame. track_changed / playback_state nest the
+// Entity under `item`; title = decorations.identity.name, artists =
+// creators[].entity.identity.name, album = parent.entity.identity.name.
 function readTrack(msg) {
-  const t = (msg && typeof msg.track === "object" && msg.track) || msg || {};
-  const title = t.name || t.title || msg.name || msg.title || "";
-  let artist = "";
-  const artists = t.artists || msg.artists;
-  if (Array.isArray(artists)) artist = artists.map((a) => (typeof a === "string" ? a : a && a.name) || "").filter(Boolean).join(", ");
-  else artist = t.artist || msg.artist || (typeof artists === "string" ? artists : "");
-  const album = (t.album && (t.album.name || t.album)) || msg.album || "";
-  const durationMs = Number(t.duration_ms ?? t.duration ?? msg.duration_ms ?? msg.duration ?? 0) || 0;
+  const item = msg && msg.item;
+  if (!item || typeof item !== "object") return null;
+  const d = item.decorations || {};
+  const title = d.identity?.name || "";
+  const creators = Array.isArray(d.creators) ? d.creators : [];
+  const artist = creators.map((c) => c?.entity?.decorations?.identity?.name).filter(Boolean).join(", ");
+  const album = d.parent?.entity?.decorations?.identity?.name || "";
+  const durationMs = Number(d.playback?.duration_ms) || 0;
   if (!title && !artist) return null;
-  return { title, artist, album: typeof album === "string" ? album : "", durationMs };
+  return { uri: item.uri || "", title, artist, album, durationMs };
 }
 
 function readPlayback(msg) {
-  const positionMs = Number(msg.position_ms ?? msg.position ?? msg.progress_ms ?? NaN);
-  let playing;
-  if (typeof msg.playing === "boolean") playing = msg.playing;
-  else if (typeof msg.is_playing === "boolean") playing = msg.is_playing;
-  else if (typeof msg.paused === "boolean") playing = !msg.paused;
-  return { positionMs: Number.isNaN(positionMs) ? null : positionMs, playing };
+  const p = msg?.position;
+  const positionMs = p && typeof p.position_ms === "number" ? p.position_ms : null;
+  const timestampMs = p && typeof p.timestamp_ms === "number" ? p.timestamp_ms : null;
+  const speed = p && typeof p.speed === "number" ? p.speed : null;
+  const playing = typeof msg?.status === "string" ? msg.status === "playing" : undefined;
+  return { positionMs, timestampMs, speed, playing };
 }
 
-const LRCLIB = "https://lrclib.net/api/get";
-const CACHE_PREFIX = "soloist-lyrics:";
+// localStorage lyrics cache. Value is the lrclib record as a JSON object
+// { syncedLyrics, plainLyrics, cachedAt } — syncedLyrics null means a *definitive*
+// miss (lrclib has none) so we don't re-hit it every play. Keyed by the stable
+// Spotify track URI — NOT artist/title/duration, which drift between frames and
+// collide. Only definitive API responses are cached; a transient network / rate-
+// limit failure returns null WITHOUT caching, so a blip never poisons a track as
+// permanently lyric-less. Bumping the prefix invalidates old-schema entries.
+const CACHE_PREFIX = "soloist-lyrics:v2:";
+const LRCLIB_CLIENT = "musicparty-soloist (https://github.com/mintopia/musicparty-soloist)";
 
-function cacheKey(track) {
-  return CACHE_PREFIX + [track.artist, track.title, Math.round(track.durationMs / 1000)].join("|").toLowerCase();
+function cacheGet(key) {
+  try { const v = localStorage.getItem(CACHE_PREFIX + key); return v === null ? undefined : JSON.parse(v); }
+  catch { return undefined; } // absent, unreadable, or an old-schema value -> refetch
+}
+function cacheSet(key, obj) {
+  const json = JSON.stringify(obj);
+  try { localStorage.setItem(CACHE_PREFIX + key, json); }
+  catch {
+    // quota/blocked: drop our own entries and retry once, then give up.
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k);
+      localStorage.setItem(CACHE_PREFIX + key, json);
+    } catch { /* ignore */ }
+  }
 }
 
-// Fetch synced lyrics for a track from lrclib, cached in localStorage (misses
-// cached too, so a track without lyrics is not refetched every play).
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Throws on transient failure (network / 5xx) so the caller skips caching; returns
+// null on a 404 (definitive "not found for these params"); honours 429 Retry-After.
+async function lrclibGet(qs) {
+  const r = await fetch("https://lrclib.net/api/get?" + qs, { headers: { "Lrclib-Client": LRCLIB_CLIENT } });
+  if (r.status === 429) { await wait((Number(r.headers.get("Retry-After")) || 5) * 1000); return lrclibGet(qs); }
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("lrclib get " + r.status);
+  return r.json();
+}
+async function lrclibSearch(qs) {
+  const r = await fetch("https://lrclib.net/api/search?" + qs, { headers: { "Lrclib-Client": LRCLIB_CLIENT } });
+  if (r.status === 429) { await wait((Number(r.headers.get("Retry-After")) || 5) * 1000); return lrclibSearch(qs); }
+  if (!r.ok) throw new Error("lrclib search " + r.status);
+  return r.json();
+}
+
+// Synced lyrics for a track: cache -> lrclib get -> lrclib search fallback.
 export async function fetchSyncedLyrics(track) {
-  const key = cacheKey(track);
-  try {
-    const hit = localStorage.getItem(key);
-    if (hit !== null) return hit === "" ? null : parseLRC(hit);
-  } catch { /* localStorage unavailable — fetch each time */ }
+  const key = track.uri || `${track.artist}|${track.title}`.toLowerCase();
+  const cached = cacheGet(key);
+  if (cached !== undefined) return cached.syncedLyrics ? parseLRC(cached.syncedLyrics) : null;
 
-  const params = new URLSearchParams({ artist_name: track.artist, track_name: track.title });
-  if (track.album) params.set("album_name", track.album);
-  if (track.durationMs) params.set("duration", String(Math.round(track.durationMs / 1000)));
-
-  let synced = "";
+  let synced = null, plain = null;
   try {
-    const res = await fetch(`${LRCLIB}?${params.toString()}`, { headers: { accept: "application/json" } });
-    if (res.ok) {
-      const body = await res.json();
-      synced = (body && body.syncedLyrics) || "";
+    const p = new URLSearchParams({ track_name: track.title, artist_name: track.artist });
+    if (track.album) p.set("album_name", track.album);
+    if (track.durationMs) p.set("duration", String(Math.round(track.durationMs / 1000)));
+    const rec = await lrclibGet(p.toString());
+    if (rec && rec.syncedLyrics) {
+      synced = rec.syncedLyrics; plain = rec.plainLyrics || null;
+    } else {
+      const sp = new URLSearchParams({ track_name: track.title });
+      if (track.artist) sp.set("artist_name", track.artist);
+      const results = await lrclibSearch(sp.toString());
+      const hit = (results || []).find((x) => x && x.syncedLyrics);
+      if (hit) { synced = hit.syncedLyrics; plain = hit.plainLyrics || null; }
     }
-  } catch { /* network/CORS failure — treat as no lyrics */ }
-
-  try { localStorage.setItem(key, synced); } catch { /* ignore */ }
+  } catch {
+    return null; // transient — do NOT cache, so it retries next play
+  }
+  cacheSet(key, { syncedLyrics: synced, plainLyrics: plain, cachedAt: Date.now() }); // definitive hit or miss
   return synced ? parseLRC(synced) : null;
 }
 
-const ANCHOR_CSS = { top: "top:8%;bottom:auto", center: "top:50%;transform:translateY(-50%)", bottom: "top:auto;bottom:9%" };
+// Rendering engine + effects ported from the soloist-docker overlay prototype,
+// adapted to read the server-embedded Overlay Config instead of URL params. The
+// scrolling track, the nine current-line effects, and the reduced-motion fallbacks
+// are that prototype's; only style plumbing (applyStyle/mount*) is new here.
+const OVERLAY_CSS = `
+.lyric-viewport{position:relative;width:100%;overflow:hidden;--fade:9%;
+  -webkit-mask-image:linear-gradient(to bottom,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent);
+  mask-image:linear-gradient(to bottom,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent)}
+.lyric-track{position:absolute;left:0;right:0;top:0;will-change:transform}
+.lyric-viewport .line{font-family:var(--font);font-size:var(--size);font-weight:800;line-height:1.2;
+  color:var(--neighbour);opacity:var(--dim);
+  transition:opacity var(--dur) var(--ease),color var(--dur) var(--ease),transform var(--dur) var(--ease);
+  text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 2px rgba(0,0,0,1);
+  -webkit-text-stroke:1px rgba(0,0,0,.55);paint-order:stroke fill;padding:.1em 0;overflow-wrap:break-word}
+.lyric-viewport .line.current{opacity:1;color:var(--current)}
+.lyric-viewport .line.pop.current{transform:scale(1.14)}
+.lyric-viewport .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both}
+@keyframes sol-lineFocus{from{opacity:var(--dim);transform:translateY(.18em)}to{opacity:1;transform:none}}
+.lyric-viewport .line:empty::after{content:"\\00a0"}
+.lines-left .line{text-align:left;transform-origin:left center}
+.lines-center .line{text-align:center;transform-origin:center}
+.lines-right .line{text-align:right;transform-origin:right center}
+.fx-glow .line.current{animation:sol-fxGlow var(--fx-dur) ease-in-out infinite}
+.fx-rainbow .line.current{color:#ff3b6b;animation:sol-fxHue calc(var(--fx-dur)*3) linear infinite}
+.fx-glow .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both,sol-fxGlow var(--fx-dur) ease-in-out infinite}
+.fx-rainbow .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both,sol-fxHue calc(var(--fx-dur)*3) linear infinite}
+.fx-shimmer .line.current{position:relative}
+.fx-shimmer .line.current::after{content:attr(data-text);position:absolute;left:0;top:.1em;width:100%;
+  color:var(--fx-color);-webkit-text-stroke:0;text-shadow:none;pointer-events:none;
+  -webkit-mask-image:linear-gradient(105deg,transparent 44%,#000 50%,transparent 56%);
+  mask-image:linear-gradient(105deg,transparent 44%,#000 50%,transparent 56%);
+  -webkit-mask-size:300% 100%;mask-size:300% 100%;-webkit-mask-position:120% 0;mask-position:120% 0;
+  animation:sol-fxShimmer var(--fx-dur) linear infinite}
+@keyframes sol-fxGlow{0%,100%{text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 calc(2px + 6px*var(--fx-intensity)) var(--fx-color)}
+  50%{text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 calc(8px + 24px*var(--fx-intensity)) var(--fx-color),0 0 calc(16px + 38px*var(--fx-intensity)) var(--fx-color)}}
+@keyframes sol-fxHue{to{filter:hue-rotate(360deg)}}
+@keyframes sol-fxShimmer{to{-webkit-mask-position:-120% 0;mask-position:-120% 0}}
+.sparkle{position:absolute;pointer-events:none;font-size:.62em;z-index:3;color:var(--fx-color);
+  text-shadow:0 0 8px currentColor;animation:sol-fxSparkle var(--fx-dur) ease-in-out forwards}
+@keyframes sol-fxSparkle{0%{opacity:0;transform:scale(.3) rotate(0deg)}32%{opacity:1}60%{opacity:1}
+  100%{opacity:0;transform:scale(1.15) translateY(-1em) rotate(45deg)}}
+.fx-wipe .line.current{position:relative}
+.fx-wipe .line.current::after{content:attr(data-text);position:absolute;left:0;top:.1em;width:100%;
+  color:var(--fx-color);-webkit-text-stroke:1px rgba(0,0,0,.55);paint-order:stroke fill;
+  text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 2px rgba(0,0,0,1);pointer-events:none;
+  -webkit-mask-image:linear-gradient(90deg,#000 50%,transparent 50%);mask-image:linear-gradient(90deg,#000 50%,transparent 50%);
+  -webkit-mask-size:200% 100%;mask-size:200% 100%;-webkit-mask-position:100% 0;mask-position:100% 0;
+  animation:sol-fxWipe var(--line-dur,3s) linear both}
+@keyframes sol-fxWipe{to{-webkit-mask-position:0% 0;mask-position:0% 0}}
+.fx-neon .line.current{animation:sol-fxNeon var(--fx-dur) linear infinite}
+.fx-neon .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both,sol-fxNeon var(--fx-dur) linear infinite}
+@keyframes sol-fxNeon{0%,18%,22%,54%,57%,100%{opacity:1;text-shadow:0 2px 8px rgba(0,0,0,.9),
+    0 0 calc(4px + 10px*var(--fx-intensity)) var(--fx-color),0 0 calc(11px + 26px*var(--fx-intensity)) var(--fx-color)}
+  20%,55%,56%{opacity:.78;text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 2px var(--fx-color)}}
+.fx-glitch .line.current{position:relative;z-index:0}
+.fx-glitch .line.current::before,.fx-glitch .line.current::after{content:attr(data-text);position:absolute;left:0;top:.1em;width:100%;z-index:-1;
+  -webkit-text-stroke:0;text-shadow:none;pointer-events:none;opacity:calc(.35 + .5*var(--fx-intensity))}
+.fx-glitch .line.current::before{color:#ff2d55;animation:sol-fxGlitchR var(--fx-dur) steps(3,end) infinite}
+.fx-glitch .line.current::after{color:#00e5ff;animation:sol-fxGlitchC var(--fx-dur) steps(3,end) infinite}
+@keyframes sol-fxGlitchR{0%,100%{transform:translate(0,0)}30%{transform:translate(calc(-1px - 3px*var(--fx-intensity)),1px)}60%{transform:translate(calc(-2px*var(--fx-intensity)),-1px)}}
+@keyframes sol-fxGlitchC{0%,100%{transform:translate(0,0)}30%{transform:translate(calc(1px + 3px*var(--fx-intensity)),-1px)}60%{transform:translate(calc(2px*var(--fx-intensity)),1px)}}
+.fx-pulse .line.current{animation:sol-fxPulse var(--fx-dur) ease-in-out infinite}
+.fx-pulse .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both,sol-fxPulse var(--fx-dur) ease-in-out infinite}
+@keyframes sol-fxPulse{0%,100%{scale:1;text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 calc(2px + 4px*var(--fx-intensity)) var(--fx-color)}
+  50%{scale:calc(1 + .05*var(--fx-intensity));text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 calc(9px + 18px*var(--fx-intensity)) var(--fx-color)}}
+@media (prefers-reduced-motion:reduce){
+  .lyric-viewport .line{transition-property:opacity,color}
+  .lyric-viewport .line.slide.current,.fx-glow .line.slide.current,.fx-rainbow .line.slide.current,
+  .fx-neon .line.slide.current,.fx-pulse .line.slide.current,
+  .fx-glow .line.current,.fx-rainbow .line.current,.fx-neon .line.current,.fx-pulse .line.current{animation:none;scale:1}
+  .fx-glow .line.current,.fx-neon .line.current,.fx-pulse .line.current{text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 calc(6px + 14px*var(--fx-intensity)) var(--fx-color)}
+  .fx-shimmer .line.current::after{animation:none;opacity:0}
+  .fx-wipe .line.current::after{animation:none;-webkit-mask-position:0 0;mask-position:0 0}
+  .fx-glitch .line.current::before,.fx-glitch .line.current::after{animation:none;opacity:0}
+  .sparkle{display:none}}
+`;
 
-// Build the overlay DOM from Overlay Config and return render(lines, idx).
-export function makeRenderer(root, cfg) {
-  const font = cfg.font || "sans-serif";
-  const color = cfg.color || "#ffffff";
-  const highlight = cfg.highlightColor || color;
-  const fontSize = Number(cfg.fontSize) || 48;
-  const align = cfg.alignment || "center";
-  const lineCount = Math.max(1, Number(cfg.lineCount) || 3);
-  const fade = (cfg.effect || "fade") !== "none";
+let cssInjected = false;
+function injectCss() {
+  if (cssInjected || typeof document === "undefined") return;
+  const s = document.createElement("style");
+  s.id = "soloist-overlay-css";
+  s.textContent = OVERLAY_CSS;
+  document.head.appendChild(s);
+  cssInjected = true;
+}
 
-  const stack = document.createElement("div");
-  stack.style.cssText =
-    `position:absolute;left:0;right:0;${ANCHOR_CSS[cfg.anchor] || ANCHOR_CSS.bottom};` +
-    `text-align:${align};padding:0 6vw;font-family:${font};pointer-events:none`;
-  root.appendChild(stack);
-
-  const side = Math.floor((lineCount - 1) / 2);
-
-  return function render(lines, idx) {
-    stack.textContent = "";
-    if (idx < 0 || lines.length === 0) return;
-    for (let i = idx - side; i <= idx + side; i++) {
-      if (i < 0 || i >= lines.length) continue;
-      const active = i === idx;
-      const el = document.createElement("div");
-      const size = active ? fontSize : Math.round(fontSize * 0.5);
-      el.style.cssText =
-        `font-weight:700;line-height:1.15;letter-spacing:-.01em;margin:8px 0;` +
-        `font-size:${size}px;color:${color};` +
-        (fade ? "animation:soloist-fade .35s ease;" : "") +
-        (active
-          ? `text-shadow:0 0 24px ${highlight}99, 0 3px 12px rgba(0,0,0,.7);-webkit-text-stroke:1px rgba(0,0,0,.25);opacity:1`
-          : `opacity:.34;text-shadow:0 2px 10px rgba(0,0,0,.6)`);
-      el.innerHTML = escapeHtml(lines[i].text);
-      stack.appendChild(el);
+// Google-font families the overlay offers; loaded on demand when selected.
+const GOOGLE_FONTS = { Inter: "Inter:wght@400;700;800", Roboto: "Roboto:wght@400;700;900", Montserrat: "Montserrat:wght@600;800", "Bebas Neue": "Bebas+Neue" };
+const loadedFonts = new Set();
+function ensureFont(stack) {
+  if (typeof document === "undefined") return;
+  for (const fam of Object.keys(GOOGLE_FONTS)) {
+    if (stack.includes(fam) && !loadedFonts.has(fam)) {
+      loadedFonts.add(fam);
+      const l = document.createElement("link");
+      l.rel = "stylesheet";
+      l.href = `https://fonts.googleapis.com/css2?family=${GOOGLE_FONTS[fam]}&display=swap`;
+      document.head.appendChild(l);
     }
-  };
+  }
 }
 
-function makeChip(root) {
-  const chip = document.createElement("div");
-  chip.style.cssText =
-    "position:absolute;left:30px;bottom:120px;display:none;gap:11px;align-items:center;" +
-    "background:rgba(10,10,14,.42);backdrop-filter:blur(8px);border:1px solid #ffffff22;" +
-    "border-radius:12px;padding:9px 13px;font-family:'Instrument Sans',system-ui,sans-serif";
-  const art = document.createElement("div");
-  art.style.cssText = "width:34px;height:34px;border-radius:7px;background:linear-gradient(135deg,#2dd4bf,#06b6d4);flex:0 0 auto";
-  const meta = document.createElement("div");
-  const title = document.createElement("div");
-  title.style.cssText = "color:#fff;font-weight:700;font-size:14px";
-  const artist = document.createElement("div");
-  artist.style.cssText = "color:#ffffffaa;font-size:12px";
-  meta.append(title, artist);
-  chip.append(art, meta);
-  root.appendChild(chip);
-  return function update(track) {
-    if (!track) { chip.style.display = "none"; return; }
-    title.textContent = track.title;
-    artist.textContent = track.artist;
-    chip.style.display = "flex";
-  };
+const prefersReduce = typeof matchMedia !== "undefined" ? matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+
+// Overlay Config -> CSS custom properties on the stage host.
+function applyStyle(host, cfg) {
+  const set = (k, v) => host.style.setProperty(k, v);
+  set("--font", cfg.font || "system-ui, sans-serif");
+  set("--size", (Number(cfg.fontSize) || 40) + "px");
+  set("--current", cfg.color || "#ffffff");
+  set("--neighbour", cfg.neighbourColor || cfg.color || "#ffffff");
+  set("--dim", String(cfg.dimOpacity ?? 0.35));
+  set("--dur", (cfg.motion === "instant" ? 0 : Number(cfg.transitionMs) || 350) + "ms");
+  set("--ease", cfg.easing || "ease-out");
+  set("--fx-color", cfg.fxColor || "#ffd24a");
+  set("--fx-intensity", String((Number(cfg.fxIntensity) || 0) / 100));
+  set("--fx-dur", (Number(cfg.fxDurMs) || 1600) + "ms");
 }
 
-// Browser entry: connect read-only, follow the current track, fetch its synced
-// lyrics, and drive the renderer off the extrapolated playback position.
+function anchorCss(anchor) {
+  if (anchor === "top") return "top:8%;";
+  if (anchor === "center") return "top:50%;transform:translateY(-50%);";
+  return "bottom:9%;";
+}
+
+// Scrolling-track renderer: all visible lines live in one absolutely-positioned
+// track; on advance the whole track glides so the current line stays centred.
+// Reuses one element per line index for continuity.
+function makeTrackRenderer(container) {
+  const track = document.createElement("div");
+  track.className = "lyric-track";
+  container.appendChild(track);
+  let map = new Map();
+  let lastCurrent = -1;
+
+  function clear() { map = new Map(); track.replaceChildren(); track.style.transform = ""; container.style.height = ""; lastCurrent = -1; }
+
+  function render(lines, idx, count, opts) {
+    if (idx < 0 || lines.length === 0) { clear(); return; }
+    const motion = opts.motion || "slide";
+    const effect = opts.effect || "none";
+    const durMs = opts.durMs ?? 350;
+    const easing = opts.easing || "ease-out";
+    const pad = 2;
+    const half = Math.floor(count / 2);
+    const start = Math.max(0, idx - half - pad);
+    const end = Math.min(lines.length - 1, idx + (count - 1 - half) + pad);
+
+    const reuse = map.get(idx);
+    const firstTop = reuse ? reuse.getBoundingClientRect().top : null;
+
+    for (const [i, el] of map) if (i < start || i > end) { el.remove(); map.delete(i); }
+    const frag = document.createDocumentFragment();
+    for (let i = start; i <= end; i++) {
+      let el = map.get(i);
+      if (!el) { el = document.createElement("div"); el.textContent = lines[i].text; el.dataset.text = lines[i].text; map.set(i, el); }
+      el.className = "line " + motion + (i === idx ? " current" : "");
+      frag.appendChild(el);
+    }
+    track.appendChild(frag);
+
+    const cur = map.get(idx);
+    if (effect === "wipe") {
+      const nextT = lines[idx + 1] ? lines[idx + 1].time : lines[idx].time + 4;
+      const d = Math.max(600, Math.min((nextT - lines[idx].time) * 1000, 15000));
+      cur.style.setProperty("--line-dur", d + "ms");
+    }
+    const cs = getComputedStyle(cur);
+    let lineH = parseFloat(cs.lineHeight); if (!lineH) lineH = parseFloat(cs.fontSize) * 1.2;
+    const nominal = lineH + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    let vh = 0;
+    for (let i = idx - half; i <= idx + half; i++) { const el = map.get(i); vh += el ? el.offsetHeight : nominal; }
+    container.style.height = Math.round(vh) + "px";
+    const tyTarget = Math.round(vh / 2 - (cur.offsetTop + cur.offsetHeight / 2));
+
+    track.getAnimations().forEach((a) => a.cancel());
+    track.style.transform = `translateY(${tyTarget}px)`;
+    const snap = motion === "crossfade" || motion === "instant" || durMs <= 0 || firstTop == null || prefersReduce.matches;
+    let scrollAnim = null;
+    if (!snap) {
+      const fromTy = tyTarget + (firstTop - cur.getBoundingClientRect().top);
+      scrollAnim = track.animate([{ transform: `translateY(${fromTy}px)` }, { transform: `translateY(${tyTarget}px)` }], { duration: durMs, easing });
+    }
+
+    if (effect === "sparkles" && idx !== lastCurrent && !prefersReduce.matches) {
+      const burst = () => { if (cur.classList.contains("current")) sparkle(container, cur, opts); };
+      if (scrollAnim) scrollAnim.finished.then(burst).catch(() => {}); else burst();
+    }
+    lastCurrent = idx;
+  }
+  return { render, clear };
+}
+
+function textRect(lineEl) {
+  let r;
+  try { const rng = document.createRange(); rng.selectNodeContents(lineEl); r = rng.getBoundingClientRect(); } catch {}
+  return r && r.width ? r : lineEl.getBoundingClientRect();
+}
+
+function sparkle(container, lineEl, opts) {
+  const c = container.getBoundingClientRect(), r = textRect(lineEl);
+  const intensity = opts?.fxIntensity ?? 0.5;
+  const life = opts?.fxDur ?? 1600;
+  const n = Math.round(6 + intensity * 26);
+  for (let k = 0; k < n; k++) {
+    const s = document.createElement("span");
+    s.className = "sparkle";
+    s.textContent = "✦";
+    s.style.left = r.left - c.left + Math.random() * r.width + "px";
+    s.style.top = r.top - c.top + Math.random() * r.height + "px";
+    s.style.animationDelay = Math.random() * life * 0.35 + "ms";
+    container.appendChild(s);
+    setTimeout(() => s.remove(), life * 1.4 + 200);
+  }
+}
+
+// Mount a full-size overlay into `stage`: CSS vars + anchored viewport + renderer.
+// Returns { render(lines, idx), clear }. Used by the overlay page (stage = the page)
+// and, scaled, by the Landing Page preview.
+export function mountOverlay(stage, cfg) {
+  injectCss();
+  let cur = cfg;
+  if (!stage.style.position) stage.style.position = "relative";
+  const wrap = document.createElement("div");
+  const viewport = document.createElement("div");
+  wrap.appendChild(viewport);
+  stage.appendChild(wrap);
+  const r = makeTrackRenderer(viewport);
+  let last = { lines: [], idx: -1 };
+
+  function applyAll() {
+    ensureFont(cur.font || "");
+    applyStyle(stage, cur);
+    wrap.style.cssText = "position:absolute;left:0;right:0;padding:0 5%;pointer-events:none;" + anchorCss(cur.anchor);
+    viewport.className = "lyric-viewport lines-" + (cur.alignment || "center") + " fx-" + (cur.effect || "none");
+  }
+  applyAll();
+
+  function render(lines, idx) {
+    last = { lines, idx };
+    const count = Math.max(1, Number(cur.lineCount) || 3);
+    const opts = { motion: cur.motion, effect: cur.effect, durMs: Number(cur.transitionMs) || 350, easing: cur.easing, fxIntensity: (Number(cur.fxIntensity) || 0) / 100, fxDur: Number(cur.fxDurMs) || 1600 };
+    r.render(lines, idx, count, opts);
+  }
+  // Apply a new Overlay Config live (font/colour/motion/effect/anchor/lines) and
+  // re-render the current window — used when the proxy pushes overlay_config on save.
+  function restyle(next) {
+    cur = next;
+    applyAll();
+    r.clear();
+    render(last.lines, last.idx);
+  }
+  return { render, restyle, clear: r.clear };
+}
+
+// Landing Page preview: render at a 1080p-ish reference and CSS-scale to fill
+// `container` by width — a true-to-life miniature over a transparent checkerboard
+// (what OBS composites). Returns render(lines, idx).
+export function mountPreview(container, cfg, { refW = 1280, checker = true } = {}) {
+  container.style.position = "relative";
+  container.style.overflow = "hidden";
+  container.innerHTML = "";
+  if (checker) {
+    container.style.backgroundColor = "#141414";
+    container.style.backgroundImage =
+      "linear-gradient(45deg,#242424 25%,transparent 25%),linear-gradient(-45deg,#242424 25%,transparent 25%)," +
+      "linear-gradient(45deg,transparent 75%,#242424 75%),linear-gradient(-45deg,transparent 75%,#242424 75%)";
+    container.style.backgroundSize = "18px 18px";
+    container.style.backgroundPosition = "0 0,0 9px,9px -9px,-9px 0";
+  } else {
+    container.style.backgroundImage = "none";
+    container.style.backgroundColor = "#14161f";
+  }
+  const scale = (container.clientWidth || refW) / refW;
+  const stage = document.createElement("div");
+  const stageH = (container.clientHeight || 200) / scale;
+  stage.style.cssText = `position:absolute;left:0;top:0;width:${refW}px;height:${stageH}px;transform:scale(${scale});transform-origin:top left`;
+  container.appendChild(stage);
+  return mountOverlay(stage, cfg).render;
+}
+
+// Browser entry (overlay page): connect read-only, follow the current track, fetch
+// its synced lyrics, and drive the renderer off the extrapolated playback position.
+// Lyrics only — no track-name chip.
 export function startOverlay(boot) {
   const cfg = boot.overlay || {};
   const root = document.getElementById("overlay") || document.body;
-  const render = makeRenderer(root, cfg);
-  const updateChip = makeChip(root);
-  const offsetSec = (Number(cfg.timingOffsetMs) || 0) / 1000;
+  // Full-viewport positioning context (CSS gives #overlay position:fixed;inset:0).
+  // Must NOT be `relative` — a relative root collapses to zero height, so the
+  // absolutely-positioned, bottom/center-anchored lyric block renders at the top.
+  root.style.position = "fixed";
+  const overlay = mountOverlay(root, cfg);
+  const render = overlay.render;
+  let offsetSec = (Number(cfg.timingOffsetMs) || 0) / 1000;
 
   let lines = [];
   let track = null;
-  let posMs = 0; // last known position
-  let posAt = 0; // performance.now() when posMs was set
-  let playing = false;
   let fetchSeq = 0;
+  // Position anchor: position_ms as of server epoch anchorAt (timestamp_ms), advancing
+  // at `speed` (0 = paused). Interpolate against the server clock (Date.now), NOT
+  // frame-arrival time — a sync sampled seconds ago, or the stale snapshot replayed on
+  // reconnect, would otherwise read as "now", so lyrics drift and worsen as it ages.
+  let anchorMs = 0, anchorAt = 0, speed = 0;
 
-  function nowMs() {
-    return playing ? posMs + (performance.now() - posAt) : posMs;
-  }
+  const nowMs = () => anchorMs + speed * (Date.now() - anchorAt);
 
   async function onTrack(next) {
-    if (track && next.title === track.title && next.artist === track.artist) return;
+    const same = track && (next.uri ? next.uri === track.uri : next.title === track.title && next.artist === track.artist);
+    if (same) return;
     track = next;
-    updateChip(track);
     lines = [];
     render(lines, -1);
     const seq = ++fetchSeq;
@@ -201,14 +462,23 @@ export function startOverlay(boot) {
   }
 
   function onFrame(msg) {
+    if (msg.type === "overlay_config" && msg.overlay) {
+      offsetSec = (Number(msg.overlay.timingOffsetMs) || 0) / 1000;
+      overlay.restyle(msg.overlay);
+      return;
+    }
     const t = readTrack(msg);
     if (t) void onTrack(t);
     const pb = readPlayback(msg);
-    if (pb.positionMs !== null) { posMs = pb.positionMs; posAt = performance.now(); }
-    if (typeof pb.playing === "boolean") {
-      if (pb.playing && !playing) posAt = performance.now();
-      else if (!pb.playing && playing) posMs = nowMs();
-      playing = pb.playing;
+    if (pb.positionMs !== null) {
+      anchorMs = pb.positionMs;
+      anchorAt = pb.timestampMs ?? Date.now();
+      if (pb.speed !== null) speed = pb.speed;
+    } else if (typeof pb.playing === "boolean") {
+      // Status-only frame: re-anchor at the current interpolated position.
+      anchorMs = nowMs();
+      anchorAt = Date.now();
+      speed = pb.playing ? 1 : 0;
     }
   }
 
@@ -225,17 +495,10 @@ export function startOverlay(boot) {
   }
   connect();
 
-  // The tick runs every frame; only touch the DOM when the active line or the
-  // lyric set actually changed.
-  let lastIdx = -2;
-  let lastLines = null;
+  let lastIdx = -2, lastLines = null;
   function tick() {
     const idx = currentIndex(lines, nowMs() / 1000 + offsetSec);
-    if (idx !== lastIdx || lines !== lastLines) {
-      lastIdx = idx;
-      lastLines = lines;
-      render(lines, idx);
-    }
+    if (idx !== lastIdx || lines !== lastLines) { lastIdx = idx; lastLines = lines; render(lines, idx); }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);

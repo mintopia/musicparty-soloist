@@ -6,7 +6,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { ConfigError, applyApiConfig, configSummary, maskConfig, saveConfig, type Config } from "./config.js";
+import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHashed, maskConfig, saveConfig, verifyPassword, type Config } from "./config.js";
 import type { WebhookStats } from "./proxy.js";
 import type { SoloistControl } from "./supervisor.js";
 import { listPipewireSinks, reconcileOutputs } from "./pipewire.js";
@@ -184,6 +184,7 @@ async function handlePutConfig(
   res: ServerResponse,
   cfg: Config,
   configPath: string,
+  onConfigChange?: (cfg: Config) => void,
 ): Promise<void> {
   let raw: string;
   try {
@@ -213,6 +214,8 @@ async function handlePutConfig(
   // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Runtime,
   // idempotent, and fire-and-forget so the save response isn't held on pw-link.
   void reconcileOutputs(cfg).catch((err) => log("reconcile after save failed: %s", (err as Error).message));
+  // Push the new Overlay Config to any open overlays so they restyle immediately.
+  onConfigChange?.(cfg);
   json(res, 200, maskConfig(cfg));
 }
 
@@ -255,7 +258,7 @@ async function handleSetup(
   }
   const next = structuredClone(cfg);
   next.web.username = username;
-  next.web.password = password;
+  next.web.password = hashPassword(password);
   try {
     saveConfig(configPath, next);
   } catch (err) {
@@ -268,7 +271,7 @@ async function handleSetup(
   redirect(res, "/login");
 }
 
-async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Config): Promise<void> {
+async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Config, configPath: string): Promise<void> {
   let body: string;
   try {
     body = await readBody(req);
@@ -277,9 +280,22 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
     return;
   }
   const form = new URLSearchParams(body);
+  const password = form.get("password") ?? "";
   const okUser = safeEqual(form.get("username") ?? "", cfg.web.username);
-  const okPass = safeEqual(form.get("password") ?? "", cfg.web.password);
+  const okPass = verifyPassword(password, cfg.web.password);
   if (okUser && okPass) {
+    // Upgrade a legacy cleartext password to a hash on first successful login.
+    if (!isPasswordHashed(cfg.web.password)) {
+      try {
+        const next = structuredClone(cfg);
+        next.web.password = hashPassword(password);
+        saveConfig(configPath, next);
+        Object.assign(cfg, next);
+        log("rehashed legacy web password to scrypt");
+      } catch (err) {
+        log("password rehash failed: %s", (err as Error).message);
+      }
+    }
     setSession(res, cfg);
     log("login ok for %s", cfg.web.username);
     redirect(res, "/");
@@ -297,6 +313,7 @@ export function handleWebRequest(
   configPath: string,
   stats: WebhookStats = new Map(),
   control?: SoloistControl,
+  onConfigChange?: (cfg: Config) => void,
 ): boolean {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
@@ -337,7 +354,7 @@ export function handleWebRequest(
   }
 
   if (path === "/api/config" && method === "PUT") {
-    if (apiAuthed(req, res, cfg)) void handlePutConfig(req, res, cfg, configPath);
+    if (apiAuthed(req, res, cfg)) void handlePutConfig(req, res, cfg, configPath, onConfigChange);
     return true;
   }
 
@@ -371,7 +388,7 @@ export function handleWebRequest(
 
   if (path === "/login" && method === "POST") {
     if (!webConfigured(cfg)) return failClosed(res), true;
-    void handleLogin(req, res, cfg);
+    void handleLogin(req, res, cfg, configPath);
     return true;
   }
 

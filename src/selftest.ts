@@ -7,9 +7,9 @@ import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, type UpstreamFrame, type WebhookStats } from "./proxy.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, DEFAULT_OVERLAY, type Config } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
-import { buildArgv, supervise, SoloistControl, Aborted } from "./supervisor.js";
+import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride } from "./supervisor.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
@@ -28,7 +28,7 @@ const landing = await import(new URL("./web/app.js", import.meta.url).href);
 const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
   fmtTime(ms: number): string;
   readTrack(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string } | null;
-  readPlayback(msg: any): { positionMs: number | null; playing?: boolean; volume: number | null };
+  readPlayback(msg: any): { positionMs: number | null; timestampMs: number | null; speed: number | null; playing?: boolean; volume: number | null };
   readQueue(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string }[] | null;
 };
 
@@ -413,6 +413,18 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
     ["-w", "127.0.0.1:3678", "--device-name", "d", "--api-key", "k", "--data-dir", "/data"],
     "buildArgv renders the Soloist command line",
   );
+
+  // Docker pin (main.js --pipewire-device) appends when config has no explicit device.
+  setPipewireDeviceOverride("soloist-sink");
+  assert.ok(
+    buildArgv(base).join(" ").endsWith("--pipewire-device soloist-sink"),
+    "buildArgv appends the Docker pipewire pin when config leaves it empty",
+  );
+  // An explicit config value wins over the pin.
+  const pinned = { ...base, soloist: { ...(base as any).soloist, pipewireDevice: "alsa_x" } } as unknown as Config;
+  assert.ok(buildArgv(pinned).includes("alsa_x") && !buildArgv(pinned).includes("soloist-sink"),
+    "explicit pipewire_device overrides the Docker pin");
+  setPipewireDeviceOverride(""); // reset so later assertions see no pin
 }
 
 // SoloistControl: pending derives from live config vs last-spawned args; restart clears it.
@@ -440,7 +452,7 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
   const logf = join(sdir, "runs.log");
   const script = join(sdir, "fake-soloist.sh");
   writeFileSync(script, `#!/bin/sh\necho run >> ${logf}\nexec sleep 30\n`, { mode: 0o755 });
-  const supCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1" } as unknown as Config;
+  const supCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "u", password: "p", sessionSecret: "" } } as unknown as Config;
   const control = new SoloistControl();
   const ac = new AbortController();
   const runs = () => { try { return readFileSync(logf, "utf8").trim().split("\n").filter(Boolean).length; } catch { return 0; } };
@@ -466,6 +478,31 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
   await supP.catch(() => {});
   const finalErr: unknown = supErr;
   assert.ok(finalErr instanceof Aborted, "shutdown ends the supervise loop with Aborted");
+  rmSync(sdir, { recursive: true, force: true });
+}
+
+// Readiness gate: supervise parks (never acquires/spawns) until the config is
+// minimally valid, then spawns once web creds land — so completing first-run setup
+// starts Soloist without a process restart.
+{
+  const sdir = mkdtempSync(join(tmpdir(), "sup-gate-"));
+  const script = join(sdir, "fake-soloist.sh");
+  writeFileSync(script, `#!/bin/sh\nexec sleep 30\n`, { mode: 0o755 });
+  // Ready except for web creds (mirrors the migrated config before first-run setup).
+  const gateCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "", password: "", sessionSecret: "" } } as unknown as Config;
+  const ac = new AbortController();
+  let acquired = false;
+  const supP = supervise(gateCfg, { signal: ac.signal, acquire: async () => { acquired = true; return script; } });
+  supP.catch(() => {});
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(acquired, false, "supervise parks (no acquire) while web creds unset");
+
+  gateCfg.web.username = "dj";
+  gateCfg.web.password = "pw";
+  for (let i = 0; i < 200 && !acquired; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(acquired, true, "supervise spawns once creds land — no restart needed");
+  ac.abort();
+  await supP.catch(() => {});
   rmSync(sdir, { recursive: true, force: true });
 }
 
@@ -541,22 +578,51 @@ assert.equal(fmtTime(0), "0:00");
 assert.equal(fmtTime(194000), "3:14");
 assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
 assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
+// Sample built to the real Soloist Entity schema (decorations.identity/creators/
+// parent/visual_identity/playback).
+const entity = (name: string, artist: string, album: string, durationMs: number, covers: { url: string; size: string }[] = []) => ({
+  uri: "spotify:track:x",
+  entity_type: "track",
+  decorations: {
+    identity: { name },
+    visual_identity: { cover: covers },
+    parent: { entity: { decorations: { identity: { name: album } } } },
+    creators: [{ entity: { decorations: { identity: { name: artist } } } }],
+    playback: { duration_ms: durationMs },
+  },
+});
 {
-  const t = readTrack({ track: { name: "Blinding Lights", artists: [{ name: "The Weeknd" }], album: { name: "After Hours" }, duration_ms: 200000 } });
-  assert.deepEqual(t, { title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", durationMs: 200000, art: "" }, "readTrack: nested track shape");
-  assert.equal(readTrack({ type: "auth_state", logged_in: true }), null, "readTrack: no title/artist -> null");
-  assert.equal(readTrack({ artist: "Dua Lipa" })?.artist, "Dua Lipa", "readTrack: flat artist string");
+  const item = entity("Blinding Lights", "The Weeknd", "After Hours", 200000, [
+    { url: "https://img/small", size: "small" },
+    { url: "https://img/large", size: "large" },
+  ]);
+  const t = readTrack({ type: "track_changed", item });
+  assert.deepEqual(t, { uri: "spotify:track:x", title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", durationMs: 200000, art: "https://img/large" }, "readTrack: Entity decorations, prefers large cover");
+  assert.equal(readTrack({ type: "auth_state", logged_in: true }), null, "readTrack: no item -> null");
 }
 {
-  const p = readPlayback({ position_ms: 4200, is_playing: false, volume: 55 });
-  assert.deepEqual(p, { positionMs: 4200, playing: false, volume: 55 }, "readPlayback: is_playing + volume");
-  assert.equal(readPlayback({ paused: true }).playing, false, "readPlayback: paused inverts");
+  const p = readPlayback({ type: "playback_state", status: "paused", position: { position_ms: 4200, timestamp_ms: 1788460353479, speed: 0 }, volume: 55 });
+  assert.deepEqual(p, { positionMs: 4200, timestampMs: 1788460353479, speed: 0, playing: false, volume: 55 }, "readPlayback: status/position anchor/volume");
+  const ps = readPlayback({ type: "position_sync", position: { position_ms: 10, timestamp_ms: 1788460353480, speed: 1 } });
+  assert.deepEqual({ t: ps.timestampMs, s: ps.speed, pl: ps.playing }, { t: 1788460353480, s: 1, pl: undefined }, "readPlayback: position_sync carries timestamp_ms + speed, no status");
+  assert.equal(readPlayback({ type: "playback_changed", status: "playing" }).playing, true, "readPlayback: status playing -> true");
   assert.equal(readPlayback({}).positionMs, null, "readPlayback: absent position -> null");
+  assert.equal(readPlayback({}).timestampMs, null, "readPlayback: absent position -> null timestamp");
 }
 {
-  const q = readQueue({ type: "queue_changed", queue: [{ name: "Levitating", artists: ["Dua Lipa"], duration_ms: 203000 }] });
-  assert.deepEqual(q, [{ title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }], "readQueue: reads queue list");
-  assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no list -> null");
+  const q = readQueue({ type: "queue_changed", upcoming: [{ uid: "a", source: "context", item: entity("Levitating", "Dua Lipa", "", 203000) }] });
+  assert.deepEqual(q, [{ uri: "spotify:track:x", title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }], "readQueue: reads upcoming list");
+  assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no upcoming -> null");
+}
+{
+  const h = hashPassword("hunter2");
+  assert.ok(isPasswordHashed(h) && h.startsWith("scrypt$"), "hashPassword: scrypt-encoded");
+  assert.equal(h.includes("hunter2"), false, "hashPassword: plaintext not present");
+  assert.notEqual(hashPassword("hunter2"), h, "hashPassword: per-call random salt");
+  assert.ok(verifyPassword("hunter2", h), "verifyPassword: correct password");
+  assert.equal(verifyPassword("wrong", h), false, "verifyPassword: wrong password");
+  assert.ok(verifyPassword("legacy", "legacy"), "verifyPassword: legacy cleartext accepted");
+  assert.equal(verifyPassword("legacy", "other"), false, "verifyPassword: legacy cleartext mismatch");
 }
 
 // First-run setup gating: creds unset -> only /setup served, everything else fails
@@ -634,11 +700,12 @@ assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
   assert.equal(r.statusCode, 302, "valid setup redirects");
   assert.equal(r.headers.location, "/login", "valid setup -> login");
   assert.equal(scfg.web.username, "dj", "username set from setup");
-  assert.equal(scfg.web.password, "hunter2", "password set from setup");
+  assert.ok(isPasswordHashed(scfg.web.password), "setup password stored hashed, not cleartext");
+  assert.ok(verifyPassword("hunter2", scfg.web.password), "setup password verifies");
   assert.equal(webConfigured(scfg), true, "creds now configured");
   const savedSetup = loadConfig(setupCfgPath);
   assert.equal(savedSetup.web.username, "dj", "setup creds persisted to file");
-  assert.equal(savedSetup.web.password, "hunter2", "setup password persisted to file");
+  assert.ok(isPasswordHashed(savedSetup.web.password) && verifyPassword("hunter2", savedSetup.web.password), "setup password persisted hashed + verifies");
   assert.equal(soloistReady(scfg), false, "creds only: soloist still not ready (args absent)");
 
   // Setup done: the Setup Page is no longer reachable.

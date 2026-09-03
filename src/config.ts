@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, renameSync, statSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { parse as parseYaml, parseDocument, Document } from "yaml";
 
 export const DEFAULT_CONFIG_PATH = "./config.yaml";
@@ -10,18 +10,58 @@ export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
 
 export const DEFAULT_OVERLAY: OverlayConfig = {
-  font: "sans-serif",
-  fontSize: 48,
+  font: "system-ui, sans-serif",
+  fontSize: 40,
   color: "#ffffff",
-  highlightColor: "#1db954",
-  effect: "fade",
+  neighbourColor: "#ffffff",
+  dimOpacity: 0.35,
+  motion: "slide",
+  easing: "cubic-bezier(.16,1,.3,1)",
+  transitionMs: 350,
+  effect: "none",
+  fxColor: "#ffd24a",
+  fxIntensity: 50,
+  fxDurMs: 1600,
   alignment: "center",
-  timingOffsetMs: 0,
-  lineCount: 3,
   anchor: "bottom",
+  lineCount: 3,
+  timingOffsetMs: 0,
 };
 
 export class ConfigError extends Error {}
+
+// Web password storage: scrypt with a per-password random salt, encoded
+// `scrypt$<saltHex>$<keyHex>`. The plaintext never touches disk. Pre-hashing
+// installs stored cleartext; verifyPassword still accepts it (timing-safe) so a
+// legacy config keeps working, and login rehashes it on first success.
+const SCRYPT_KEYLEN = 64;
+
+export function hashPassword(plain: string): string {
+  const salt = randomBytes(16);
+  return `scrypt$${salt.toString("hex")}$${scryptSync(plain, salt, SCRYPT_KEYLEN).toString("hex")}`;
+}
+
+export function isPasswordHashed(stored: string): boolean {
+  return stored.startsWith("scrypt$");
+}
+
+export function verifyPassword(plain: string, stored: string): boolean {
+  if (isPasswordHashed(stored)) {
+    const [, saltHex, keyHex] = stored.split("$");
+    if (!saltHex || !keyHex) return false;
+    let expected: Buffer, got: Buffer;
+    try {
+      expected = Buffer.from(keyHex, "hex");
+      got = scryptSync(plain, Buffer.from(saltHex, "hex"), expected.length);
+    } catch {
+      return false;
+    }
+    return expected.length === got.length && timingSafeEqual(got, expected);
+  }
+  // Legacy cleartext.
+  const a = Buffer.from(plain), b = Buffer.from(stored);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 export interface SoloistConfig {
   deviceName: string;
@@ -50,15 +90,22 @@ export interface AudioConfig {
 }
 
 export interface OverlayConfig {
-  font: string;
-  fontSize: number;
-  color: string;
-  highlightColor: string;
-  effect: string;
-  alignment: string;
+  font: string;            // CSS font stack
+  fontSize: number;        // px (1080p reference)
+  color: string;           // current line
+  neighbourColor: string;  // other lines
+  dimOpacity: number;      // other-line opacity, 0..1
+  motion: string;          // slide | crossfade | pop | instant
+  easing: string;          // CSS timing function
+  transitionMs: number;    // line-advance duration
+  effect: string;          // none | glow | shimmer | rainbow | sparkles | wipe | neon | glitch | pulse
+  fxColor: string;
+  fxIntensity: number;     // 0..100
+  fxDurMs: number;         // effect period
+  alignment: string;       // left | center | right
+  anchor: string;          // top | center | bottom
+  lineCount: number;       // visible lines (odd)
   timingOffsetMs: number;
-  lineCount: number;
-  anchor: string;
 }
 
 export interface Config {
@@ -84,6 +131,12 @@ export function coerceBool(value: unknown, def: boolean): boolean {
 export function coerceInt(value: unknown, def: number): number {
   if (value == null || value === "") return def;
   const n = Number.parseInt(String(value).trim(), 10);
+  return Number.isNaN(n) ? def : n;
+}
+
+export function coerceFloat(value: unknown, def: number): number {
+  if (value == null || value === "") return def;
+  const n = Number.parseFloat(String(value).trim());
   return Number.isNaN(n) ? def : n;
 }
 
@@ -155,12 +208,19 @@ function parseConfig(raw: unknown): Config {
       font: String(overlay.font ?? DEFAULT_OVERLAY.font),
       fontSize: coerceInt(overlay.font_size, DEFAULT_OVERLAY.fontSize),
       color: String(overlay.color ?? DEFAULT_OVERLAY.color),
-      highlightColor: String(overlay.highlight_color ?? DEFAULT_OVERLAY.highlightColor),
+      neighbourColor: String(overlay.neighbour_color ?? DEFAULT_OVERLAY.neighbourColor),
+      dimOpacity: coerceFloat(overlay.dim_opacity, DEFAULT_OVERLAY.dimOpacity),
+      motion: String(overlay.motion ?? DEFAULT_OVERLAY.motion),
+      easing: String(overlay.easing ?? DEFAULT_OVERLAY.easing),
+      transitionMs: coerceInt(overlay.transition_ms, DEFAULT_OVERLAY.transitionMs),
       effect: String(overlay.effect ?? DEFAULT_OVERLAY.effect),
+      fxColor: String(overlay.fx_color ?? DEFAULT_OVERLAY.fxColor),
+      fxIntensity: coerceInt(overlay.fx_intensity, DEFAULT_OVERLAY.fxIntensity),
+      fxDurMs: coerceInt(overlay.fx_dur_ms, DEFAULT_OVERLAY.fxDurMs),
       alignment: String(overlay.alignment ?? DEFAULT_OVERLAY.alignment),
-      timingOffsetMs: coerceInt(overlay.timing_offset_ms, DEFAULT_OVERLAY.timingOffsetMs),
-      lineCount: coerceInt(overlay.line_count, DEFAULT_OVERLAY.lineCount),
       anchor: String(overlay.anchor ?? DEFAULT_OVERLAY.anchor),
+      lineCount: coerceInt(overlay.line_count, DEFAULT_OVERLAY.lineCount),
+      timingOffsetMs: coerceInt(overlay.timing_offset_ms, DEFAULT_OVERLAY.timingOffsetMs),
     },
   };
 }
@@ -239,12 +299,19 @@ function configToRaw(c: Config): Record<string, unknown> {
       font: c.overlay.font,
       font_size: c.overlay.fontSize,
       color: c.overlay.color,
-      highlight_color: c.overlay.highlightColor,
+      neighbour_color: c.overlay.neighbourColor,
+      dim_opacity: c.overlay.dimOpacity,
+      motion: c.overlay.motion,
+      easing: c.overlay.easing,
+      transition_ms: c.overlay.transitionMs,
       effect: c.overlay.effect,
+      fx_color: c.overlay.fxColor,
+      fx_intensity: c.overlay.fxIntensity,
+      fx_dur_ms: c.overlay.fxDurMs,
       alignment: c.overlay.alignment,
-      timing_offset_ms: c.overlay.timingOffsetMs,
-      line_count: c.overlay.lineCount,
       anchor: c.overlay.anchor,
+      line_count: c.overlay.lineCount,
+      timing_offset_ms: c.overlay.timingOffsetMs,
     },
   };
 }
@@ -373,7 +440,12 @@ export function applyApiConfig(current: Config, body: unknown): Config {
   }
   for (const { section, key } of SECRETS) {
     const v = b[section]?.[key];
-    next[section][key] = typeof v === "string" && v !== "" ? v : (current as any)[section][key];
+    if (typeof v === "string" && v !== "") {
+      // web.password arrives as plaintext (Replace flow) — hash before it persists.
+      next[section][key] = section === "web" && key === "password" ? hashPassword(v) : v;
+    } else {
+      next[section][key] = (current as any)[section][key];
+    }
   }
   for (const [s, k] of LOCKED_PATHS) next[s][k] = (current as any)[s][k];
   return normalizeConfig(next as Config);

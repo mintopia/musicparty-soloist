@@ -57,7 +57,10 @@ export function parseSinks(pwDumpJson: string, exclude: string[] = []): PwSink[]
     if (!props || props["media.class"] !== "Audio/Sink") continue;
     const name = String(props["node.name"] ?? "").trim();
     if (!name || skip.has(name)) continue;
-    sinks.push({ name, description: String(props["node.description"] ?? name) });
+    // node.description is often the generic "Built-in Audio Stereo"; the ALSA card
+    // name (or nick) distinguishes cards (e.g. "IQaudIODAC" vs "bcm2835 Headphones").
+    const desc = props["alsa.card_name"] ?? props["node.nick"] ?? props["node.description"] ?? name;
+    sinks.push({ name, description: String(desc) });
   }
   return sinks;
 }

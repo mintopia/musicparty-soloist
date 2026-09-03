@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { acquireSoloist } from "./acquire.js";
-import type { Config } from "./config.js";
+import { soloistReady, type Config } from "./config.js";
 import { makeLog } from "./log.js";
 
 export const EXIT_EXPIRED = 10;
@@ -15,6 +15,16 @@ export class Aborted extends Error {}
 
 const log = makeLog("supervisor");
 
+// ponytail: module-global set once at boot. Docker pins Soloist's output to the
+// soloist-sink null-sink (the fan-out anchor, ADR-0011) via --pipewire-device; the
+// Config File must not carry it (soloist-sink is Docker infra, not user config, and
+// config.example.yaml is shared with standalone), so it comes from a main.js flag
+// instead of cfg — and stays out of buildArgv's persisted round-trip.
+let pipewireDeviceOverride = "";
+export function setPipewireDeviceOverride(name: string): void {
+  pipewireDeviceOverride = name.trim();
+}
+
 export function buildArgv(cfg: Config): string[] {
   const argv = [
     "-w", cfg.soloistWs,
@@ -22,7 +32,9 @@ export function buildArgv(cfg: Config): string[] {
     "--api-key", cfg.soloist.apiKey,
     "--data-dir", cfg.soloist.dataDir,
   ];
-  if (cfg.soloist.pipewireDevice) argv.push("--pipewire-device", cfg.soloist.pipewireDevice);
+  // An explicit config value wins; otherwise fall back to the Docker pin.
+  const device = cfg.soloist.pipewireDevice || pipewireDeviceOverride;
+  if (device) argv.push("--pipewire-device", device);
   argv.push(...cfg.soloist.extraArgs);
   return argv;
 }
@@ -99,6 +111,17 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     control,
     acquire = (force = false) => acquireSoloist(undefined, { force }),
   } = opts;
+
+  // First-run setup / incomplete config: don't spawn until minimally valid. The
+  // Setup Page and PUT /api/config mutate cfg in place, so poll it — readiness
+  // flips at most once and config edits are human-driven.
+  // ponytail: 1s poll, no event bus; upgrade to a notifier only if this ever needs
+  // to be instant.
+  for (let logged = false; !soloistReady(cfg); ) {
+    if (signal.aborted) throw new Aborted();
+    if (!logged) { log("waiting for config: web creds + Soloist args (device name, API key)"); logged = true; }
+    await sleep(1000);
+  }
 
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
   let binary = await acquire();
