@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, AUTOPLAY_FRAMES, type UpstreamFrame } from "./proxy.js";
 import type { RawData } from "ws";
-import { loadConfig, ConfigError, coerceBool, coerceInt } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, DEFAULT_OVERLAY } from "./config.js";
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -101,53 +101,82 @@ assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
 
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");
+// Values are literal now — no ${VAR} interpolation, no env reads.
 writeFileSync(
   cfgPath,
   [
+    "# hand-written comment that must survive a save",
     "soloist:",
-    '  device_name: "${DEV:-Party Speaker}"',
-    '  api_key: "${API}"',
+    '  device_name: "Party Speaker"  # inline note',
+    '  api_key: "key123"',
     "  extra_args: []",
     "proxy:",
-    '  listen: "${LISTEN:-0.0.0.0:8687}"',
-    '  token: "${TOK}"',
+    '  token: "tok123"',
+    "  listen: 127.0.0.1:9000",
   ].join("\n"),
 );
 
-const cfg = loadConfig(cfgPath, { API: "key123", TOK: "tok123", LISTEN: "127.0.0.1:9000" });
-assert.equal(cfg.soloist.deviceName, "Party Speaker", "default used when var unset");
-assert.equal(cfg.soloist.apiKey, "key123", "interpolated from env");
+const cfg = loadConfig(cfgPath);
+assert.equal(cfg.soloist.deviceName, "Party Speaker", "literal device_name, no interpolation");
+assert.equal(cfg.soloist.apiKey, "key123", "literal value, no env");
 assert.equal(cfg.proxy.token, "tok123");
-assert.equal(cfg.proxy.listen, "127.0.0.1:9000", "env value wins over ${:-default}");
+assert.equal(cfg.proxy.listen, "127.0.0.1:9000");
 assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
-
-assert.throws(() => loadConfig(cfgPath, { TOK: "t" }), ConfigError, "missing api_key fails fast");
 assert.equal(cfg.webhooks.defaultUrl, "", "webhooks absent -> empty default_url");
 assert.deepEqual(cfg.webhooks.urls, {}, "webhooks absent -> no urls");
 assert.equal(cfg.webhooks.delayMs, 0, "delay_ms default 0");
 
-const whPath = join(dir, "webhooks.yaml");
-writeFileSync(
-  whPath,
-  [
-    "soloist:",
-    '  device_name: "d"',
-    '  api_key: "k"',
-    "  extra_args: []",
-    "proxy:",
-    '  token: "t"',
-    "webhooks:",
-    '  default_url: "https://hooks/${HOOK_ENV:-all}"',
-    "  urls:",
-    '    track_changed: "https://hooks/track"',
-    '  secret: "${WH_SECRET}"',
-    '  delay_ms: "${WH_DELAY:-250}"',
-  ].join("\n"),
+// New config sections default sanely when absent.
+assert.equal(cfg.proxy.readonlyToken, "", "readonly_token absent -> empty");
+assert.equal(cfg.web.username, "", "web.username absent -> empty");
+assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
+assert.deepEqual(cfg.audio.outputs, [], "audio.outputs absent -> []");
+assert.equal(cfg.audio.snapcast, true, "audio.snapcast defaults on");
+assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
+
+// `${VAR}` is no longer special — it is stored and returned verbatim.
+const litPath = join(dir, "literal.yaml");
+writeFileSync(litPath, ['soloist:', '  device_name: "d"', '  api_key: "${API}"', "  extra_args: []", "proxy:", '  token: "t"'].join("\n"));
+assert.equal(loadConfig(litPath).soloist.apiKey, "${API}", "no interpolation: ${VAR} kept literal");
+
+assert.throws(() => loadConfig(join(dir, "nope.yaml")), ConfigError, "missing file fails fast");
+
+// saveConfig round-trips preserving comments and writes the new value.
+cfg.soloist.deviceName = "Renamed Speaker";
+cfg.audio.outputs = ["alsa_output.hw_0"];
+cfg.overlay.fontSize = 72;
+saveConfig(cfgPath, cfg);
+const savedText = readFileSync(cfgPath, "utf8");
+assert.match(savedText, /hand-written comment that must survive/, "block comment preserved");
+assert.match(savedText, /inline note/, "inline comment preserved");
+const reloaded = loadConfig(cfgPath);
+assert.equal(reloaded.soloist.deviceName, "Renamed Speaker", "changed value persisted");
+assert.deepEqual(reloaded.audio.outputs, ["alsa_output.hw_0"], "list persisted");
+assert.equal(reloaded.overlay.fontSize, 72, "overlay value persisted");
+
+// Atomic write leaves no temp file behind.
+assert.deepEqual(
+  readdirSync(dir).filter((f) => f.includes(".tmp-")),
+  [],
+  "no temp file left after save",
 );
-const wh = loadConfig(whPath, { WH_SECRET: "ssh" });
-assert.equal(wh.webhooks.defaultUrl, "https://hooks/all", "default_url interpolated");
-assert.equal(wh.webhooks.urls.track_changed, "https://hooks/track");
-assert.equal(wh.webhooks.secret, "ssh", "secret interpolated");
-assert.equal(wh.webhooks.delayMs, 250, "delay_ms int-coerced from string");
+
+// saveConfig never persists an invalid config.
+const before = readFileSync(cfgPath, "utf8");
+const bad = loadConfig(cfgPath);
+bad.soloist.apiKey = "";
+assert.throws(() => saveConfig(cfgPath, bad), ConfigError, "invalid config rejected");
+assert.equal(readFileSync(cfgPath, "utf8"), before, "file untouched after rejected save");
+
+// ensureSecrets mints and persists absent secrets, then is idempotent.
+const secretsCfg = loadConfig(cfgPath);
+assert.equal(secretsCfg.web.sessionSecret, "", "precondition: no session_secret");
+assert.equal(ensureSecrets(cfgPath, secretsCfg), true, "first boot writes secrets");
+assert.notEqual(secretsCfg.web.sessionSecret, "", "session_secret generated");
+assert.notEqual(secretsCfg.proxy.readonlyToken, "", "readonly_token generated");
+const persisted = loadConfig(cfgPath);
+assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
+assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
+assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
 
 console.log("selftest OK");

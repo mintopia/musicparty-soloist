@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { ConfigError, loadConfig } from "./config.js";
+import { ConfigError, DEFAULT_CONFIG_PATH, ensureSecrets, loadConfig } from "./config.js";
 import { serveProxy } from "./proxy.js";
 import { supervise, Aborted } from "./supervisor.js";
 
@@ -11,9 +11,11 @@ async function main(): Promise<number> {
     },
   });
 
+  const configPath = values.config ?? DEFAULT_CONFIG_PATH;
   let cfg;
   try {
-    cfg = loadConfig(values.config);
+    cfg = loadConfig(configPath);
+    ensureSecrets(configPath, cfg);
   } catch (e) {
     if (e instanceof ConfigError) {
       console.log(`config error: ${e.message}`);

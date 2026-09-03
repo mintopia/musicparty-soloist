@@ -1,5 +1,7 @@
-import { readFileSync, statSync } from "node:fs";
-import { parse as parseYaml } from "yaml";
+import { readFileSync, writeFileSync, renameSync, statSync } from "node:fs";
+import { dirname, basename, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { parse as parseYaml, parseDocument, Document } from "yaml";
 
 export const DEFAULT_CONFIG_PATH = "./config.yaml";
 export const DEFAULT_PROXY_LISTEN = "0.0.0.0:8687";
@@ -7,9 +9,17 @@ export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
 
-const VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
-
-type Env = Record<string, string | undefined>;
+export const DEFAULT_OVERLAY: OverlayConfig = {
+  font: "sans-serif",
+  fontSize: 48,
+  color: "#ffffff",
+  highlightColor: "#1db954",
+  effect: "fade",
+  alignment: "center",
+  timingOffsetMs: 0,
+  lineCount: 3,
+  anchor: "bottom",
+};
 
 export class ConfigError extends Error {}
 
@@ -28,32 +38,39 @@ export interface WebhooksConfig {
   delayMs: number;
 }
 
+export interface WebConfig {
+  username: string;
+  password: string;
+  sessionSecret: string;
+}
+
+export interface AudioConfig {
+  outputs: string[];
+  snapcast: boolean;
+}
+
+export interface OverlayConfig {
+  font: string;
+  fontSize: number;
+  color: string;
+  highlightColor: string;
+  effect: string;
+  alignment: string;
+  timingOffsetMs: number;
+  lineCount: number;
+  anchor: string;
+}
+
 export interface Config {
   soloist: SoloistConfig;
-  proxy: { listen: string; token: string };
+  proxy: { listen: string; token: string; readonlyToken: string };
   soloistWs: string;
   streamName: string;
   autoplay: boolean;
   webhooks: WebhooksConfig;
-}
-
-function lookupEnv(env: Env, name: string, def: string | undefined): string {
-  const val = env[name];
-  if (val) return val;
-  return def ?? "";
-}
-
-function interpolate(value: unknown, env: Env): unknown {
-  if (typeof value === "string") {
-    return value.replace(VAR_RE, (_m, name, def) => lookupEnv(env, name, def));
-  }
-  if (Array.isArray(value)) return value.map((v) => interpolate(v, env));
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = interpolate(v, env);
-    return out;
-  }
-  return value;
+  web: WebConfig;
+  audio: AudioConfig;
+  overlay: OverlayConfig;
 }
 
 export function coerceBool(value: unknown, def: boolean): boolean {
@@ -77,33 +94,19 @@ function required(value: unknown, name: string): string {
   return String(value);
 }
 
-export function loadConfig(path?: string, env: Env = process.env): Config {
-  const resolved = path || env.SOLOIST_PROXY_CONFIG || DEFAULT_CONFIG_PATH;
-  let text: string;
-  try {
-    if (!statSync(resolved).isFile()) throw new Error("not a file");
-    text = readFileSync(resolved, "utf8");
-  } catch {
-    throw new ConfigError(`Config file not found: ${resolved}`);
-  }
-
-  let raw: unknown;
-  try {
-    raw = parseYaml(text);
-  } catch (e) {
-    throw new ConfigError(`Invalid YAML in ${resolved}: ${(e as Error).message}`);
-  }
-
-  const data = interpolate(raw ?? {}, env);
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+function parseConfig(raw: unknown): Config {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new ConfigError("Config root must be a mapping");
   }
-  const d = data as Record<string, any>;
+  const d = raw as Record<string, any>;
 
   const soloist = d.soloist ?? {};
   const proxy = d.proxy ?? {};
   const snapcast = d.snapcast ?? {};
   const webhooks = d.webhooks ?? {};
+  const web = d.web ?? {};
+  const audio = d.audio ?? {};
+  const overlay = d.overlay ?? {};
 
   const urlsRaw = webhooks.urls ?? {};
   if (typeof urlsRaw !== "object" || Array.isArray(urlsRaw)) {
@@ -117,6 +120,11 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
     throw new ConfigError("soloist.extra_args must be a list");
   }
 
+  const outputsRaw = audio.outputs ?? [];
+  if (!Array.isArray(outputsRaw)) {
+    throw new ConfigError("audio.outputs must be a list");
+  }
+
   return {
     soloist: {
       deviceName: required(soloist.device_name, "soloist.device_name (device name)"),
@@ -128,6 +136,7 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
     proxy: {
       listen: proxy.listen || DEFAULT_PROXY_LISTEN,
       token: required(proxy.token, "proxy.token (Auth Token)"),
+      readonlyToken: String(proxy.readonly_token ?? "").trim(),
     },
     soloistWs: d.soloist_ws || DEFAULT_SOLOIST_WS,
     streamName: snapcast.stream_name || DEFAULT_STREAM_NAME,
@@ -138,5 +147,147 @@ export function loadConfig(path?: string, env: Env = process.env): Config {
       secret: String(webhooks.secret ?? ""),
       delayMs: coerceInt(webhooks.delay_ms, 0),
     },
+    web: {
+      username: String(web.username ?? "").trim(),
+      password: String(web.password ?? ""),
+      sessionSecret: String(web.session_secret ?? "").trim(),
+    },
+    audio: {
+      outputs: outputsRaw.map((o: unknown) => String(o)),
+      snapcast: coerceBool(audio.snapcast, true),
+    },
+    overlay: {
+      font: String(overlay.font ?? DEFAULT_OVERLAY.font),
+      fontSize: coerceInt(overlay.font_size, DEFAULT_OVERLAY.fontSize),
+      color: String(overlay.color ?? DEFAULT_OVERLAY.color),
+      highlightColor: String(overlay.highlight_color ?? DEFAULT_OVERLAY.highlightColor),
+      effect: String(overlay.effect ?? DEFAULT_OVERLAY.effect),
+      alignment: String(overlay.alignment ?? DEFAULT_OVERLAY.alignment),
+      timingOffsetMs: coerceInt(overlay.timing_offset_ms, DEFAULT_OVERLAY.timingOffsetMs),
+      lineCount: coerceInt(overlay.line_count, DEFAULT_OVERLAY.lineCount),
+      anchor: String(overlay.anchor ?? DEFAULT_OVERLAY.anchor),
+    },
   };
+}
+
+export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
+  let text: string;
+  try {
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    text = readFileSync(path, "utf8");
+  } catch {
+    throw new ConfigError(`Config file not found: ${path}`);
+  }
+
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (e) {
+    throw new ConfigError(`Invalid YAML in ${path}: ${(e as Error).message}`);
+  }
+
+  return parseConfig(raw ?? {});
+}
+
+// Snake_case YAML projection of a Config — the shape written to disk. Kept in
+// one place so save validation and serialization agree with load.
+function configToRaw(c: Config): Record<string, unknown> {
+  return {
+    soloist: {
+      device_name: c.soloist.deviceName,
+      api_key: c.soloist.apiKey,
+      data_dir: c.soloist.dataDir,
+      extra_args: c.soloist.extraArgs,
+      pipewire_device: c.soloist.pipewireDevice,
+    },
+    proxy: {
+      listen: c.proxy.listen,
+      token: c.proxy.token,
+      readonly_token: c.proxy.readonlyToken,
+    },
+    soloist_ws: c.soloistWs,
+    snapcast: { stream_name: c.streamName },
+    autoplay: c.autoplay,
+    webhooks: {
+      default_url: c.webhooks.defaultUrl,
+      urls: c.webhooks.urls,
+      secret: c.webhooks.secret,
+      delay_ms: c.webhooks.delayMs,
+    },
+    web: {
+      username: c.web.username,
+      password: c.web.password,
+      session_secret: c.web.sessionSecret,
+    },
+    audio: {
+      outputs: c.audio.outputs,
+      snapcast: c.audio.snapcast,
+    },
+    overlay: {
+      font: c.overlay.font,
+      font_size: c.overlay.fontSize,
+      color: c.overlay.color,
+      highlight_color: c.overlay.highlightColor,
+      effect: c.overlay.effect,
+      alignment: c.overlay.alignment,
+      timing_offset_ms: c.overlay.timingOffsetMs,
+      line_count: c.overlay.lineCount,
+      anchor: c.overlay.anchor,
+    },
+  };
+}
+
+// Set every leaf of `obj` onto the Document via setIn, so comments and layout on
+// untouched nodes survive the round-trip.
+// ponytail: merge only sets keys, never removes them — a key deleted from the
+// config object stays in the file. Fine for full-config writes; revisit if the
+// config API needs to drop keys (e.g. removing a webhooks.urls entry).
+function mergeInto(doc: Document, obj: Record<string, unknown>, prefix: string[] = []): void {
+  for (const [k, v] of Object.entries(obj)) {
+    const path = [...prefix, k];
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      mergeInto(doc, v as Record<string, unknown>, path);
+    } else {
+      doc.setIn(path, v);
+    }
+  }
+}
+
+export function saveConfig(path: string, config: Config): void {
+  const raw = configToRaw(config);
+  parseConfig(raw); // same required/type checks as load; throws before any write
+
+  let doc: Document | null = null;
+  try {
+    const parsed = parseDocument(readFileSync(path, "utf8"));
+    if (parsed.errors.length === 0 && parsed.contents != null) doc = parsed;
+  } catch {
+    // no existing file (or unreadable/corrupt) — start fresh, no comments to keep
+  }
+  if (doc) {
+    mergeInto(doc, raw);
+  } else {
+    doc = new Document(raw);
+  }
+
+  const text = String(doc);
+  const tmp = join(dirname(path), `.${basename(path)}.tmp-${process.pid}-${Date.now()}`);
+  writeFileSync(tmp, text, { mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+// On boot, mint any absent autogenerated secret and persist it so it survives
+// restarts. Returns whether the file was written.
+export function ensureSecrets(path: string, config: Config): boolean {
+  let changed = false;
+  if (!config.web.sessionSecret) {
+    config.web.sessionSecret = randomBytes(32).toString("hex");
+    changed = true;
+  }
+  if (!config.proxy.readonlyToken) {
+    config.proxy.readonlyToken = randomBytes(32).toString("hex");
+    changed = true;
+  }
+  if (changed) saveConfig(path, config);
+  return changed;
 }
