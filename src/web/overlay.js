@@ -321,7 +321,10 @@ function makeTrackRenderer(container) {
 
     track.getAnimations().forEach((a) => a.cancel());
     track.style.transform = `translateY(${tyTarget}px)`;
-    const snap = motion === "crossfade" || motion === "instant" || durMs <= 0 || firstTop == null || prefersReduce.matches;
+    // Only glide a sequential ±1 advance; a bigger jump (seek, lyrics loading mid-song)
+    // would otherwise ease across several line-heights and read as a jarring scroll — snap it.
+    const jumped = lastCurrent >= 0 && Math.abs(idx - lastCurrent) > 1;
+    const snap = motion === "crossfade" || motion === "instant" || durMs <= 0 || firstTop == null || prefersReduce.matches || jumped;
     let scrollAnim = null;
     if (!snap) {
       const fromTy = tyTarget + (firstTop - cur.getBoundingClientRect().top);

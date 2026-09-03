@@ -255,8 +255,8 @@ function renderView() {
 // ---- Now Playing view ----
 function buildNow(view) {
   view.insertAdjacentHTML("beforeend", `
-  <div class="row" style="align-items:stretch;gap:18px">
-    <div style="flex:1.7;min-width:0;position:relative;border-radius:20px;overflow:hidden;
+  <div style="display:flex;flex-direction:column;gap:18px;max-width:720px;margin:0 auto">
+    <div style="position:relative;border-radius:20px;overflow:hidden;
         background:linear-gradient(135deg,#191a2b 0%,#241a36 55%,#2c1830 100%);
         border:1px solid rgba(255,255,255,.10);box-shadow:0 22px 54px rgba(26,18,56,.30)">
       <div style="position:absolute;width:440px;height:440px;left:-130px;top:-210px;border-radius:50%;background:radial-gradient(circle,rgba(20,184,166,.42),transparent 64%);pointer-events:none"></div>
@@ -296,7 +296,7 @@ function buildNow(view) {
         </div>
       </div>
     </div>
-    <div style="flex:1;min-width:320px;border-radius:20px;overflow:hidden;position:relative;background:linear-gradient(180deg,#1c1d2e,#241a33);border:1px solid rgba(255,255,255,.10);box-shadow:0 22px 54px rgba(26,18,56,.26);display:flex;flex-direction:column">
+    <div style="border-radius:20px;overflow:hidden;position:relative;background:linear-gradient(180deg,#1c1d2e,#241a33);border:1px solid rgba(255,255,255,.10);box-shadow:0 22px 54px rgba(26,18,56,.26);display:flex;flex-direction:column">
       <div class="row" style="justify-content:space-between;padding:18px 20px 10px"><div class="row" style="gap:9px"><span style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.6)">Up next</span><span id="qCount" style="font-size:11px;font-weight:700;color:#0b3b36;background:#5eead4;border-radius:20px;padding:2px 9px">0</span></div></div>
       <div id="qList" style="flex:1;overflow:auto;padding:0 10px 12px;display:flex;flex-direction:column;gap:1px;max-height:520px">
         <div id="qEmpty" style="padding:16px 12px;font-size:13px;color:rgba(255,255,255,.4)">Queue is empty.</div>
@@ -332,8 +332,17 @@ function cycleRepeat() {
 // ---- shared form controls ----
 function grid(cols) {
   const g = document.createElement("div");
+  g.className = "fgrid";
   g.style.cssText = `display:grid;grid-template-columns:${cols};gap:16px 20px`;
   return g;
+}
+
+// Single-column form pages (Audio/Webhooks/Settings) share one centered column so
+// the content edge never lurches tab-to-tab and fields don't stretch to full width.
+function formCol() {
+  const d = document.createElement("div");
+  d.className = "fcol";
+  return d;
 }
 
 function sectionCard(title, subtitle) {
@@ -364,19 +373,19 @@ function field(label, value, onInput, opts = {}) {
   return w;
 }
 
-function toggleField(label, on, onToggle, hint) {
+// Full-width setting row: title + description on the left, switch on the right,
+// vertically centred, with a top divider. For standalone toggles (not grid cells).
+function settingRow(label, desc, on, onToggle) {
   const w = document.createElement("div");
-  const rowEl = document.createElement("div");
-  rowEl.className = "row";
-  rowEl.style.justifyContent = "space-between";
-  rowEl.innerHTML = `<span class="flabel" style="margin:0">${esc(label)}</span>`;
+  w.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line)";
+  w.innerHTML = `<div style="min-width:0"><div style="font-size:14px;font-weight:600">${esc(label)}</div>` +
+    (desc ? `<div style="font-size:12.5px;color:var(--dim);margin-top:2px">${esc(desc)}</div>` : "") + `</div>`;
   const sw = document.createElement("div");
   sw.className = "sw " + (on ? "on" : "off");
   sw.innerHTML = "<i></i>";
+  sw.style.flex = "0 0 auto";
   sw.onclick = onToggle;
-  rowEl.appendChild(sw);
-  w.appendChild(rowEl);
-  if (hint) { const h = document.createElement("div"); h.style.cssText = "font-size:12px;color:var(--faint);margin-top:8px"; h.textContent = hint; w.appendChild(h); }
+  w.appendChild(sw);
   return w;
 }
 
@@ -424,27 +433,6 @@ function secretRow(label, section, key) {
   return w;
 }
 
-function lockedBlock(rows, label = "File-only — edit config.yaml directly") {
-  const wrap = document.createElement("div");
-  const hr = document.createElement("div");
-  hr.style.cssText = "margin:22px 0 14px;height:1px;background:var(--line)";
-  wrap.appendChild(hr);
-  const head = document.createElement("div");
-  head.className = "row";
-  head.style.cssText = "gap:8px;margin-bottom:14px";
-  head.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span class="lbl" style="color:var(--faint)">${esc(label)}</span>`;
-  wrap.appendChild(head);
-  const g = document.createElement("div");
-  g.style.cssText = `display:grid;grid-template-columns:repeat(${Math.min(3, rows.length)},1fr);gap:16px`;
-  for (const [k, v] of rows) {
-    const d = document.createElement("div");
-    d.innerHTML = `<div class="flabel" style="color:var(--faint)">${esc(k)}</div><div style="font-size:14px;color:var(--dim);word-break:break-all">${esc(v)}</div>`;
-    g.appendChild(d);
-  }
-  wrap.appendChild(g);
-  return wrap;
-}
-
 // ---- Audio view ----
 const ICON_SNAP = '<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 5v14"/>';
 const ICON_HW = '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>';
@@ -453,7 +441,7 @@ function buildAudio(view) {
   const c = state.cfg;
   const card = document.createElement("div");
   card.className = "card";
-  card.style.cssText = "padding:22px;max-width:620px";
+  card.style.cssText = "padding:22px";
   const head = document.createElement("div");
   head.className = "row"; head.style.cssText = "justify-content:space-between;margin-bottom:18px";
   head.innerHTML = '<div style="font-family:var(--disp);font-size:16px;font-weight:700">Audio outputs</div>';
@@ -468,26 +456,32 @@ function buildAudio(view) {
   for (const sink of state.sinks) {
     const isSnap = sink.name === "snapcast";
     const on = isSnap ? c.audio.snapcast : selected.has(sink.name);
-    const row = document.createElement("div");
-    row.style.cssText = `display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid ${on ? "var(--ind)" : "var(--line)"};border-radius:12px;background:${on ? "var(--ind-s)" : "var(--sub)"}`;
+    const box = document.createElement("div");
+    box.style.cssText = `border:1px solid ${on ? "var(--ind)" : "var(--line)"};border-radius:12px;background:${on ? "var(--ind-s)" : "var(--sub)"};overflow:hidden`;
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;gap:14px;padding:12px 14px";
     const tile = `<div style="width:38px;height:38px;border-radius:9px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;background:${on ? "var(--ind)" : "#ececE7"};color:${on ? "#fff" : "var(--faint)"}"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${isSnap ? ICON_SNAP : ICON_HW}</svg></div>`;
-    row.innerHTML = tile +
+    header.innerHTML = tile +
       `<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600${on ? "" : ";color:var(--dim)"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(sink.description)}</div><div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin-top:2px">${isSnap ? "Snapcast stream" : "Hardware sink"}</div></div>`;
     const sw = document.createElement("div"); sw.className = "sw " + (on ? "on" : "off"); sw.innerHTML = "<i></i>"; sw.style.flex = "0 0 auto";
     sw.onclick = () => toggleOutput(sink.name, isSnap);
-    row.appendChild(sw);
-    list.appendChild(row);
+    header.appendChild(sw);
+    box.appendChild(header);
 
-    // Snapcast row owns the stream-name field, revealed when it's enabled.
+    // Snapcast's stream-name field lives inside its box, revealed when enabled.
     if (isSnap && on) {
+      const sub = document.createElement("div");
+      sub.style.cssText = "padding:12px 14px;border-top:1px solid rgba(13,148,136,.22)";
       const sf = field("Stream name", c.streamName, (v) => { c.streamName = v; markDirty(); });
-      sf.style.cssText = "margin:0 0 2px 52px;max-width:360px";
-      list.appendChild(sf);
+      sf.querySelector("input").style.maxWidth = "360px";
+      sub.appendChild(sf);
+      box.appendChild(sub);
     }
+    list.appendChild(box);
   }
   if (!state.sinks.length) list.innerHTML = '<div style="font-size:13px;color:var(--faint);padding:20px 0;text-align:center">No PipeWire sinks reported. Is the audio path up?</div>';
   card.appendChild(list);
-  view.appendChild(card);
+  const col = formCol(); col.appendChild(card); view.appendChild(col);
 }
 
 function toggleOutput(name, isSnap) {
@@ -504,21 +498,25 @@ function toggleOutput(name, isSnap) {
 // ---- Webhooks view ----
 function buildWebhooks(view) {
   const c = state.cfg;
+  const col = formCol();
   const card = sectionCard("Webhooks");
-  const g = grid("1fr 1fr");
-  g.style.maxWidth = "700px";
-  g.append(
-    field("Default URL", c.webhooks.defaultUrl, (v) => { c.webhooks.defaultUrl = v; markDirty(); }, { placeholder: "https://…" }),
-    field("Delay (ms)", c.webhooks.delayMs, (v) => { c.webhooks.delayMs = Number(v) || 0; markDirty(); }, { type: "number" }),
-    secretRow("Shared secret", "webhooks", "secret"),
-  );
-  card.appendChild(g);
+  const topRow = document.createElement("div");
+  topRow.style.cssText = "display:flex;gap:16px;align-items:flex-start;margin-bottom:16px";
+  const urlF = field("Default URL", c.webhooks.defaultUrl, (v) => { c.webhooks.defaultUrl = v; markDirty(); }, { placeholder: "https://…" });
+  urlF.style.flex = "1";
+  const delayF = field("Delay (ms)", c.webhooks.delayMs, (v) => { c.webhooks.delayMs = Number(v) || 0; markDirty(); }, { type: "number" });
+  delayF.style.cssText = "flex:0 0 auto;width:120px";
+  topRow.append(urlF, delayF);
+  card.appendChild(topRow);
+  const secretF = secretRow("Shared secret", "webhooks", "secret");
+  secretF.style.maxWidth = "340px";
+  card.appendChild(secretF);
   const label = document.createElement("div");
   label.style.cssText = "margin:22px 0 10px";
   label.innerHTML = '<span class="lbl" style="color:var(--faint)">Per-event overrides</span>';
   card.appendChild(label);
   card.appendChild(urlMapEditor(c.webhooks.urls));
-  view.appendChild(card);
+  col.appendChild(card);
 
   // delivery stats
   const wh = state.webhooks;
@@ -541,8 +539,12 @@ function buildWebhooks(view) {
     row.innerHTML = `<div style="min-width:0"><div style="font-size:14px;font-weight:600">${esc(name)}</div><div style="font-size:12px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px">${esc(url)}</div></div>${pill}`;
     stats.appendChild(row);
   });
-  view.appendChild(stats);
+  col.appendChild(stats);
+  view.appendChild(col);
 }
+
+// Soloist state events that fire webhooks (proxy.ts STATE_EVENTS), ordered by usefulness.
+const WEBHOOK_EVENTS = ["track_changed", "playback_changed", "volume_changed", "queue_changed", "options_changed", "context_changed", "device_changed", "playback_state", "auth_state", "position_sync"];
 
 function urlMapEditor(urls) {
   const wrap = document.createElement("div");
@@ -552,11 +554,17 @@ function urlMapEditor(urls) {
     for (const key of Object.keys(urls)) {
       const row = document.createElement("div");
       row.className = "row"; row.style.gap = "10px";
-      const k = document.createElement("input");
-      k.className = "field"; k.style.maxWidth = "200px"; k.value = key;
-      k.onchange = () => { const v = urls[key]; delete urls[key]; if (k.value) urls[k.value] = v; markDirty(); draw(); };
+      const k = document.createElement("select");
+      k.className = "field"; k.style.cssText = "max-width:210px;flex:0 0 auto";
+      const opts = WEBHOOK_EVENTS.includes(key) ? WEBHOOK_EVENTS : [key, ...WEBHOOK_EVENTS];
+      for (const ev of opts) { const o = document.createElement("option"); o.value = ev; o.textContent = ev; if (ev === key) o.selected = true; k.appendChild(o); }
+      k.onchange = () => {
+        const nv = k.value;
+        if (nv === key || urls[nv] !== undefined) { k.value = key; return; } // no-op / already mapped
+        urls[nv] = urls[key]; delete urls[key]; markDirty(); draw();
+      };
       const v = document.createElement("input");
-      v.className = "field"; v.value = urls[key];
+      v.className = "field"; v.style.flex = "1"; v.value = urls[key]; v.placeholder = "https://…";
       v.oninput = () => { urls[key] = v.value; markDirty(); };
       const del = document.createElement("button");
       del.className = "btn"; del.textContent = "×"; del.title = "Remove";
@@ -566,7 +574,7 @@ function urlMapEditor(urls) {
     }
     const add = document.createElement("button");
     add.className = "btn"; add.textContent = "+ Add event override";
-    add.onclick = () => { let n = "event"; while (urls[n] !== undefined) n += "_"; urls[n] = ""; markDirty(); draw(); };
+    add.onclick = () => { const next = WEBHOOK_EVENTS.find((e) => urls[e] === undefined); if (!next) return; urls[next] = ""; markDirty(); draw(); };
     wrap.appendChild(add);
   };
   draw();
@@ -576,22 +584,22 @@ function urlMapEditor(urls) {
 // ---- Settings view (Soloist + Web access + managed) ----
 function buildSettings(view) {
   const c = state.cfg;
+  const col = formCol();
   const soloist = sectionCard("Soloist");
   const g = grid("1fr 1fr");
   g.append(
     field("Device name", c.soloist.deviceName, (v) => { c.soloist.deviceName = v; markDirty(); }),
-    secretRow("Spotify API key", "soloist", "apiKey"),
     field("Soloist WS", c.soloistWs, (v) => { c.soloistWs = v; markDirty(); }),
-    field("PipeWire device", c.soloist.pipewireDevice, (v) => { c.soloist.pipewireDevice = v; markDirty(); }, { placeholder: "auto" }),
-    toggleField("Autoplay on login", c.autoplay, () => { c.autoplay = !c.autoplay; markDirty(); renderView(); }),
+    secretRow("Spotify API key", "soloist", "apiKey"),
   );
   soloist.appendChild(g);
-  soloist.appendChild(lockedBlock([
-    ["Listen address", c.proxy.listen],
-    ["Data dir", c.soloist.dataDir],
-    ["Extra args", (c.soloist.extraArgs || []).join(" ") || "—"],
-  ]));
-  view.appendChild(soloist);
+  soloist.appendChild(settingRow(
+    "Autoplay on login",
+    "Start playback automatically once Soloist signs in.",
+    c.autoplay,
+    () => { c.autoplay = !c.autoplay; markDirty(); renderView(); },
+  ));
+  col.appendChild(soloist);
 
   const web = sectionCard("Web access");
   const wg = grid("1fr 1fr");
@@ -600,12 +608,8 @@ function buildSettings(view) {
     secretRow("Password", "web", "password"),
   );
   web.appendChild(wg);
-  web.appendChild(lockedBlock([
-    ["Auth token", c.proxy.token === true ? "set" : "not set"],
-    ["Read-only token", c.proxy.readonlyToken === true ? "set" : "not set"],
-    ["Session secret", c.web.sessionSecret === true ? "set" : "not set"],
-  ], "Managed / autogenerated — edit config.yaml directly"));
-  view.appendChild(web);
+  col.appendChild(web);
+  view.appendChild(col);
 }
 
 // ---- Overlay builder view ----
@@ -627,9 +631,18 @@ const OV_EASING = [
 ];
 const OV_MOTION = [["Slide + fade", "slide"], ["Crossfade", "crossfade"], ["Pop", "pop"], ["Instant", "instant"]];
 const OV_EFFECTS = ["none", "glow", "shimmer", "rainbow", "sparkles", "wipe", "neon", "glitch", "pulse"];
-const OV_ALIGN = ["left", "center", "right"];
-const OV_ANCHOR = ["top", "center", "bottom"];
 const OV_LINES = ["1", "3", "5"];
+const ALIGN_OPTS = [
+  { value: "left", title: "Left", icon: '<path d="M4 6h16M4 12h10M4 18h13"/>' },
+  { value: "center", title: "Center", icon: '<path d="M4 6h16M7 12h10M6 18h12"/>' },
+  { value: "right", title: "Right", icon: '<path d="M4 6h16M10 12h10M7 18h13"/>' },
+];
+const anchorIcon = (y) => `<rect x="3" y="3" width="18" height="18" rx="2.5"/><rect x="7" y="${y}" width="10" height="3" rx="1.5" fill="currentColor" stroke="none"/>`;
+const ANCHOR_OPTS = [
+  { value: "top", title: "Top", icon: anchorIcon(6) },
+  { value: "center", title: "Center", icon: anchorIcon(10.5) },
+  { value: "bottom", title: "Bottom", icon: anchorIcon(15) },
+];
 
 const PREVIEW_LINES = [
   { time: 0, text: "So close, no matter how far" },
@@ -678,13 +691,87 @@ function ovNum(label, val, onChange) {
   return field(label, val, (v) => { onChange(Number(v) || 0); markDirty(); refreshPreview(); }, { type: "number" });
 }
 
+export function hexToHsl(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  const n = m ? parseInt(m[1], 16) : 0xffffff;
+  const r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) { h = max === r ? (g - b) / d % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4; h = (h * 60 + 360) % 360; }
+  const l = (max + min) / 2;
+  const s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+  return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
+}
+
+export function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(h / 60 % 2 - 1)), m = l - c / 2;
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  const to = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return "#" + to(r) + to(g) + to(b);
+}
+
+// Colour picker: HSL sliders (tracks tinted to preview the value) + a swatch that
+// opens the native picker for direct selection. Value is emitted as hex.
 function ovColour(label, val, onChange) {
   const w = document.createElement("div");
   w.innerHTML = `<label class="flabel">${esc(label)}</label>`;
-  const inp = document.createElement("input");
-  inp.type = "color"; inp.value = val; inp.style.cssText = "width:100%;height:42px;border:1px solid var(--line2);border-radius:10px;background:var(--sub);cursor:pointer";
-  inp.oninput = () => { onChange(inp.value); markDirty(); refreshPreview(); };
-  w.appendChild(inp);
+  let [h, s, l] = hexToHsl(val || "#ffffff");
+
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:12px;align-items:center";
+  const swatch = document.createElement("button");
+  swatch.type = "button"; swatch.title = "Pick colour";
+  swatch.style.cssText = "position:relative;width:42px;height:42px;flex:0 0 auto;border-radius:10px;border:1px solid var(--line2);cursor:pointer;padding:0";
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.style.cssText = "position:absolute;inset:0;opacity:0;cursor:pointer";
+  swatch.appendChild(picker);
+
+  const sliders = document.createElement("div");
+  sliders.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column;gap:7px";
+  const mk = (max) => { const i = document.createElement("input"); i.type = "range"; i.className = "hsl"; i.min = "0"; i.max = String(max); i.step = "1"; return i; };
+  const hI = mk(360), sI = mk(100), lI = mk(100);
+  sliders.append(hI, sI, lI);
+  row.append(swatch, sliders);
+  w.appendChild(row);
+
+  // Repaint tracks + swatch for a hex. Slider edits round-trip through integer HSL
+  // (a slight, expected quantisation); a native-picker hex is stored verbatim.
+  const paint = (hex) => {
+    hI.value = h; sI.value = s; lI.value = l;
+    swatch.style.background = hex; picker.value = hex;
+    hI.style.background = "linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)";
+    sI.style.background = `linear-gradient(to right,hsl(${h},0%,${l}%),hsl(${h},100%,${l}%))`;
+    lI.style.background = `linear-gradient(to right,hsl(${h},${s}%,0%),hsl(${h},${s}%,50%),hsl(${h},${s}%,100%))`;
+  };
+  const commit = (hex) => { onChange(hex); markDirty(); refreshPreview(); };
+  const fromSliders = () => { const hex = hslToHex(h, s, l); paint(hex); commit(hex); };
+  hI.oninput = () => { h = Number(hI.value); fromSliders(); };
+  sI.oninput = () => { s = Number(sI.value); fromSliders(); };
+  lI.oninput = () => { l = Number(lI.value); fromSliders(); };
+  picker.oninput = () => { [h, s, l] = hexToHsl(picker.value); paint(picker.value); commit(picker.value); };
+  paint(hslToHex(h, s, l));
+  return w;
+}
+
+// Segmented icon group (alignment, anchor) — settings whose choices read as glyphs.
+function ovIconGroup(label, val, options, setter) {
+  const w = document.createElement("div");
+  w.innerHTML = `<label class="flabel">${esc(label)}</label>`;
+  const seg = document.createElement("div");
+  seg.style.cssText = "display:flex;background:var(--sub);border:1px solid var(--line2);border-radius:10px;padding:3px;gap:2px";
+  for (const opt of options) {
+    const on = String(val) === opt.value;
+    const b = document.createElement("button");
+    b.type = "button"; b.title = opt.title;
+    b.style.cssText = "flex:1;display:flex;align-items:center;justify-content:center;padding:8px;border:none;border-radius:7px;cursor:pointer;" +
+      (on ? "background:var(--card);color:var(--ind);box-shadow:var(--sh)" : "background:transparent;color:var(--dim)");
+    b.innerHTML = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${opt.icon}</svg>`;
+    b.onclick = () => { setter(opt.value); markDirty(); renderView(); };
+    seg.appendChild(b);
+  }
+  w.appendChild(seg);
   return w;
 }
 
@@ -722,9 +809,9 @@ function overlayTabBody(tab) {
     const g = grid("1fr 1fr");
     g.append(
       ovSelect("Visible lines", o.lineCount, OV_LINES, (v) => o.lineCount = Number(v)),
-      ovSelect("Alignment", o.alignment, OV_ALIGN, (v) => o.alignment = v),
-      ovSelect("Anchor", o.anchor, OV_ANCHOR, (v) => o.anchor = v),
       ovNum("Timing offset (ms)", o.timingOffsetMs, (v) => o.timingOffsetMs = v),
+      ovIconGroup("Alignment", o.alignment, ALIGN_OPTS, (v) => o.alignment = v),
+      ovIconGroup("Anchor", o.anchor, ANCHOR_OPTS, (v) => o.anchor = v),
     );
     return g;
   }
@@ -760,6 +847,7 @@ function overlayTabBody(tab) {
 
 function buildOverlay(view) {
   const wrap = document.createElement("div");
+  wrap.className = "ovwrap";
   wrap.style.cssText = "display:grid;grid-template-columns:440px 1fr;gap:22px;align-items:start";
 
   // controls — one flat card, no inner boxes
@@ -767,11 +855,17 @@ function buildOverlay(view) {
   side.className = "card";
   side.style.cssText = "padding:20px";
 
+  // header — card title + live lyric status, so the panel has a clear heading.
+  const head = document.createElement("div");
+  head.className = "row";
+  head.style.cssText = "justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px";
+  head.innerHTML = '<div style="font-family:var(--disp);font-size:16px;font-weight:700">Overlay</div>';
   const status = document.createElement("div");
   status.id = "ovbStatus";
   status.className = "pill";
-  status.style.cssText = "margin-bottom:16px;background:var(--sub);color:var(--dim)";
-  side.appendChild(status);
+  status.style.cssText = "background:var(--sub);color:var(--dim)";
+  head.appendChild(status);
+  side.appendChild(head);
 
   const seg = document.createElement("div");
   seg.style.cssText = "display:flex;background:var(--sub);border:1px solid var(--line2);border-radius:11px;padding:3px;gap:2px;margin-bottom:20px";
@@ -787,24 +881,27 @@ function buildOverlay(view) {
   side.appendChild(seg);
   side.appendChild(overlayTabBody(state.ovTab));
 
-  const hr = document.createElement("div");
-  hr.style.cssText = "height:1px;background:var(--line);margin:20px 0 16px";
-  side.appendChild(hr);
-  const urlLabel = document.createElement("label"); urlLabel.className = "flabel"; urlLabel.textContent = "OBS browser source URL";
+  // OBS output — its own block so "what you paste into OBS" reads as a distinct
+  // step from the styling controls above.
+  const obs = document.createElement("div");
+  obs.style.cssText = "margin-top:20px;padding:16px;background:var(--sub);border:1px solid var(--line);border-radius:12px";
+  obs.innerHTML = '<div class="flabel" style="margin:0 0 8px">OBS browser source URL</div>';
   const url = document.createElement("input");
-  url.className = "field ro"; url.readOnly = true; url.value = `${location.origin}/overlay`; url.style.fontSize = "12.5px";
+  url.className = "field ro"; url.readOnly = true; url.value = `${location.origin}/overlay`;
+  url.style.cssText = "font-size:12.5px;background:var(--card)";
   const btns = document.createElement("div"); btns.className = "row"; btns.style.cssText = "gap:8px;margin-top:10px";
   const copy = document.createElement("button"); copy.className = "btn"; copy.style.flex = "1"; copy.textContent = "Copy URL";
   copy.onclick = async () => { try { await navigator.clipboard.writeText(url.value); } catch { url.select(); document.execCommand("copy"); } copy.textContent = "Copied!"; setTimeout(() => copy.textContent = "Copy URL", 1500); };
   const open = document.createElement("button"); open.className = "btn"; open.style.flex = "1"; open.textContent = "Open ↗";
   open.onclick = () => window.open(url.value, "_blank");
   btns.append(copy, open);
-  side.append(urlLabel, url, btns);
+  obs.append(url, btns);
+  side.appendChild(obs);
 
-  // preview — a bare box; the checkerboard makes it obviously a live preview.
+  // preview — top-aligned with the controls card (the checkerboard marks it live).
   const prev = document.createElement("div");
   prev.id = "ovbPreview";
-  prev.style.cssText = "border-radius:14px;overflow:hidden;height:min(560px,64vh);position:sticky;top:78px;border:1px solid var(--line)";
+  prev.style.cssText = "border-radius:14px;overflow:hidden;width:100%;aspect-ratio:16/9;max-height:72vh;border:1px solid var(--line)";
 
   wrap.append(side, prev);
   view.appendChild(wrap);
@@ -818,8 +915,9 @@ function previewFrame() {
   const pl = state.previewLyrics;
   if (pl.lines && pl.lines.length) {
     const off = (Number(state.cfg.overlay.timingOffsetMs) || 0) / 1000;
-    let idx = overlayEngine ? overlayEngine.currentIndex(pl.lines, nowMs() / 1000 + off) : 0;
-    if (idx < 0) idx = 0;
+    // idx may be -1 before the first line's timestamp — render() clears then, so no
+    // line reads as active until playback actually reaches it (don't clamp to 0).
+    const idx = overlayEngine ? overlayEngine.currentIndex(pl.lines, nowMs() / 1000 + off) : -1;
     return { lines: pl.lines, idx };
   }
   return { lines: PREVIEW_LINES, idx: PREVIEW_IDX };
