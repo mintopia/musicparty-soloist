@@ -321,14 +321,15 @@ function makeTrackRenderer(container) {
 
     track.getAnimations().forEach((a) => a.cancel());
     track.style.transform = `translateY(${tyTarget}px)`;
-    // Only glide a sequential ±1 advance; a bigger jump (seek, lyrics loading mid-song)
-    // would otherwise ease across several line-heights and read as a jarring scroll — snap it.
-    const jumped = lastCurrent >= 0 && Math.abs(idx - lastCurrent) > 1;
-    const snap = motion === "crossfade" || motion === "instant" || durMs <= 0 || firstTop == null || prefersReduce.matches || jumped;
+    let snap = motion === "crossfade" || motion === "instant" || durMs <= 0 || firstTop == null || prefersReduce.matches;
     let scrollAnim = null;
     if (!snap) {
       const fromTy = tyTarget + (firstTop - cur.getBoundingClientRect().top);
-      scrollAnim = track.animate([{ transform: `translateY(${fromTy}px)` }, { transform: `translateY(${tyTarget}px)` }], { duration: durMs, easing });
+      // Glide a normal advance so it eases into place; snap only a big jump (a seek, or
+      // lyrics loading mid-song) rather than flying it across the screen. Gauge by how far
+      // it actually travels, not the index delta — stacked timestamps often skip a line.
+      if (Math.abs(fromTy - tyTarget) > nominal * 3) snap = true;
+      else scrollAnim = track.animate([{ transform: `translateY(${fromTy}px)` }, { transform: `translateY(${tyTarget}px)` }], { duration: durMs, easing });
     }
 
     if (effect === "sparkles" && idx !== lastCurrent && !prefersReduce.matches) {
