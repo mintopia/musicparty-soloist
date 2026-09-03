@@ -333,7 +333,13 @@ function makeTrackRenderer(container) {
     track.style.transition = "none";
     track.style.transform = `translateY(${tyTarget}px)`;
     if (!snap) {
-      const fromTy = tyTarget + (firstTop - cur.getBoundingClientRect().top);
+      // getBoundingClientRect is post-transform, so in a CSS-scaled stage (the config
+      // preview) it reports scaled pixels while the track translate lives in the stage's
+      // own unscaled space. Convert the measured delta back by the stage scale, or the
+      // FLIP start overshoots and the preview jumps (the full-size overlay is scale 1).
+      const rect = cur.getBoundingClientRect();
+      const scaleY = cur.offsetHeight ? rect.height / cur.offsetHeight : 1;
+      const fromTy = tyTarget + (firstTop - rect.top) / scaleY;
       // Glide a normal advance; snap a big jump (a seek, or lyrics loading mid-song) by how
       // far it travels — not the index delta, since stacked timestamps often skip a line.
       if (Math.abs(fromTy - tyTarget) <= nominal * 3) {
