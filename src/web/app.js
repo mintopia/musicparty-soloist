@@ -870,11 +870,14 @@ function overlayTabBody(tab) {
     ovRange("Transition (ms)", o.transitionMs, 0, 1000, 50, (v) => o.transitionMs = v),
   );
   const fg = grid("1fr 1fr");
-  fg.append(
-    ovColour("Effect colour", o.fxColor, (v) => o.fxColor = v),
+  fg.style.alignItems = "start";
+  const fxStack = document.createElement("div");
+  fxStack.style.cssText = "display:flex;flex-direction:column;gap:16px";
+  fxStack.append(
     ovRange("Intensity", o.fxIntensity, 0, 100, 1, (v) => o.fxIntensity = v),
     ovRange("Speed (ms)", o.fxDurMs, 200, 4000, 100, (v) => o.fxDurMs = v),
   );
+  fg.append(ovColour("Effect colour", o.fxColor, (v) => o.fxColor = v), fxStack);
   wrap.append(g, effectGallery(), fg);
   return wrap;
 }
