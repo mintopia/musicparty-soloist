@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, AUTOPLAY_FRAMES, type UpstreamFrame } from "./proxy.js";
+import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, type UpstreamFrame, type WebhookStats } from "./proxy.js";
 import type { RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, DEFAULT_OVERLAY, type Config } from "./config.js";
-import { signSession, verifySession, parseCookies, sessionUser, webConfigured, SESSION_COOKIE } from "./web.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, SESSION_COOKIE } from "./web.js";
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -99,6 +99,33 @@ const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when dela
 q0.push(() => sync.push(1));
 q0.push(() => sync.push(2));
 assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
+
+// Webhook delivery stats: ok/fail counters, lastStatus/lastError per destination.
+const wstats: WebhookStats = new Map();
+recordWebhookStat(wstats, "http://a", 200, null);
+recordWebhookStat(wstats, "http://a", 204, null);
+assert.deepEqual(wstats.get("http://a")!.ok, 2, "2xx increments ok");
+assert.equal(wstats.get("http://a")!.fail, 0, "2xx does not fail");
+assert.equal(wstats.get("http://a")!.lastStatus, 204, "lastStatus tracks last delivery");
+recordWebhookStat(wstats, "http://a", 500, null);
+assert.equal(wstats.get("http://a")!.fail, 1, "5xx increments fail");
+assert.equal(wstats.get("http://a")!.lastError, "HTTP 500", "non-2xx status recorded as lastError");
+recordWebhookStat(wstats, "http://a", null, "timeout");
+assert.equal(wstats.get("http://a")!.fail, 2, "network error increments fail");
+assert.equal(wstats.get("http://a")!.lastError, "timeout", "network error message recorded");
+assert.equal(wstats.get("http://a")!.lastStatus, null, "network error clears lastStatus");
+assert.ok(wstats.get("http://a")!.lastAt! > 0, "lastAt timestamp set");
+
+// webhooksView: reports config + stats, never the secret value.
+const viewCfg = { webhooks: { defaultUrl: "http://def", urls: { track_changed: "http://tc" }, secret: "topsecret", delayMs: 0 } } as unknown as Config;
+const view = webhooksView(viewCfg, wstats) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; stats: Record<string, unknown> };
+assert.equal(view.config.hasSecret, true, "secret presence exposed as boolean");
+assert.equal(JSON.stringify(view).includes("topsecret"), false, "secret value never serialized");
+assert.deepEqual(view.config.urls, { track_changed: "http://tc" }, "type->url overrides reported");
+assert.equal(view.config.defaultUrl, "http://def", "default url reported");
+assert.ok(view.stats["http://a"], "live stats map included");
+const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
+assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
 
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");

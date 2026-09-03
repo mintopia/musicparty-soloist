@@ -272,25 +272,51 @@ export class WebhookQueue {
   }
 }
 
-async function postWebhook(url: string, body: string, secret: string): Promise<void> {
+export interface WebhookStat {
+  lastStatus: number | null;
+  lastAt: number | null;
+  ok: number;
+  fail: number;
+  lastError: string | null;
+}
+export type WebhookStats = Map<string, WebhookStat>;
+
+async function postWebhook(url: string, body: string, secret: string): Promise<{ status: number | null; error: string | null }> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (secret) headers.authorization = `Bearer ${secret}`;
   try {
     const res = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
     if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
+    return { status: res.status, error: null };
   } catch (err) {
     log("webhook %s failed: %s", url, (err as Error).message);
+    return { status: null, error: (err as Error).message };
   }
 }
 
-function attachWebhooks(hub: SoloistHub, wh: WebhooksConfig): void {
+export function recordWebhookStat(stats: WebhookStats, url: string, status: number | null, error: string | null): void {
+  const s = stats.get(url) ?? { lastStatus: null, lastAt: null, ok: 0, fail: 0, lastError: null };
+  s.lastStatus = status;
+  s.lastAt = Date.now();
+  if (error === null && status !== null && status >= 200 && status < 300) {
+    s.ok++;
+  } else {
+    s.fail++;
+    s.lastError = error ?? `HTTP ${status}`;
+  }
+  stats.set(url, s);
+}
+
+function attachWebhooks(hub: SoloistHub, wh: WebhooksConfig): WebhookStats {
+  const stats: WebhookStats = new Map();
   const queue = new WebhookQueue(wh.delayMs, {
     onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
   });
   hub.observe((frame) => {
     const url = resolveWebhookUrl(frame.type, wh);
-    if (url) queue.push(() => void postWebhook(url, frame.raw, wh.secret));
+    if (url) queue.push(() => void postWebhook(url, frame.raw, wh.secret).then((r) => recordWebhookStat(stats, url, r.status, r.error)));
   });
+  return stats;
 }
 
 export function makeServer(cfg: Config): Promise<RunningProxy> {
@@ -298,11 +324,11 @@ export function makeServer(cfg: Config): Promise<RunningProxy> {
   const hub = new SoloistHub(`ws://${cfg.soloistWs}`);
   if (cfg.autoplay) attachAutoplay(hub);
   const wh = cfg.webhooks;
-  if (wh.defaultUrl || Object.keys(wh.urls).length > 0) attachWebhooks(hub, wh);
+  const stats: WebhookStats = wh.defaultUrl || Object.keys(wh.urls).length > 0 ? attachWebhooks(hub, wh) : new Map();
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, stats)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
