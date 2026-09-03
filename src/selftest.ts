@@ -7,10 +7,12 @@ import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, type UpstreamFrame, type WebhookStats } from "./proxy.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, DEFAULT_OVERLAY, type Config } from "./config.js";
-import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, overlayBootstrap, SESSION_COOKIE } from "./web.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, DEFAULT_OVERLAY, type Config } from "./config.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted } from "./supervisor.js";
 import { rmSync } from "node:fs";
+import { Readable } from "node:stream";
+import type { ServerResponse } from "node:http";
 import { parseSinks, parseMonitorTargets, desiredTargets, pipewireSinksResponse, reconcileOutputs, SNAPCAST_KEY, type Runner } from "./pipewire.js";
 
 // Overlay engine lives in src/web/ (browser ESM, copied to dist/web/). Computed
@@ -43,6 +45,7 @@ assert.equal(checkAuth(req({ authorization: "Bearer nope" }), authCfg(CT, RT)), 
 assert.equal(checkAuth(req({}), authCfg(CT, RT)), "none", "missing token -> none");
 assert.equal(checkAuth(req({ authorization: "Bearer " + CT + "x" }), authCfg(CT, RT)), "none", "wrong length -> none");
 assert.equal(checkAuth(req({}, "/?token="), authCfg(CT, "")), "none", "empty presented never matches empty readonly");
+assert.equal(checkAuth(req({}, "/?token="), authCfg("", "")), "none", "setup mode: empty proxy.token never grants control");
 assert.equal(
   checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET)}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
   "control",
@@ -250,10 +253,11 @@ assert.deepEqual(
   "no temp file left after save",
 );
 
-// saveConfig never persists an invalid config.
+// saveConfig never persists an invalid config. (Empty creds are valid now — setup
+// mode — so use a genuinely malformed field: extra_args must be a list.)
 const before = readFileSync(cfgPath, "utf8");
 const bad = loadConfig(cfgPath);
-bad.soloist.apiKey = "";
+(bad.soloist as { extraArgs: unknown }).extraArgs = "not-a-list";
 assert.throws(() => saveConfig(cfgPath, bad), ConfigError, "invalid config rejected");
 assert.equal(readFileSync(cfgPath, "utf8"), before, "file untouched after rejected save");
 
@@ -267,6 +271,16 @@ const persisted = loadConfig(cfgPath);
 assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
 assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
 assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
+
+// Fresh install (no config file): ensureSecrets mints proxy.token too, so control-tier
+// token auth works out of the box after setup.
+const freshPath = join(dir, "fresh.yaml");
+const fresh = defaultConfig();
+assert.equal(fresh.proxy.token, "", "precondition: default config has no proxy.token");
+assert.equal(ensureSecrets(freshPath, fresh), true, "fresh config: secrets minted");
+assert.notEqual(fresh.proxy.token, "", "proxy.token minted");
+assert.notEqual(fresh.web.sessionSecret, "", "session_secret minted");
+assert.equal(loadConfig(freshPath).proxy.token, fresh.proxy.token, "proxy.token persisted");
 
 // Config API: GET masks secrets, config-summary never leaks, PUT round-trips.
 const sCfg = loadConfig(cfgPath);
@@ -310,7 +324,7 @@ assert.equal(applied.soloist.deviceName, "Renamed", "editable field applies");
 assert.equal(applied.proxy.listen, sCfg.proxy.listen, "locked proxy.listen unchanged");
 assert.equal(applied.soloist.dataDir, sCfg.soloist.dataDir, "locked data_dir unchanged");
 assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
-assert.throws(() => applyApiConfig(sCfg, { soloist: { deviceName: "" } }), ConfigError, "invalid result rejected");
+assert.throws(() => applyApiConfig(sCfg, { webhooks: { urls: "nope" } }), ConfigError, "invalid result rejected");
 
 // webhooks.urls is a full-replace map: a dropped URL disappears (not merged).
 const whCfgBase = loadConfig(cfgPath);
@@ -511,6 +525,100 @@ assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []"
   const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
   assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
   assert.deepEqual(res.linked, [], "reconcile: absent node not linked");
+}
+
+// First-run setup gating: creds unset -> only /setup served, everything else fails
+// closed; POST /setup sets creds + redirects to login; then /setup is unreachable.
+{
+  function fakeRes() {
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => (resolveDone = r));
+    return {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: "",
+      done,
+      writeHead(code: number, hdrs?: Record<string, string>) {
+        this.statusCode = code;
+        if (hdrs) for (const [k, v] of Object.entries(hdrs)) this.headers[k.toLowerCase()] = v;
+        return this;
+      },
+      setHeader(k: string, v: string) {
+        this.headers[k.toLowerCase()] = v;
+      },
+      end(chunk?: string | Buffer) {
+        if (chunk) this.body += chunk.toString();
+        resolveDone();
+        return this;
+      },
+    };
+  }
+  const setupReq = (method: string, url: string, body = ""): IncomingMessage => {
+    const r = Readable.from(body ? [Buffer.from(body)] : []) as unknown as IncomingMessage & Record<string, unknown>;
+    r.method = method;
+    r.url = url;
+    (r as { headers: Record<string, string> }).headers = {};
+    (r as { socket: unknown }).socket = { remoteAddress: "test" };
+    return r as IncomingMessage;
+  };
+  const call = (r: ReturnType<typeof fakeRes>, req: IncomingMessage, cfg: Config) =>
+    handleWebRequest(req, r as unknown as ServerResponse, cfg, setupCfgPath);
+
+  const setupDir = mkdtempSync(join(tmpdir(), "setup-"));
+  const setupCfgPath = join(setupDir, "config.yaml");
+  const scfg = defaultConfig();
+  scfg.web.sessionSecret = "sess"; // as ensureSecrets would have minted on boot
+  assert.equal(webConfigured(scfg), false, "fresh config: web not configured");
+  assert.equal(soloistReady(scfg), false, "fresh config: soloist not ready");
+
+  let r = fakeRes();
+  assert.equal(call(r, setupReq("GET", "/setup"), scfg), true, "GET /setup handled in setup mode");
+  assert.equal(r.statusCode, 200, "GET /setup served in setup mode");
+  assert.match(r.body, /Welcome to Soloist Proxy/, "setup page rendered");
+
+  r = fakeRes();
+  call(r, setupReq("GET", "/"), scfg);
+  assert.equal(r.statusCode, 302, "root redirects in setup mode");
+  assert.equal(r.headers.location, "/setup", "root redirects to /setup");
+
+  for (const p of ["/api/config", "/api/config-summary", "/api/webhooks", "/login"]) {
+    r = fakeRes();
+    call(r, setupReq("GET", p), scfg);
+    assert.equal(r.statusCode, 503, `${p} fails closed in setup mode`);
+  }
+
+  // POST /setup with mismatched passwords: error redirect, creds stay unset.
+  r = fakeRes();
+  call(r, setupReq("POST", "/setup", "username=admin&password=pw1&confirm=pw2"), scfg);
+  await r.done;
+  assert.equal(r.statusCode, 302, "mismatch redirects");
+  assert.equal(r.headers.location, "/setup?error=1", "mismatch -> setup error");
+  assert.equal(webConfigured(scfg), false, "mismatch did not set creds");
+
+  // POST /setup with valid input: sets creds, writes file, redirects to login.
+  r = fakeRes();
+  call(r, setupReq("POST", "/setup", "username=dj&password=hunter2&confirm=hunter2"), scfg);
+  await r.done;
+  assert.equal(r.statusCode, 302, "valid setup redirects");
+  assert.equal(r.headers.location, "/login", "valid setup -> login");
+  assert.equal(scfg.web.username, "dj", "username set from setup");
+  assert.equal(scfg.web.password, "hunter2", "password set from setup");
+  assert.equal(webConfigured(scfg), true, "creds now configured");
+  const savedSetup = loadConfig(setupCfgPath);
+  assert.equal(savedSetup.web.username, "dj", "setup creds persisted to file");
+  assert.equal(savedSetup.web.password, "hunter2", "setup password persisted to file");
+  assert.equal(soloistReady(scfg), false, "creds only: soloist still not ready (args absent)");
+
+  // Setup done: the Setup Page is no longer reachable.
+  r = fakeRes();
+  call(r, setupReq("GET", "/setup"), scfg);
+  assert.equal(r.statusCode, 302, "configured: /setup redirects");
+  assert.equal(r.headers.location, "/", "configured: /setup -> /");
+
+  // With web creds + soloist args, supervision is allowed to start.
+  scfg.soloist.deviceName = "Speaker";
+  scfg.soloist.apiKey = "key";
+  assert.equal(soloistReady(scfg), true, "web creds + soloist args -> ready");
 }
 
 console.log("selftest OK");

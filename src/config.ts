@@ -87,13 +87,6 @@ export function coerceInt(value: unknown, def: number): number {
   return Number.isNaN(n) ? def : n;
 }
 
-function required(value: unknown, name: string): string {
-  if (value == null || (typeof value === "string" && value.trim() === "")) {
-    throw new ConfigError(`Missing required config value: ${name}`);
-  }
-  return String(value);
-}
-
 function parseConfig(raw: unknown): Config {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new ConfigError("Config root must be a mapping");
@@ -127,15 +120,17 @@ function parseConfig(raw: unknown): Config {
 
   return {
     soloist: {
-      deviceName: required(soloist.device_name, "soloist.device_name (device name)"),
-      apiKey: required(soloist.api_key, "soloist.api_key (Spotify API Key)"),
+      // Optional at load so a fresh install boots into first-run setup mode with no
+      // config; supervision is gated on presence via soloistReady (ADR-0009, T3).
+      deviceName: String(soloist.device_name ?? "").trim(),
+      apiKey: String(soloist.api_key ?? ""),
       dataDir: soloist.data_dir || DEFAULT_DATA_DIR,
       extraArgs: extraArgs.map((a: unknown) => String(a)),
       pipewireDevice: String(soloist.pipewire_device ?? "").trim(),
     },
     proxy: {
       listen: proxy.listen || DEFAULT_PROXY_LISTEN,
-      token: required(proxy.token, "proxy.token (Auth Token)"),
+      token: String(proxy.token ?? "").trim(),
       readonlyToken: String(proxy.readonly_token ?? "").trim(),
     },
     soloistWs: d.soloist_ws || DEFAULT_SOLOIST_WS,
@@ -168,6 +163,23 @@ function parseConfig(raw: unknown): Config {
       anchor: String(overlay.anchor ?? DEFAULT_OVERLAY.anchor),
     },
   };
+}
+
+// Fully-defaulted Config for a fresh install with no config file — boots into
+// first-run setup mode. Same shape/types as one read from disk.
+export function defaultConfig(): Config {
+  return parseConfig({});
+}
+
+// Soloist supervision may start only when web creds and the minimal Soloist args
+// (device name + API key) are all present. Boot gate for first-run setup mode (T3).
+export function soloistReady(cfg: Config): boolean {
+  return (
+    cfg.web.username !== "" &&
+    cfg.web.password !== "" &&
+    cfg.soloist.deviceName !== "" &&
+    cfg.soloist.apiKey !== ""
+  );
 }
 
 export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
@@ -373,6 +385,10 @@ export function ensureSecrets(path: string, config: Config): boolean {
   let changed = false;
   if (!config.web.sessionSecret) {
     config.web.sessionSecret = randomBytes(32).toString("hex");
+    changed = true;
+  }
+  if (!config.proxy.token) {
+    config.proxy.token = randomBytes(32).toString("hex");
     changed = true;
   }
   if (!config.proxy.readonlyToken) {

@@ -139,7 +139,7 @@ export function webhooksView(cfg: Config, stats: WebhookStats): unknown {
 
 function failClosed(res: ServerResponse): void {
   res.writeHead(503, { "content-type": "text/plain; charset=utf-8" }).end(
-    "Web UI not configured: set web.username and web.password in config.yaml.\n",
+    "Web UI not configured: complete first-run setup at /setup.\n",
   );
 }
 
@@ -224,6 +224,49 @@ async function handlePipewireSinks(res: ServerResponse, cfg: Config): Promise<vo
   }
 }
 
+// First-run setup: set web creds only, persist, redirect to login. Runs only while
+// web creds are unset (gated in handleWebRequest), so it never overwrites live creds.
+async function handleSetup(
+  req: IncomingMessage,
+  res: ServerResponse,
+  cfg: Config,
+  configPath: string,
+): Promise<void> {
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch {
+    res.writeHead(413).end("Payload too large\n");
+    return;
+  }
+  const form = new URLSearchParams(body);
+  const username = (form.get("username") ?? "").trim();
+  const password = form.get("password") ?? "";
+  const confirm = form.get("confirm") ?? "";
+  if (username === "" || password === "" || password !== confirm) {
+    redirect(res, "/setup?error=1");
+    return;
+  }
+  // Concurrent POST could have set creds already; don't clobber an established account.
+  if (webConfigured(cfg)) {
+    redirect(res, "/login");
+    return;
+  }
+  const next = structuredClone(cfg);
+  next.web.username = username;
+  next.web.password = password;
+  try {
+    saveConfig(configPath, next);
+  } catch (err) {
+    log("setup save failed: %s", (err as Error).message);
+    res.writeHead(500).end("Failed to save setup\n");
+    return;
+  }
+  Object.assign(cfg, next);
+  log("first-run setup complete: web creds set for %s", username);
+  redirect(res, "/login");
+}
+
 async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Config): Promise<void> {
   let body: string;
   try {
@@ -257,6 +300,17 @@ export function handleWebRequest(
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
+
+  // Setup mode: no web creds yet. Serve only the (self-contained) Setup Page, point
+  // the root at it, and fail everything else closed (ADR-0009/0010, T3).
+  if (!webConfigured(cfg)) {
+    if (path === "/setup" && method === "GET") return serveFile(res, "setup.html"), true;
+    if (path === "/setup" && method === "POST") return void handleSetup(req, res, cfg, configPath), true;
+    if (path === "/" && method === "GET") return redirect(res, "/setup"), true;
+    return failClosed(res), true;
+  }
+  // Configured: setup is done and the Setup Page must not be reachable again.
+  if (path === "/setup") return redirect(res, "/"), true;
 
   if (method === "GET" && STATIC[path]) {
     serveFile(res, STATIC[path]);
