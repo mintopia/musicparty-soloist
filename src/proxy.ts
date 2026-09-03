@@ -23,12 +23,23 @@ export function presentedToken(req: IncomingMessage): string | null {
   return url.searchParams.get("token");
 }
 
-export function checkAuth(req: IncomingMessage, token: string): boolean {
-  const presented = presentedToken(req);
-  if (presented === null) return false;
+function tokenEquals(presented: string, token: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export type AuthTier = "control" | "readonly" | "none";
+
+// control = Auth Token or valid Web Session; readonly = Read-only Token; else none.
+export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
+  const presented = presentedToken(req);
+  if (presented !== null) {
+    if (tokenEquals(presented, cfg.proxy.token)) return "control";
+    if (cfg.proxy.readonlyToken && tokenEquals(presented, cfg.proxy.readonlyToken)) return "readonly";
+  }
+  if (sessionUser(req, cfg)) return "control";
+  return "none";
 }
 
 export interface UpstreamFrame {
@@ -65,6 +76,8 @@ export function shouldAutoplay(prev: AutoplayState, next: UpstreamFrame): boolea
 export class SoloistHub {
   readonly url: string;
   private clients = new Set<WebSocket>();
+  private readonlyClients = new WeakSet<WebSocket>();
+  private latestState = new Map<string, UpstreamFrame>();
   private observers = new Set<FrameObserver>();
   private connectFn: (() => void) | null = null;
   private conn: WebSocket | null = null;
@@ -89,15 +102,21 @@ export class SoloistHub {
     if (conn && conn.readyState === WebSocket.OPEN) conn.send(JSON.stringify(message));
   }
 
-  register(client: WebSocket): void {
+  register(client: WebSocket, opts: { readOnly?: boolean } = {}): void {
     this.clients.add(client);
+    if (opts.readOnly) this.readonlyClients.add(client);
+    for (const frame of this.latestState.values()) {
+      if (client.readyState === WebSocket.OPEN) client.send(frame.raw);
+    }
   }
 
   unregister(client: WebSocket): void {
     this.clients.delete(client);
+    this.readonlyClients.delete(client);
   }
 
-  async forward(data: RawData, isBinary: boolean): Promise<void> {
+  async forward(client: WebSocket, data: RawData, isBinary: boolean): Promise<void> {
+    if (this.readonlyClients.has(client)) return; // read-only tier never reaches upstream
     const ac = new AbortController();
     const timeout = sleep(HUB_READY_TIMEOUT * 1000, "timeout" as const, { signal: ac.signal }).catch(
       () => "aborted" as const,
@@ -113,6 +132,7 @@ export class SoloistHub {
   private onUpstream(data: RawData, isBinary: boolean): void {
     const frame = decodeFrame(data, isBinary);
     if (frame) {
+      if (STATE_EVENTS.has(frame.type)) this.latestState.set(frame.type, frame);
       for (const obs of this.observers) {
         try {
           obs(frame);
@@ -332,15 +352,16 @@ export function makeServer(cfg: Config): Promise<RunningProxy> {
   });
 
   server.on("upgrade", (req, socket, head) => {
-    if (!checkAuth(req, cfg.proxy.token) && !sessionUser(req, cfg)) {
+    const tier = checkAuth(req, cfg);
+    if (tier === "none") {
       log("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (client) => {
-      hub.register(client);
-      client.on("message", (data, isBinary) => hub.forward(data, isBinary));
+      hub.register(client, { readOnly: tier === "readonly" });
+      client.on("message", (data, isBinary) => hub.forward(client, data, isBinary));
       client.on("close", () => hub.unregister(client));
       client.on("error", () => hub.unregister(client));
     });

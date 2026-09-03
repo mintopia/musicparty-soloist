@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, type UpstreamFrame, type WebhookStats } from "./proxy.js";
-import type { RawData } from "ws";
+import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, type UpstreamFrame, type WebhookStats } from "./proxy.js";
+import { once } from "node:events";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, SESSION_COOKIE } from "./web.js";
 
@@ -19,12 +20,23 @@ assert.equal(detectArch("arm"), "arm32");
 assert.throws(() => detectArch("sparc"), AcquisitionError);
 assert.equal(tarballUrl("arm64", "https://x/y/"), "https://x/y/soloist_release_arm64.tar.gz");
 
-const T = "s3cret";
-assert.equal(checkAuth(req({ authorization: `Bearer ${T}` }), T), true, "good bearer passes");
-assert.equal(checkAuth(req({}, `/?token=${T}`), T), true, "good query token passes");
-assert.equal(checkAuth(req({ authorization: "Bearer nope" }), T), false, "bad token rejected");
-assert.equal(checkAuth(req({}), T), false, "missing token rejected");
-assert.equal(checkAuth(req({ authorization: "Bearer " + T + "x" }), T), false, "wrong length rejected");
+const CT = "s3cret";
+const RT = "readonly-tok";
+const AUTH_SECRET = "authsess";
+const authCfg = (token: string, readonlyToken = "", web = { username: "", password: "", sessionSecret: AUTH_SECRET }): Config =>
+  ({ proxy: { token, readonlyToken }, web }) as unknown as Config;
+assert.equal(checkAuth(req({ authorization: `Bearer ${CT}` }), authCfg(CT, RT)), "control", "auth token -> control");
+assert.equal(checkAuth(req({}, `/?token=${CT}`), authCfg(CT, RT)), "control", "query auth token -> control");
+assert.equal(checkAuth(req({ authorization: `Bearer ${RT}` }), authCfg(CT, RT)), "readonly", "readonly token -> readonly");
+assert.equal(checkAuth(req({ authorization: "Bearer nope" }), authCfg(CT, RT)), "none", "bad token -> none");
+assert.equal(checkAuth(req({}), authCfg(CT, RT)), "none", "missing token -> none");
+assert.equal(checkAuth(req({ authorization: "Bearer " + CT + "x" }), authCfg(CT, RT)), "none", "wrong length -> none");
+assert.equal(checkAuth(req({}, "/?token="), authCfg(CT, "")), "none", "empty presented never matches empty readonly");
+assert.equal(
+  checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET)}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
+  "control",
+  "valid web session -> control",
+);
 
 const buf = (s: string): RawData => Buffer.from(s) as unknown as RawData;
 assert.deepEqual(decodeFrame(buf('{"type":"auth_state","logged_in":true}'), false), {
@@ -232,5 +244,39 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET)}`), cfgSet), null, "cookie for other user -> null");
 assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET)}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
+
+// Hub read-only drop + state replay, against a real in-process upstream.
+{
+  const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(upstream, "listening");
+  const port = (upstream.address() as { port: number }).port;
+  const gotUpstream: string[] = [];
+  upstream.on("connection", (ws) => ws.on("message", (d: RawData) => gotUpstream.push(d.toString())));
+
+  const hub = new SoloistHub(`ws://127.0.0.1:${port}`);
+  void hub.run();
+  const [upstreamConn] = (await once(upstream, "connection")) as [WebSocket];
+
+  upstreamConn.send('{"type":"playback_state","playing":true}');
+  await new Promise((r) => setTimeout(r, 50)); // let the frame reach the hub and cache
+
+  const fake = () => ({ readyState: WebSocket.OPEN, sent: [] as unknown[], send(d: unknown) { this.sent.push(d); } });
+
+  const ro = fake();
+  hub.register(ro as unknown as WebSocket, { readOnly: true });
+  assert.deepEqual(ro.sent, ['{"type":"playback_state","playing":true}'], "read-only client gets state replay on connect");
+  await hub.forward(ro as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
+  assert.deepEqual(gotUpstream, [], "read-only client frames dropped, never forwarded upstream");
+
+  const ctrl = fake();
+  hub.register(ctrl as unknown as WebSocket, {});
+  assert.deepEqual(ctrl.sent, ['{"type":"playback_state","playing":true}'], "control client gets state replay on connect");
+  await hub.forward(ctrl as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(gotUpstream, ['{"type":"command","command":"play"}'], "control client frames forwarded upstream");
+
+  hub.stop();
+  upstream.close();
+}
 
 console.log("selftest OK");
