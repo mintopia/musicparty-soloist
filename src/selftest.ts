@@ -6,7 +6,8 @@ import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, AUTOPLAY_FRAMES, type UpstreamFrame } from "./proxy.js";
 import type { RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, DEFAULT_OVERLAY } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, DEFAULT_OVERLAY, type Config } from "./config.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, SESSION_COOKIE } from "./web.js";
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -178,5 +179,31 @@ const persisted = loadConfig(cfgPath);
 assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
 assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
 assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
+
+// Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed.
+const SECRET = "sessionsecret";
+const signed = signSession("admin", SECRET);
+assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
+assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
+assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
+assert.equal(verifySession(signed.replace("YWRtaW4", "cm9vdA"), SECRET), null, "tampered payload rejected");
+assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
+
+assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
+assert.deepEqual(parseCookies(undefined), {}, "no cookie header -> empty");
+
+const webReq = (cookie?: string) => ({ headers: cookie ? { cookie } : {} }) as unknown as IncomingMessage;
+const webCfg = (u: string, p: string): Config => ({ web: { username: u, password: p, sessionSecret: SECRET } }) as unknown as Config;
+
+assert.equal(webConfigured(webCfg("admin", "pw")), true, "creds set -> configured");
+assert.equal(webConfigured(webCfg("", "")), false, "creds unset -> not configured");
+assert.equal(webConfigured(webCfg("admin", "")), false, "half-set creds -> not configured");
+
+const cfgSet = webCfg("admin", "pw");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET)}`), cfgSet), "admin", "valid cookie -> user");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong")}`), cfgSet), null, "bad-secret cookie -> null");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET)}`), cfgSet), null, "cookie for other user -> null");
+assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET)}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
 
 console.log("selftest OK");

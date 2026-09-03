@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config, WebhooksConfig } from "./config.js";
+import { handleWebRequest, sessionUser } from "./web.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("proxy");
@@ -300,10 +301,12 @@ export function makeServer(cfg: Config): Promise<RunningProxy> {
   if (wh.defaultUrl || Object.keys(wh.urls).length > 0) attachWebhooks(hub, wh);
   const wss = new WebSocketServer({ noServer: true });
 
-  const server = createServer();
+  const server = createServer((req, res) => {
+    if (!handleWebRequest(req, res, cfg)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+  });
 
   server.on("upgrade", (req, socket, head) => {
-    if (!checkAuth(req, cfg.proxy.token)) {
+    if (!checkAuth(req, cfg.proxy.token) && !sessionUser(req, cfg)) {
       log("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
       socket.destroy();
