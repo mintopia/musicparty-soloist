@@ -3,12 +3,12 @@
 # pipewire:// source (ADR-0002) and serves the stream to LAN Snapclients. Runs on
 # host networking (see docker-compose) so clients reach it on 1704/1705.
 #
-# Render snapserver.conf from the Config File's stream_name. Fall back to the
-# SNAPCAST_STREAM env / default if load_config raises (it validates the Proxy
-# secrets, which the stream name itself doesn't need) so a secrets gap doesn't
-# take the audio server down with it.
-name=$(cd /app && node -e 'import("./dist/config.js").then(m=>process.stdout.write(String(m.loadConfig().streamName))).catch(()=>process.exit(1))' 2>/dev/null) \
-  || name="${SNAPCAST_STREAM:-Spotify}"
+# Render snapserver.conf from the Config File's stream_name (ADR-0010: no env).
+# Fall back to the "Spotify" default if load_config raises (e.g. the Proxy has not
+# seeded /config yet, or a config error) so a config gap doesn't take the audio
+# server down with it.
+name=$(cd /app && node -e 'import("./dist/config.js").then(m=>process.stdout.write(String(m.loadConfig("/config/config.yaml").streamName))).catch(()=>process.exit(1))' 2>/dev/null) \
+  || name="Spotify"
 
 wait-for-sink soloist-sink
 

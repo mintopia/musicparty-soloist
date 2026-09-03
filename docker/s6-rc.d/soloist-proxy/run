@@ -3,5 +3,9 @@
 # Wait for the soloist-sink null-sink's ports before launching, then the Proxy
 # reconciles the fan-out links to the configured Audio Outputs (ADR-0011).
 cd /app
+# Config File is the single source of truth (ADR-0010), bind-mounted at /config.
+# Seed it from the packaged example on first boot so the operator has a commented
+# starting point; thereafter the file (hand- or UI-edited) is authoritative.
+[ -f /config/config.yaml ] || cp config.example.yaml /config/config.yaml
 wait-for-sink soloist-sink
-exec node dist/main.js
+exec node dist/main.js --config /config/config.yaml
