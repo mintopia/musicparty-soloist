@@ -37,3 +37,12 @@ The runtime moved from Node 22 to Node 24. The Docker base is now
 deps (`ws`, `yaml`), same built-ins, same behaviour. The trixie/`GLIBC_2.38+`
 rationale above still holds — only the Node major moved. Read "Node 22" in the
 original text as "Node 24".
+
+## Amendment (web layer excepted)
+
+The "no build step / no toolchain" rationale here is the **server** deliverable's:
+`npm ci && npm run build && node dist/main.js`, two runtime deps, no bundler. It
+does **not** bind the web layer. ADR-0014 introduces a Vue 3 + Vite build for the
+Landing Page and login/setup pages; Vite runs at build time only, and the server
+runtime stays buildless with the same two runtime deps (`ws`, `yaml`). Read "no
+toolchain" above as scoped to the server runtime, not the served web assets.
