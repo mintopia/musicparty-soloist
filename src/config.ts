@@ -30,10 +30,6 @@ export const DEFAULT_OVERLAY: OverlayConfig = {
 
 export class ConfigError extends Error {}
 
-// Web password storage: scrypt with a per-password random salt, encoded
-// `scrypt$<saltHex>$<keyHex>`. The plaintext never touches disk. Pre-hashing
-// installs stored cleartext; verifyPassword still accepts it (timing-safe) so a
-// legacy config keeps working, and login rehashes it on first success.
 const SCRYPT_KEYLEN = 64;
 
 export function hashPassword(plain: string): string {
@@ -58,7 +54,10 @@ export function verifyPassword(plain: string, stored: string): boolean {
     }
     return expected.length === got.length && timingSafeEqual(got, expected);
   }
-  // Legacy cleartext.
+  return verifyLegacyCleartext(plain, stored);
+}
+
+function verifyLegacyCleartext(plain: string, stored: string): boolean {
   const a = Buffer.from(plain), b = Buffer.from(stored);
   return a.length === b.length && timingSafeEqual(a, b);
 }
@@ -236,14 +235,10 @@ function parseConfig(raw: unknown): Config {
   };
 }
 
-// Fully-defaulted Config for a fresh install with no config file — boots into
-// first-run setup mode. Same shape/types as one read from disk.
 export function defaultConfig(): Config {
   return parseConfig({});
 }
 
-// Soloist supervision may start only when web creds and the minimal Soloist args
-// (device name + API key) are all present. Boot gate for first-run setup mode (T3).
 export function soloistReady(cfg: Config): boolean {
   return (
     cfg.web.username !== "" &&
@@ -272,8 +267,6 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
   return parseConfig(raw ?? {});
 }
 
-// Snake_case YAML projection of a Config — the shape written to disk. Kept in
-// one place so save validation and serialization agree with load.
 function configToRaw(c: Config): Record<string, unknown> {
   return {
     soloist: {
@@ -360,9 +353,7 @@ export function saveConfig(path: string, config: Config): void {
   }
   if (doc) {
     mergeInto(doc, raw);
-    // mergeInto never removes keys, so a webhook URL dropped from the config would
-    // linger in the file. urls is a plain map — replace the whole node so removals
-    // persist (round-trips fine; entries are `name: url`, not comment-bearing).
+    // mergeInto only adds keys; replace the urls map wholesale so a dropped webhook disappears.
     doc.setIn(["webhooks", "urls"], (raw.webhooks as Record<string, unknown>).urls);
   } else {
     doc = new Document(raw);
@@ -374,10 +365,6 @@ export function saveConfig(path: string, config: Config): void {
   renameSync(tmp, path);
 }
 
-// Secret leaves never rendered to the browser — one source of truth for masking
-// (GET), the summary flags, and PUT preservation. `label` is the summary key.
-// GET masks each to a set/unset boolean; PUT keeps the stored value unless a
-// fresh non-empty string is sent.
 export const SECRETS: { section: string; key: string; label: string }[] = [
   { section: "soloist", key: "apiKey", label: "apiKey" },
   { section: "proxy", key: "token", label: "authToken" },
@@ -400,15 +387,12 @@ function isSet(v: unknown): boolean {
   return String(v ?? "") !== "";
 }
 
-// Whole config for GET /api/config, secret leaves replaced by set/unset booleans.
 export function maskConfig(cfg: Config): Record<string, unknown> {
   const clone = structuredClone(cfg) as Record<string, any>;
   for (const { section, key } of SECRETS) clone[section][key] = isSet((cfg as any)[section][key]);
   return clone;
 }
 
-// Display-plane view for GET /api/config-summary. Only per-secret set/unset flags,
-// never a secret value.
 export function configSummary(cfg: Config): Record<string, unknown> {
   const secrets: Record<string, boolean> = {};
   for (const { section, key, label } of SECRETS) secrets[label] = isSet((cfg as any)[section][key]);
@@ -422,8 +406,6 @@ export function configSummary(cfg: Config): Record<string, unknown> {
   };
 }
 
-// Re-coerce and re-validate a Config through the same path load uses, so a config
-// assembled in memory has identical types/defaults to one read from disk.
 export function normalizeConfig(c: Config): Config {
   return parseConfig(configToRaw(c));
 }
@@ -449,8 +431,7 @@ export function applyApiConfig(current: Config, body: unknown): Config {
   const next = structuredClone(current) as Record<string, any>;
   deepMerge(next, body as Record<string, any>);
   const b = body as Record<string, any>;
-  // webhooks.urls is a full-replace map: a URL the client dropped must disappear,
-  // but deepMerge only adds/overwrites keys — so take the body's map wholesale.
+  // deepMerge only adds/overwrites; take the body's urls map wholesale so a dropped webhook disappears.
   if (b.webhooks?.urls && typeof b.webhooks.urls === "object" && !Array.isArray(b.webhooks.urls)) {
     next.webhooks.urls = b.webhooks.urls;
   }
@@ -467,8 +448,6 @@ export function applyApiConfig(current: Config, body: unknown): Config {
   return normalizeConfig(next as Config);
 }
 
-// On boot, mint any absent autogenerated secret and persist it so it survives
-// restarts. Returns whether the file was written.
 export function ensureSecrets(path: string, config: Config): boolean {
   let changed = false;
   if (!config.web.sessionSecret) {

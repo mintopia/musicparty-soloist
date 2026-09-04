@@ -44,8 +44,6 @@ export function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
-// --- browser-only below ---
-
 // Current track from a Soloist frame. track_changed / playback_state nest the
 // Entity under `item`; title = decorations.identity.name, artists =
 // creators[].entity.identity.name, album = parent.entity.identity.name.
@@ -185,12 +183,15 @@ const OVERLAY_CSS = `
 @keyframes sol-fxSparkle{0%{opacity:0;transform:scale(.3) rotate(0deg)}32%{opacity:1}60%{opacity:1}
   100%{opacity:0;transform:scale(1.15) translateY(-1em) rotate(45deg)}}
 .fx-wipe .line.current{position:relative}
-.fx-wipe .line.current::after{content:attr(data-text);position:absolute;left:0;top:.1em;width:100%;
+.fx-wipe .line.current::after{content:attr(data-text);position:absolute;top:.1em;width:fit-content;max-width:100%;
   color:var(--fx-color);-webkit-text-stroke:1px rgba(0,0,0,.55);paint-order:stroke fill;
   text-shadow:0 2px 8px rgba(0,0,0,.9),0 0 2px rgba(0,0,0,1);pointer-events:none;
   -webkit-mask-image:linear-gradient(90deg,#000 50%,transparent 50%);mask-image:linear-gradient(90deg,#000 50%,transparent 50%);
   -webkit-mask-size:200% 100%;mask-size:200% 100%;-webkit-mask-position:100% 0;mask-position:100% 0;
   animation:sol-fxWipe var(--line-dur,3s) linear both}
+.lines-left.fx-wipe .line.current::after{left:0}
+.lines-center.fx-wipe .line.current::after{left:0;right:0;margin-inline:auto}
+.lines-right.fx-wipe .line.current::after{right:0}
 @keyframes sol-fxWipe{to{-webkit-mask-position:0% 0;mask-position:0% 0}}
 .fx-neon .line.current{animation:sol-fxNeon var(--fx-dur) linear infinite}
 .fx-neon .line.slide.current{animation:sol-lineFocus var(--dur) var(--ease) both,sol-fxNeon var(--fx-dur) linear infinite}
@@ -368,6 +369,9 @@ function textRect(lineEl) {
 
 function sparkle(container, lineEl, opts) {
   const c = container.getBoundingClientRect(), r = textRect(lineEl);
+  // rects are post-transform, but sparkles mount in the container's own unscaled
+  // space — convert by the stage scale or a scaled preview double-scales them.
+  const scale = lineEl.offsetHeight ? lineEl.getBoundingClientRect().height / lineEl.offsetHeight : 1;
   const intensity = opts?.fxIntensity ?? 0.5;
   const life = opts?.fxDur ?? 1600;
   const n = Math.round(6 + intensity * 26);
@@ -375,8 +379,8 @@ function sparkle(container, lineEl, opts) {
     const s = document.createElement("span");
     s.className = "sparkle";
     s.textContent = "✦";
-    s.style.left = r.left - c.left + Math.random() * r.width + "px";
-    s.style.top = r.top - c.top + Math.random() * r.height + "px";
+    s.style.left = (r.left - c.left + Math.random() * r.width) / scale + "px";
+    s.style.top = (r.top - c.top + Math.random() * r.height) / scale + "px";
     s.style.animationDelay = Math.random() * life * 0.35 + "ms";
     container.appendChild(s);
     setTimeout(() => s.remove(), life * 1.4 + 200);

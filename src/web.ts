@@ -346,7 +346,6 @@ export function handleWebRequest(
     if (path === "/" && method === "GET") return redirect(res, "/setup"), true;
     return failClosed(res), true;
   }
-  // Configured: setup is done and the Setup Page must not be reachable again.
   if (path === "/setup") return redirect(res, "/"), true;
 
   if (method === "GET" && STATIC[path]) {

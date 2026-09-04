@@ -26,6 +26,7 @@ export function presentedToken(req: IncomingMessage): string | null {
 }
 
 function tokenEquals(presented: string, token: string): boolean {
+  if (!token) return false;
   const a = Buffer.from(presented);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -33,14 +34,11 @@ function tokenEquals(presented: string, token: string): boolean {
 
 export type AuthTier = "control" | "readonly" | "none";
 
-// control = Auth Token or valid Web Session; readonly = Read-only Token; else none.
 export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
   const presented = presentedToken(req);
   if (presented !== null) {
-    // Guard the empty token: in setup mode proxy.token is "", and an empty presented
-    // token would timing-safe-equal it — never grant control on an unset token.
-    if (cfg.proxy.token && tokenEquals(presented, cfg.proxy.token)) return "control";
-    if (cfg.proxy.readonlyToken && tokenEquals(presented, cfg.proxy.readonlyToken)) return "readonly";
+    if (tokenEquals(presented, cfg.proxy.token)) return "control";
+    if (tokenEquals(presented, cfg.proxy.readonlyToken)) return "readonly";
   }
   if (sessionUser(req, cfg)) return "control";
   return "none";

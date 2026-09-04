@@ -63,8 +63,6 @@ export function readQueue(msg) {
   return list.map((e) => entityToTrack(e && e.item) || { title: "", artist: "", album: "", durationMs: 0, art: "" });
 }
 
-// --- browser-only below ---
-
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -88,7 +86,6 @@ const state = {
   previewRender: null,
 };
 
-// ---- playback state fed by the WS ----
 // Playback anchor: position_ms as of the server epoch anchorAt (timestamp_ms),
 // advancing at `speed` (0 = paused). Interpolate against the server clock (Date.now),
 // NOT frame-arrival time — a sync sampled seconds ago, or a stale snapshot replayed on
@@ -184,7 +181,6 @@ function setScrollingText(clip, text) {
   });
 }
 
-// ---- now playing (mini player is always present; the hero card only on the Now view) ----
 function renderNowPlaying() {
   const t = pb.track;
   // mini player (top bar) — always
@@ -291,7 +287,6 @@ function renderQueue() {
   });
 }
 
-// ---- top nav / views ----
 const VIEWS = [
   { key: "now", label: "Now Playing" },
   { key: "audio", label: "Audio" },
@@ -337,7 +332,6 @@ function renderView() {
   else if (state.view === "settings") buildSettings(view);
 }
 
-// ---- Now Playing view ----
 function buildNow(view) {
   view.insertAdjacentHTML("beforeend", `
   <div style="display:flex;flex-direction:column;gap:18px;max-width:720px;margin:0 auto">
@@ -414,7 +408,6 @@ function cycleRepeat() {
   else { sendCommand("set_repeat_context", { enabled: false }); sendCommand("set_repeat_track", { enabled: false }); }
 }
 
-// ---- shared form controls ----
 function grid(cols) {
   const g = document.createElement("div");
   g.className = "fgrid";
@@ -532,7 +525,6 @@ function secretRow(label, section, key, opts = {}) {
   return w;
 }
 
-// ---- Audio view ----
 const ICON_SNAP = '<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 5v14"/>';
 const ICON_HW = '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/>';
 
@@ -594,7 +586,6 @@ function toggleOutput(name, isSnap) {
   renderView();
 }
 
-// ---- Webhooks view ----
 function buildWebhooks(view) {
   const c = state.cfg;
   const col = formCol();
@@ -616,8 +607,6 @@ function buildWebhooks(view) {
   card.appendChild(label);
   card.appendChild(urlMapEditor(c.webhooks.urls));
   col.appendChild(card);
-
-  // delivery stats
   const wh = state.webhooks;
   const stats = sectionCard("Delivery");
   const entries = [];
@@ -680,7 +669,6 @@ function urlMapEditor(urls) {
   return wrap;
 }
 
-// ---- Settings view (Soloist + Web access + managed) ----
 function buildSettings(view) {
   const c = state.cfg;
   const col = formCol();
@@ -750,7 +738,6 @@ function relayStatusPill() {
   return wrap;
 }
 
-// ---- Overlay builder view ----
 const OV_FONTS = [
   ["System", "system-ui, sans-serif"],
   ["Inter", "'Inter', sans-serif"],
@@ -964,7 +951,6 @@ function overlayTabBody(tab) {
     );
     return g;
   }
-  // motion & fx
   const wrap = document.createElement("div");
   wrap.style.cssText = "display:flex;flex-direction:column;gap:18px";
   const g = grid("1fr 1fr");
@@ -990,13 +976,9 @@ function buildOverlay(view) {
   const wrap = document.createElement("div");
   wrap.className = "ovwrap";
   wrap.style.cssText = "display:grid;grid-template-columns:440px 1fr;gap:22px;align-items:start";
-
-  // controls — one flat card, no inner boxes
   const side = document.createElement("div");
   side.className = "card";
   side.style.cssText = "padding:20px";
-
-  // header — card title + live lyric status, so the panel has a clear heading.
   const head = document.createElement("div");
   head.className = "row";
   head.style.cssText = "justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px";
@@ -1122,7 +1104,6 @@ async function ensurePreviewLyrics() {
   remountPreview();
 }
 
-// ---- dirty / save ----
 function markDirty() {
   state.dirty = true;
   $("saveBar").classList.remove("hidden");
@@ -1143,7 +1124,7 @@ async function save() {
     captureSecrets();
     state.dirty = false;
     $("cfgMsg").textContent = "Saved"; $("cfgMsg").style.color = "var(--ok)";
-    await Promise.all([refreshSummary(), refreshSinks(), refreshRelay()]);
+    await Promise.all([refreshSummary(), refreshSinks(), refreshRelay(), refreshWebhooks()]);
     renderView(); renderBanner();
     setTimeout(() => { if (!state.dirty) $("saveBar").classList.add("hidden"); }, 1200);
   } catch (err) {
@@ -1162,7 +1143,6 @@ async function discard() {
   renderView();
 }
 
-// ---- banner + summary ----
 function renderBanner() {
   $("banner").classList.toggle("hidden", !state.summary.pendingRestart);
 }
@@ -1173,6 +1153,10 @@ async function refreshSummary() {
 
 async function refreshSinks() {
   try { state.sinks = await api("/api/pipewire-sinks"); } catch { state.sinks = []; }
+}
+
+async function refreshWebhooks() {
+  try { state.webhooks = await api("/api/webhooks"); } catch {}
 }
 
 // Relay status is live (connecting/connected/reconnecting) — refresh it and, if the
