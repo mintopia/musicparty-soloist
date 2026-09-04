@@ -1,11 +1,6 @@
 import { createApp } from "vue";
-import { createRouter, createWebHistory } from "vue-router";
+import "./styles/tokens.css";
 import App from "./App.vue";
-import Landing from "./pages/Landing.vue";
-
-const router = createRouter({
-  history: createWebHistory(),
-  routes: [{ path: "/", name: "landing", component: Landing }],
-});
+import { router } from "./router";
 
 createApp(App).use(router).mount("#app");

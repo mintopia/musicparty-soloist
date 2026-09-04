@@ -22,8 +22,6 @@
   },
   "scripts": {
     "build": "tsc && node -e \"require('fs').cpSync('src/web','dist/web',{recursive:true})\"",
-    "build:web": "vite build --config web/vite.config.ts",
-    "dev:web": "vite --config web/vite.config.ts",
     "start": "node dist/main.js",
     "dev": "npm run build && node dist/main.js",
     "dev:web": "vite",
