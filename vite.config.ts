@@ -7,13 +7,14 @@ const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 // Node backend (proxy.ts) default listen — see DEFAULT_PROXY_LISTEN in src/config.ts.
 const BACKEND = "http://127.0.0.1:8687";
 
-// Multi-page: Landing SPA + standalone login/setup entries. Final asset wiring is T9;
-// build lands in a staging dir (dist/web-vue), leaving the vanilla dist/web untouched.
+// Multi-page: Landing SPA + standalone login/setup entries. Emits hashed assets to
+// dist/web, which web.ts serves (ADR-0014); the build then copies the vanilla Lyrics
+// Overlay (overlay.html/overlay.js/frame.js) alongside them.
 export default defineConfig({
   root: "src/web-vue",
   plugins: [vue()],
   build: {
-    outDir: r("./dist/web-vue"),
+    outDir: r("./dist/web"),
     emptyOutDir: true,
     rollupOptions: {
       input: {

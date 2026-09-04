@@ -4,6 +4,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHashed, maskConfig, saveConfig, verifyPassword, type Config } from "./config.js";
@@ -20,23 +21,13 @@ const log = makeLog("web");
 export const SESSION_COOKIE = "soloist_session";
 const MAX_BODY = 8 * 1024;
 
-// dist/web/, sibling of the compiled dist/web.js — populated by the build copy step.
+// dist/web/, sibling of the compiled dist/web.js — Vite emits the hashed Vue assets
+// here (ADR-0014) and the build copies the vanilla Lyrics Overlay alongside them.
 const WEB_DIR = fileURLToPath(new URL("./web/", import.meta.url));
+const WEB_ROOT = resolve(WEB_DIR);
 
-// Fixed allowlist: exact request path -> filename under WEB_DIR. No user-controlled
-// path segment ever reaches the filesystem, so path traversal is impossible.
-const STATIC: Record<string, string> = {
-  "/app.css": "app.css",
-  "/app.js": "app.js",
-  "/overlay.js": "overlay.js",
-  "/frame.js": "frame.js",
-  "/playback.js": "playback.js",
-  "/widgets.js": "widgets.js",
-  "/overlay-panel.js": "overlay-panel.js",
-};
-
-// Client-routed view paths (History API, item 11). Each serves the same authed app
-// shell (app.html); app.js reads location.pathname to pick the tab. "/" is Now Playing.
+// Client-routed view paths (History API). Each serves the same authed Vue SPA shell
+// (index.html); vue-router reads location.pathname to pick the tab. "/" is Now Playing.
 const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/lyrics", "/settings"]);
 
 // Secret leaves the Landing Page may reveal on demand (eye toggle). Deliberately not
@@ -105,11 +96,20 @@ export function webConfigured(cfg: Config): boolean {
   return cfg.web.username !== "" && cfg.web.password !== "";
 }
 
-function serveFile(res: ServerResponse, name: string): void {
-  const ext = name.slice(name.lastIndexOf(".") + 1);
+// Serve a request-path file from under WEB_ROOT: Vite's hashed /assets/*, the vanilla
+// overlay modules, and the built page shells (index/login/setup.html). The resolved
+// path is confined to WEB_ROOT so a crafted "/assets/../.." can't escape it — path
+// traversal is impossible.
+function serveAsset(res: ServerResponse, urlPath: string): void {
+  const full = resolve(WEB_ROOT, "." + urlPath);
+  if (full !== WEB_ROOT && !full.startsWith(WEB_ROOT + sep)) {
+    res.writeHead(403).end("Forbidden\n");
+    return;
+  }
+  const ext = full.slice(full.lastIndexOf(".") + 1);
   let body: Buffer;
   try {
-    body = readFileSync(WEB_DIR + name);
+    body = readFileSync(full);
   } catch {
     res.writeHead(404).end("Not found\n");
     return;
@@ -362,15 +362,19 @@ export function handleWebRequest(
   // Setup mode: no web creds yet. Serve only the (self-contained) Setup Page, point
   // the root at it, and fail everything else closed (ADR-0009/0010, T3).
   if (!webConfigured(cfg)) {
-    if (path === "/setup" && method === "GET") return serveFile(res, "setup.html"), true;
+    if (path === "/setup" && method === "GET") return serveAsset(res, "/setup.html"), true;
     if (path === "/setup" && method === "POST") return void handleSetup(req, res, cfg, configPath), true;
+    // The Vite-built Setup Page pulls its module + styles from /assets/.
+    if (method === "GET" && path.startsWith("/assets/")) return serveAsset(res, path), true;
     if (path === "/" && method === "GET") return redirect(res, "/setup"), true;
     return failClosed(res), true;
   }
   if (path === "/setup") return redirect(res, "/"), true;
 
-  if (method === "GET" && STATIC[path]) {
-    serveFile(res, STATIC[path]);
+  // Hashed Vue assets and the vanilla overlay modules. Unauthenticated, like the
+  // static UI was before — no secrets ship in these files.
+  if (method === "GET" && (path.startsWith("/assets/") || path === "/overlay.js" || path === "/frame.js")) {
+    serveAsset(res, path);
     return true;
   }
 
@@ -435,7 +439,7 @@ export function handleWebRequest(
   if (path === "/login" && method === "GET") {
     if (!webConfigured(cfg)) return failClosed(res), true;
     if (sessionUser(req, cfg)) return redirect(res, "/"), true;
-    serveFile(res, "login.html");
+    serveAsset(res, "/login.html");
     return true;
   }
 
@@ -454,7 +458,7 @@ export function handleWebRequest(
   if (APP_PATHS.has(path) && method === "GET") {
     if (!webConfigured(cfg)) return failClosed(res), true;
     if (!sessionUser(req, cfg)) return redirect(res, "/login"), true;
-    serveFile(res, "app.html");
+    serveAsset(res, "/index.html");
     return true;
   }
 
