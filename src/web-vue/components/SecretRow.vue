@@ -13,7 +13,10 @@ const props = defineProps<{
 // Masked secret: `true` = stored, `false` = unset, a string = a new plaintext the
 // operator is entering. dirty tracking is automatic (the working copy is reactive),
 // so no markDirty call is needed on edit.
-const model = defineModel<boolean | string>({ required: true });
+// Order matters: String must precede Boolean in the inferred runtime prop type,
+// or Vue's boolean-attribute coercion casts the "" edit sentinel back to `true`
+// and the edit input never renders.
+const model = defineModel<string | boolean>({ required: true });
 const { revealSecret } = useConfig();
 
 const revealed = ref(false);
