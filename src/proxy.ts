@@ -112,6 +112,13 @@ export class SoloistHub {
     if (conn && conn.readyState === WebSocket.OPEN) conn.send(JSON.stringify(message));
   }
 
+  // Raw bytes straight to the upstream Soloist socket (the Relay's inbound path —
+  // transparent passthrough, no decode). Dropped if upstream isn't OPEN.
+  sendUpstream(data: RawData, isBinary: boolean): void {
+    const conn = this.conn;
+    if (conn && conn.readyState === WebSocket.OPEN) conn.send(data, { binary: isBinary });
+  }
+
   // Push a proxy-originated message (not from upstream) to every connected client —
   // e.g. live overlay-config updates so open overlays restyle on save.
   broadcastMessage(obj: Record<string, unknown>): void {
@@ -367,18 +374,122 @@ function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookStats {
   return stats;
 }
 
+const RELAY_BACKOFF_BASE = 0.5;
+const RELAY_BACKOFF_MAX = 30.0;
+
+export interface RelayStatus {
+  enabled: boolean;         // url configured
+  connected: boolean;
+  lastConnectAt: number | null;
+  lastError: string | null;
+}
+
+// A persistent outbound WS bridge to a single Relay Server (ADR-0012): republishes
+// every Soloist→downstream frame verbatim, and forwards every received frame raw to
+// the upstream Soloist socket (full control). Reconnects with backoff while a url is
+// configured; re-dials live when url/authorization changes (apply()).
+export class SoloistRelay {
+  private conn: WebSocket | null = null;
+  private stopped = false;
+  private wake = deferred();
+  private appliedUrl: string;
+  private appliedAuth: string;
+  readonly status: RelayStatus = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
+
+  constructor(hub: SoloistHub, private cfg: Config) {
+    this.appliedUrl = cfg.relay.url;
+    this.appliedAuth = cfg.relay.authorization;
+    // Outbound: mirror what a Downstream Client observes, unfiltered, verbatim.
+    hub.observe((frame) => {
+      const c = this.conn;
+      if (c && c.readyState === WebSocket.OPEN) c.send(frame.raw);
+    });
+    // Inbound: raw bytes straight upstream, transparent — the Relay Server is a
+    // full-control peer.
+    this.onMessage = (data, isBinary) => hub.sendUpstream(data, isBinary);
+  }
+
+  private onMessage: (data: RawData, isBinary: boolean) => void;
+
+  private signal(): void {
+    this.wake.resolve();
+    this.wake = deferred();
+  }
+
+  // Re-dial only if url/authorization actually changed, so an unrelated config save
+  // never needlessly drops a healthy relay connection.
+  apply(): void {
+    if (this.cfg.relay.url === this.appliedUrl && this.cfg.relay.authorization === this.appliedAuth) return;
+    this.appliedUrl = this.cfg.relay.url;
+    this.appliedAuth = this.cfg.relay.authorization;
+    this.conn?.close();
+    this.signal();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.conn?.close();
+    this.signal();
+  }
+
+  async run(): Promise<void> {
+    let backoff = RELAY_BACKOFF_BASE;
+    while (!this.stopped) {
+      const url = this.cfg.relay.url;
+      this.status.enabled = url !== "";
+      if (!url) {
+        this.status.connected = false;
+        await this.wake.promise; // park until apply()/stop()
+        continue;
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const headers: Record<string, string> = {};
+          if (this.cfg.relay.authorization) headers.authorization = this.cfg.relay.authorization;
+          const conn = new WebSocket(url, { headers });
+          conn.on("open", () => {
+            log("relay connected to %s", url);
+            this.conn = conn;
+            this.status.connected = true;
+            this.status.lastConnectAt = Date.now();
+            this.status.lastError = null;
+            backoff = RELAY_BACKOFF_BASE;
+          });
+          conn.on("message", (data, isBinary) => this.onMessage(data, isBinary));
+          conn.on("error", (err) => reject(err));
+          conn.on("close", () => resolve());
+        });
+      } catch (err) {
+        this.status.lastError = (err as Error).message;
+        log("relay %s error: %s", url, (err as Error).message);
+      } finally {
+        this.conn = null;
+        this.status.connected = false;
+      }
+      if (this.stopped) break;
+      // Backoff, but wake early on apply()/stop().
+      await Promise.race([sleep(backoff * 1000), this.wake.promise]);
+      backoff = Math.min(backoff * 2, RELAY_BACKOFF_MAX);
+    }
+  }
+}
+
 export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
   attachAutoplay(hub, cfg);
   const stats = attachWebhooks(hub, cfg);
+  const relay = new SoloistRelay(hub, cfg);
   const wss = new WebSocketServer({ noServer: true });
 
   // Broadcast the (possibly changed) Overlay Config to open overlays so they restyle
-  // live on save — no reload needed in OBS.
-  const onConfigChange = (c: Config) => hub.broadcastMessage({ type: "overlay_config", overlay: c.overlay });
+  // live on save — no reload needed in OBS — and re-dial the Relay if its url/auth changed.
+  const onConfigChange = (c: Config) => {
+    hub.broadcastMessage({ type: "overlay_config", overlay: c.overlay });
+    relay.apply();
+  };
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg, configPath, stats, control, onConfigChange)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath, stats, control, onConfigChange, relay.status)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
@@ -400,6 +511,9 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   const hubRun = hub.run();
   hubRun.catch((e) => log("hub crashed: %s", (e as Error).message));
 
+  const relayRun = relay.run();
+  relayRun.catch((e) => log("relay crashed: %s", (e as Error).message));
+
   // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
   // Fire-and-forget — it waits/retries for target nodes and must not block listen.
   void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
@@ -414,6 +528,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
         close: () =>
           new Promise<void>((res) => {
             hub.stop();
+            relay.stop();
             wss.close();
             server.close(() => res());
           }),

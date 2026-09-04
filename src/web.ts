@@ -7,9 +7,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHashed, maskConfig, saveConfig, verifyPassword, type Config } from "./config.js";
-import type { WebhookStats } from "./proxy.js";
+import type { WebhookStats, RelayStatus } from "./proxy.js";
 import type { SoloistControl } from "./supervisor.js";
 import { listPipewireSinks, reconcileOutputs } from "./pipewire.js";
+import { isDockerMode } from "./supervisor.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("web");
@@ -27,6 +28,14 @@ const STATIC: Record<string, string> = {
   "/app.js": "app.js",
   "/overlay.js": "overlay.js",
 };
+
+// Client-routed view paths (History API, item 11). Each serves the same authed app
+// shell (app.html); app.js reads location.pathname to pick the tab. "/" is Now Playing.
+const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/lyrics", "/settings"]);
+
+// Secret leaves the Landing Page may reveal on demand (eye toggle). Deliberately not
+// the password (a scrypt hash) or the session secret — only operator-facing plaintext.
+const REVEALABLE = new Set(["soloist.apiKey", "proxy.token", "relay.authorization"]);
 
 const CONTENT_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8",
@@ -135,6 +144,15 @@ export function webhooksView(cfg: Config, stats: WebhookStats): unknown {
   return {
     config: { defaultUrl: wh.defaultUrl, urls: wh.urls, hasSecret: wh.secret !== "" },
     stats: Object.fromEntries(stats),
+  };
+}
+
+// Relay config (never the Authorization value) plus live connection status.
+export function relayView(cfg: Config, status?: RelayStatus): unknown {
+  const r = cfg.relay;
+  return {
+    config: { url: r.url, hasAuth: r.authorization !== "" },
+    status: status ?? { enabled: r.url !== "", connected: false, lastConnectAt: null, lastError: null },
   };
 }
 
@@ -314,6 +332,7 @@ export function handleWebRequest(
   stats: WebhookStats = new Map(),
   control?: SoloistControl,
   onConfigChange?: (cfg: Config) => void,
+  relayStatus?: RelayStatus,
 ): boolean {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
@@ -348,6 +367,13 @@ export function handleWebRequest(
     return true;
   }
 
+  if (path === "/api/relay" && method === "GET") {
+    if (!webConfigured(cfg)) return failClosed(res), true;
+    if (!sessionUser(req, cfg)) return json(res, 401, { error: "unauthorized" }), true;
+    json(res, 200, relayView(cfg, relayStatus));
+    return true;
+  }
+
   if (path === "/api/config" && method === "GET") {
     if (apiAuthed(req, res, cfg)) json(res, 200, maskConfig(cfg));
     return true;
@@ -360,8 +386,19 @@ export function handleWebRequest(
 
   if (path === "/api/config-summary" && method === "GET") {
     if (apiAuthed(req, res, cfg)) {
-      json(res, 200, { ...configSummary(cfg), pendingRestart: control?.pendingRestart(cfg) ?? false });
+      json(res, 200, { ...configSummary(cfg), pendingRestart: control?.pendingRestart(cfg) ?? false, dockerMode: isDockerMode() });
     }
+    return true;
+  }
+
+  // Reveal one allowlisted secret's plaintext (item 10 eye toggle). Session-gated like
+  // the rest of the config API; returns 404 for any path outside REVEALABLE.
+  if (path === "/api/secret" && method === "GET") {
+    if (!apiAuthed(req, res, cfg)) return true;
+    const key = `${url.searchParams.get("section")}.${url.searchParams.get("key")}`;
+    if (!REVEALABLE.has(key)) return json(res, 404, { error: "not revealable" }), true;
+    const [section, k] = key.split(".");
+    json(res, 200, { value: (cfg as unknown as Record<string, Record<string, string>>)[section][k] ?? "" });
     return true;
   }
 
@@ -398,7 +435,7 @@ export function handleWebRequest(
     return true;
   }
 
-  if (path === "/" && method === "GET") {
+  if (APP_PATHS.has(path) && method === "GET") {
     if (!webConfigured(cfg)) return failClosed(res), true;
     if (!sessionUser(req, cfg)) return redirect(res, "/login"), true;
     serveFile(res, "app.html");

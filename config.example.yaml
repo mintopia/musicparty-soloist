@@ -44,6 +44,14 @@ webhooks:
   secret: ""                      # optional; sent as Authorization: Bearer <secret>
   delay_ms: 0                     # global min interval between POSTs (0 = off)
 
+# Outbound WebSocket relay (bridge). When url is set, the proxy opens a persistent
+# connection to it, republishes every Soloist frame verbatim, and relays every frame
+# it receives back to Soloist as a command (full control). Reconnects with backoff;
+# leave url empty to disable.
+relay:
+  url: ""                         # ws:// or wss:// Relay Server; empty = off
+  authorization: ""               # optional, sent verbatim as the Authorization header
+
 snapcast:
   stream_name: "Spotify"          # Docker-only
 

@@ -84,6 +84,11 @@ export interface WebConfig {
   sessionSecret: string;
 }
 
+export interface RelayConfig {
+  url: string;           // ws://|wss:// Relay Server; empty = off
+  authorization: string; // verbatim Authorization header on the outbound upgrade; empty = none
+}
+
 export interface AudioConfig {
   outputs: string[];
   snapcast: boolean;
@@ -115,6 +120,7 @@ export interface Config {
   streamName: string;
   autoplay: boolean;
   webhooks: WebhooksConfig;
+  relay: RelayConfig;
   web: WebConfig;
   audio: AudioConfig;
   overlay: OverlayConfig;
@@ -150,6 +156,7 @@ function parseConfig(raw: unknown): Config {
   const proxy = d.proxy ?? {};
   const snapcast = d.snapcast ?? {};
   const webhooks = d.webhooks ?? {};
+  const relay = d.relay ?? {};
   const web = d.web ?? {};
   const audio = d.audio ?? {};
   const overlay = d.overlay ?? {};
@@ -194,6 +201,10 @@ function parseConfig(raw: unknown): Config {
       urls,
       secret: String(webhooks.secret ?? ""),
       delayMs: coerceInt(webhooks.delay_ms, 0),
+    },
+    relay: {
+      url: String(relay.url ?? "").trim(),
+      authorization: String(relay.authorization ?? ""),
     },
     web: {
       username: String(web.username ?? "").trim(),
@@ -286,6 +297,10 @@ function configToRaw(c: Config): Record<string, unknown> {
       secret: c.webhooks.secret,
       delay_ms: c.webhooks.delayMs,
     },
+    relay: {
+      url: c.relay.url,
+      authorization: c.relay.authorization,
+    },
     web: {
       username: c.web.username,
       password: c.web.password,
@@ -368,6 +383,7 @@ export const SECRETS: { section: string; key: string; label: string }[] = [
   { section: "proxy", key: "token", label: "authToken" },
   { section: "proxy", key: "readonlyToken", label: "readonlyToken" },
   { section: "webhooks", key: "secret", label: "webhooksSecret" },
+  { section: "relay", key: "authorization", label: "relayAuthorization" },
   { section: "web", key: "password", label: "webPassword" },
   { section: "web", key: "sessionSecret", label: "sessionSecret" },
 ];

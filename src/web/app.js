@@ -79,6 +79,7 @@ const state = {
   cfg: null, // masked config (GET /api/config), the editor's working copy
   summary: null,
   webhooks: null,
+  relay: null,
   sinks: [],
   dirty: false,
   view: "now",
@@ -120,7 +121,7 @@ function sendCommand(command, extra) {
 
 function onFrame(msg) {
   const t = readTrack(msg);
-  if (t) { pb.track = t; if (state.view === "overlay") ensurePreviewLyrics(); }
+  if (t) { pb.track = t; checkTrackLyrics(); if (state.view === "overlay") ensurePreviewLyrics(); }
   const q = readQueue(msg);
   if (q) { pb.queue = q; renderQueue(); }
   const p = readPlayback(msg);
@@ -197,6 +198,15 @@ function renderNowPlaying() {
       $("mpPlayIcon").innerHTML = pb.playing ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>';
       const dur = t.durationMs || 0;
       $("mpProg").style.width = (dur ? Math.min(100, Math.max(0, (Math.min(nowMs(), dur) / dur) * 100)) : 0) + "%";
+      if (pb.volume !== null) {
+        const vp = $("mpVolPop"), vr = $("mpVolRange");
+        // Don't fight the user's drag: only sync the slider while the popover is closed.
+        if (vr && !(vp && vp.classList.contains("open"))) { vr.value = pb.volume; $("mpVolVal").textContent = String(Math.round(pb.volume)); }
+        const mi = $("mpVolIcon");
+        if (mi) mi.innerHTML = pb.volume === 0
+          ? '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M22 9l-6 6M16 9l6 6"/>'
+          : '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>';
+      }
     }
   }
   if (!$("npTitle")) return; // Now view not mounted
@@ -226,8 +236,40 @@ function renderNowPlaying() {
     $("volHandle").style.left = `${v}%`;
   }
   $("btnShuffle").classList.toggle("act", pb.shuffle);
-  $("btnRepeat").classList.toggle("act", pb.repeat !== "off");
-  $("btnRepeat").title = pb.repeat === "track" ? "Repeat: track" : pb.repeat === "context" ? "Repeat: context" : "Repeat";
+  renderRepeat();
+}
+
+// Three visually distinct states (item 4): off (dim arrows), context/all (accent
+// arrows), track/one (accent arrows + centred "1", Spotify-style).
+const REPEAT_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
+function renderRepeat() {
+  const b = $("btnRepeat");
+  if (!b) return;
+  b.classList.toggle("act", pb.repeat !== "off");
+  b.style.position = "relative";
+  b.innerHTML = REPEAT_SVG + (pb.repeat === "track"
+    ? '<span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:9px;font-weight:800;line-height:1">1</span>' : "");
+  b.title = pb.repeat === "track" ? "Repeat: one" : pb.repeat === "context" ? "Repeat: all" : "Repeat: off";
+}
+
+// Titlebar marker (item 1): lights the mini-player badge when the current track has
+// synced lyrics. Reuses the overlay engine's lrclib fetch (localStorage-cached, so
+// repeat plays are free) and is keyed per track so it fires once per change.
+let lyricsMarkKey = null;
+async function checkTrackLyrics() {
+  const mark = $("mpLyrics");
+  const t = pb.track;
+  if (!t) { lyricsMarkKey = null; if (mark) mark.classList.remove("on"); return; }
+  const key = t.uri || `${t.artist}|${t.title}`;
+  if (key === lyricsMarkKey) return;
+  lyricsMarkKey = key;
+  if (mark) mark.classList.remove("on");
+  if (!overlayEngine) return;
+  let lines = null;
+  try { lines = await overlayEngine.fetchSyncedLyrics(t); } catch { lines = null; }
+  const nowKey = pb.track && (pb.track.uri || `${pb.track.artist}|${pb.track.title}`);
+  if (nowKey !== key) return; // track changed mid-fetch
+  if (mark) mark.classList.toggle("on", !!(lines && lines.length));
 }
 
 function renderQueue() {
@@ -258,6 +300,10 @@ const VIEWS = [
   { key: "settings", label: "Settings" },
 ];
 
+// View <-> URL path (item 11). Must match the app-shell paths the server serves (web.ts APP_PATHS).
+const VIEW_PATHS = { now: "/", audio: "/audio", webhooks: "/webhooks", overlay: "/lyrics", settings: "/settings" };
+const pathToView = (p) => Object.keys(VIEW_PATHS).find((k) => VIEW_PATHS[k] === p) || "now";
+
 function renderNav() {
   const nav = $("nav");
   nav.innerHTML = "";
@@ -270,10 +316,15 @@ function renderNav() {
   }
 }
 
-function setView(v) {
+function setView(v, push = true) {
   state.view = v;
+  if (push) {
+    const path = VIEW_PATHS[v] || "/";
+    if (location.pathname !== path) history.pushState({ view: v }, "", path);
+  }
   renderNav();
   renderView();
+  if (v === "settings") refreshRelay(); // immediate fresh status on entering the tab
 }
 
 function renderView() {
@@ -322,7 +373,7 @@ function buildNow(view) {
           </div>
           <div class="row" style="gap:11px">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="2" stroke-linecap="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
-            <div id="volBar" style="width:118px;height:6px;border-radius:4px;background:rgba(255,255,255,.16);position:relative;cursor:pointer">
+            <div id="volBar" style="width:96px;height:6px;border-radius:4px;background:rgba(255,255,255,.16);position:relative;cursor:pointer;margin-right:2px">
               <div id="volFill" style="position:absolute;inset:0 40% 0 0;background:linear-gradient(90deg,#14b8a6,#06b6d4);border-radius:4px"></div>
               <div id="volHandle" style="position:absolute;left:60%;top:-3px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>
             </div>
@@ -425,41 +476,55 @@ function settingRow(label, desc, on, onToggle) {
 
 function captureSecrets() {
   state.secretSet = {};
-  for (const [s, k] of [["soloist", "apiKey"], ["webhooks", "secret"], ["web", "password"]]) {
+  for (const [s, k] of [["soloist", "apiKey"], ["proxy", "token"], ["webhooks", "secret"], ["relay", "authorization"], ["web", "password"]]) {
     state.secretSet[`${s}.${k}`] = state.cfg[s][k] === true;
   }
 }
 
-function secretRow(label, section, key) {
+// A masked secret editor. opts.reveal adds a "View" toggle that fetches the real
+// value on demand from GET /api/secret (item 10) — only for server-allowlisted keys.
+function secretRow(label, section, key, opts = {}) {
   const w = document.createElement("div");
   w.innerHTML = `<label class="flabel">${esc(label)}</label>`;
   const isSet = () => state.secretSet[`${section}.${key}`];
   const box = document.createElement("div");
   box.className = "field row";
   box.style.justifyContent = "space-between";
+  let revealed = false, revealedValue = "";
+  const link = (text, onClick) => {
+    const a = document.createElement("a");
+    a.href = "#"; a.style.cssText = "font-size:12px;white-space:nowrap;margin-left:12px";
+    a.textContent = text; a.onclick = (e) => { e.preventDefault(); onClick(); };
+    return a;
+  };
   const render = () => {
     const current = state.cfg[section][key];
     box.innerHTML = "";
     if (typeof current === "string") {
+      // Replace flow: typing a new value.
       const inp = document.createElement("input");
       inp.className = "field"; inp.type = "password"; inp.placeholder = "New value"; inp.value = current;
       inp.style.cssText = "border:none;background:transparent;padding:0;box-shadow:none";
       inp.oninput = () => { state.cfg[section][key] = inp.value; markDirty(); };
-      const cancel = document.createElement("a");
-      cancel.href = "#"; cancel.style.cssText = "font-size:12px;white-space:nowrap;margin-left:10px";
-      cancel.textContent = "Cancel";
-      cancel.onclick = (e) => { e.preventDefault(); state.cfg[section][key] = isSet(); render(); };
-      box.append(inp, cancel);
+      box.append(inp, link("Cancel", () => { state.cfg[section][key] = isSet(); revealed = false; render(); }));
+    } else if (revealed) {
+      // Showing the fetched plaintext, read-only.
+      const val = document.createElement("input");
+      val.className = "field"; val.readOnly = true; val.value = revealedValue;
+      val.style.cssText = "border:none;background:transparent;padding:0;box-shadow:none;font-family:ui-monospace,monospace;font-size:13px";
+      box.append(val, link("Hide", () => { revealed = false; render(); }),
+        link("Replace", () => { state.cfg[section][key] = ""; revealed = false; markDirty(); render(); }));
     } else {
       const pill = document.createElement("span");
       pill.className = "pill";
       pill.style.cssText = isSet() ? "background:var(--ind-s);color:var(--ind)" : "background:var(--warn-s);color:var(--warn)";
       pill.textContent = isSet() ? "Set" : "Not set";
-      const replace = document.createElement("a");
-      replace.href = "#"; replace.style.cssText = "font-size:12px;margin-left:auto";
-      replace.textContent = "Replace";
-      replace.onclick = (e) => { e.preventDefault(); state.cfg[section][key] = ""; markDirty(); render(); };
-      box.append(pill, replace);
+      pill.style.marginRight = "auto";
+      box.append(pill);
+      if (opts.reveal && isSet()) box.append(link("View", async () => {
+        try { revealedValue = (await api(`/api/secret?section=${section}&key=${key}`)).value; revealed = true; render(); } catch { /* leave masked */ }
+      }));
+      box.append(link("Replace", () => { state.cfg[section][key] = ""; markDirty(); render(); }));
     }
   };
   w.appendChild(box);
@@ -494,7 +559,7 @@ function buildAudio(view) {
     box.style.cssText = `border:1px solid ${on ? "var(--ind)" : "var(--line)"};border-radius:12px;background:${on ? "var(--ind-s)" : "var(--sub)"};overflow:hidden`;
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;gap:14px;padding:12px 14px";
-    const tile = `<div style="width:38px;height:38px;border-radius:9px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;background:${on ? "var(--ind)" : "#ececE7"};color:${on ? "#fff" : "var(--faint)"}"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${isSnap ? ICON_SNAP : ICON_HW}</svg></div>`;
+    const tile = `<div style="width:38px;height:38px;border-radius:9px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;background:${on ? "var(--ind)" : "var(--line)"};color:${on ? "#fff" : "var(--faint)"}"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${isSnap ? ICON_SNAP : ICON_HW}</svg></div>`;
     header.innerHTML = tile +
       `<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600${on ? "" : ";color:var(--dim)"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(sink.description)}</div><div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin-top:2px">${isSnap ? "Snapcast stream" : "Hardware sink"}</div></div>`;
     const sw = document.createElement("div"); sw.className = "sw " + (on ? "on" : "off"); sw.innerHTML = "<i></i>"; sw.style.flex = "0 0 auto";
@@ -621,11 +686,13 @@ function buildSettings(view) {
   const col = formCol();
   const soloist = sectionCard("Soloist");
   const g = grid("1fr 1fr");
-  g.append(
-    field("Device name", c.soloist.deviceName, (v) => { c.soloist.deviceName = v; markDirty(); }),
-    field("Soloist WS", c.soloistWs, (v) => { c.soloistWs = v; markDirty(); }),
-    secretRow("Spotify API key", "soloist", "apiKey"),
-  );
+  const cells = [field("Device name", c.soloist.deviceName, (v) => { c.soloist.deviceName = v; markDirty(); })];
+  // In Docker, Soloist runs inside the container on a fixed local WS — the address
+  // isn't operator-editable, so hide the field (item 9).
+  if (!state.summary.dockerMode) cells.push(field("Soloist WS", c.soloistWs, (v) => { c.soloistWs = v; markDirty(); }));
+  cells.push(secretRow("Spotify API key", "soloist", "apiKey", { reveal: true }));
+  cells.push(secretRow("WebSocket auth token", "proxy", "token", { reveal: true }));
+  g.append(...cells);
   soloist.appendChild(g);
   soloist.appendChild(settingRow(
     "Autoplay on login",
@@ -634,6 +701,20 @@ function buildSettings(view) {
     () => { c.autoplay = !c.autoplay; markDirty(); renderView(); },
   ));
   col.appendChild(soloist);
+
+  const relay = sectionCard("WebSocket relay", "Bridge Soloist to an external server: outbound frames are republished, received frames are relayed back as commands.");
+  const relayHead = document.createElement("div");
+  relayHead.id = "relayStatusHead";
+  relayHead.className = "row"; relayHead.style.cssText = "justify-content:flex-end;margin-bottom:14px";
+  relayHead.appendChild(relayStatusPill());
+  relay.appendChild(relayHead);
+  const rg = grid("1fr 1fr");
+  rg.append(
+    field("Relay URL", c.relay.url, (v) => { c.relay.url = v; markDirty(); }, { placeholder: "wss://example.com/relay" }),
+    secretRow("Authorization header", "relay", "authorization", { reveal: true }),
+  );
+  relay.appendChild(rg);
+  col.appendChild(relay);
 
   const web = sectionCard("Web access");
   const wg = grid("1fr 1fr");
@@ -644,6 +725,29 @@ function buildSettings(view) {
   web.appendChild(wg);
   col.appendChild(web);
   view.appendChild(col);
+}
+
+// Relay connection state from GET /api/relay: disabled | connected | reconnecting,
+// with the last error when reconnecting.
+function relayStatusPill() {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex;flex-direction:column;align-items:flex-end;gap:4px";
+  const s = state.relay?.status || { enabled: false, connected: false, lastError: null };
+  let bg, fg, text;
+  if (!s.enabled) { bg = "var(--sub)"; fg = "var(--dim)"; text = "Disabled"; }
+  else if (s.connected) { bg = "var(--ok-s)"; fg = "var(--ok)"; text = "Connected"; }
+  else { bg = "var(--warn-s)"; fg = "var(--warn)"; text = "Reconnecting…"; }
+  const pill = document.createElement("span");
+  pill.className = "pill"; pill.style.cssText = `background:${bg};color:${fg}`;
+  pill.innerHTML = `<span class="dot" style="background:${fg}"></span>${esc(text)}`;
+  wrap.appendChild(pill);
+  if (s.enabled && !s.connected && s.lastError) {
+    const err = document.createElement("div");
+    err.style.cssText = "font-size:11.5px;color:var(--faint);max-width:340px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    err.textContent = s.lastError;
+    wrap.appendChild(err);
+  }
+  return wrap;
 }
 
 // ---- Overlay builder view ----
@@ -679,11 +783,11 @@ const ANCHOR_OPTS = [
 ];
 
 const PREVIEW_LINES = [
-  { time: 0, text: "So close, no matter how far" },
-  { time: 2, text: "Couldn't be much more from the heart" },
-  { time: 4, text: "Forever trusting who we are" },
-  { time: 6, text: "And nothing else matters" },
-  { time: 8, text: "Never opened myself this way" },
+  { time: 0, text: "Never gonna give you up" },
+  { time: 2, text: "Never gonna let you down" },
+  { time: 4, text: "Never gonna run around and desert you" },
+  { time: 6, text: "Never gonna make you cry" },
+  { time: 8, text: "Never gonna say goodbye" },
 ];
 const PREVIEW_IDX = 2;
 
@@ -1039,7 +1143,7 @@ async function save() {
     captureSecrets();
     state.dirty = false;
     $("cfgMsg").textContent = "Saved"; $("cfgMsg").style.color = "var(--ok)";
-    await Promise.all([refreshSummary(), refreshSinks()]);
+    await Promise.all([refreshSummary(), refreshSinks(), refreshRelay()]);
     renderView(); renderBanner();
     setTimeout(() => { if (!state.dirty) $("saveBar").classList.add("hidden"); }, 1200);
   } catch (err) {
@@ -1071,11 +1175,51 @@ async function refreshSinks() {
   try { state.sinks = await api("/api/pipewire-sinks"); } catch { state.sinks = []; }
 }
 
+// Relay status is live (connecting/connected/reconnecting) — refresh it and, if the
+// Settings view is mounted, swap the pill in place without rebuilding the form.
+async function refreshRelay() {
+  try { state.relay = await api("/api/relay"); } catch { return; }
+  const head = $("relayStatusHead");
+  if (head) { head.innerHTML = ""; head.appendChild(relayStatusPill()); }
+}
+
+function applyThemeIcon() {
+  const b = $("themeBtn");
+  if (!b) return;
+  const dark = document.documentElement.dataset.theme === "dark";
+  b.innerHTML = dark
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("soloist-theme", next); } catch { /* private mode */ }
+  applyThemeIcon();
+}
+
 function wireStatic() {
   $("snapweb").href = `http://${location.hostname}:1780`;
   $("mpPlay").onclick = () => sendCommand(pb.playing ? "pause" : "play");
   $("mpNext").onclick = () => sendCommand("skip_next");
   $("mpPrev").onclick = () => sendCommand("skip_prev");
+  $("themeBtn").onclick = toggleTheme;
+  applyThemeIcon();
+  // Mini-player volume dropdown (item 2).
+  const volPop = $("mpVolPop"), volRange = $("mpVolRange");
+  $("mpVolBtn").onclick = (e) => {
+    e.stopPropagation();
+    if (volPop.classList.toggle("open")) {
+      const r = e.currentTarget.getBoundingClientRect();
+      volPop.style.top = `${r.bottom + 8}px`;
+      volPop.style.right = `${window.innerWidth - r.right}px`;
+    }
+  };
+  volRange.oninput = () => { $("mpVolVal").textContent = volRange.value; sendCommand("set_volume", { volume: Number(volRange.value) }); };
+  document.addEventListener("click", (e) => { if (!e.target.closest(".mpvol")) volPop.classList.remove("open"); });
+  // Back/forward through client-routed views (item 11).
+  window.addEventListener("popstate", () => setView(pathToView(location.pathname), false));
   $("cfgSave").onclick = save;
   $("cfgDiscard").onclick = discard;
   $("restartBtn").onclick = async () => {
@@ -1084,21 +1228,26 @@ function wireStatic() {
     finally { $("restartBtn").disabled = false; }
   };
   setInterval(() => { if (pb.track) renderNowPlaying(); tickPreview(); }, 500);
+  // Live-ish relay status only while the Settings tab is open.
+  setInterval(() => { if (state.view === "settings") refreshRelay(); }, 3000);
 }
 
 async function boot() {
-  const [cfg, summary, webhooks] = await Promise.all([
+  const [cfg, summary, webhooks, relay] = await Promise.all([
     api("/api/config"),
     api("/api/config-summary"),
     api("/api/webhooks"),
+    api("/api/relay"),
   ]);
   state.cfg = cfg;
   state.summary = summary;
   state.webhooks = webhooks;
+  state.relay = relay;
   captureSecrets();
   await refreshSinks();
   await loadOverlayEngine();
   wireStatic();
+  state.view = pathToView(location.pathname); // deep-link straight to the routed view (item 11)
   renderNav();
   renderView();
   renderBanner();

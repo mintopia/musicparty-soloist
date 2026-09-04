@@ -93,6 +93,19 @@ Best-effort: fire-and-forget with a short timeout, a global min-interval throttl
 (`delay_ms`) over a bounded drop-oldest FIFO queue. No retries.
 _Avoid_: callback; event (the *event* is the Soloist message — the Webhook is our POST of it).
 
+**Relay**:
+A persistent *outbound* WebSocket the Hub opens to a single operator-configured Relay
+Server, forming a bidirectional bridge. Every genuine Soloist→downstream frame is
+republished to the Relay Server verbatim (the same frames a Downstream Client observes,
+unfiltered — unlike the Webhook's ten-event subset); every frame received back from the
+Relay Server is injected upstream to Soloist verbatim, giving the Relay Server full
+control (like a Downstream Client holding the Auth Token, not the Read-only Token). A
+single optional `Authorization` header value is sent verbatim on the outbound upgrade.
+Loop-safe by construction: injected frames never re-enter the observer fan-out. Trust is
+the operator's — they chose the address.
+_Avoid_: bridge (the audio path — see Audio Route), Webhook (one-way HTTP, event subset),
+Proxy (the inbound auth front), mirror (implies read-only; the Relay has control).
+
 **Config File**:
 Our own YAML config (Soloist has no native config file) — the single source of truth for
 all settings: Soloist args, Proxy listen address, tokens, web credentials, webhooks, the
@@ -107,8 +120,9 @@ _Avoid_: settings, manifest, env.
 The authenticated web app the Proxy serves on its own HTTP port (the same port as the
 control WebSocket). Behind a Web Session it shows the Soloist WebSocket details and
 current (non-secret) configuration, links to Snapweb, lists Webhooks and their Webhook
-Status, gives playback status and basic controls, and edits the Overlay Config. It never
-renders secrets — only whether each is set.
+Status, edits the Relay and shows its live connection status, gives playback status and
+basic controls, and edits the Overlay Config. It never renders secrets — only whether
+each is set.
 _Avoid_: dashboard, admin panel, control socket (that is the Soloist WebSocket).
 
 **Web Session**:

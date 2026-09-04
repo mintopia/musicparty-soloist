@@ -1,10 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&display=swap');
 
 :root{
-  /* ground */
-  --bg:#f6f6f4; --card:#ffffff; --sub:#fbfbf9; --line:#e9e9e5; --line2:#dcdcd7;
+  /* ground — sub/lines carry a touch more contrast so fields and dividers read (item 8) */
+  --bg:#f4f4f1; --card:#ffffff; --sub:#f0f0ec; --line:#e0e0d9; --line2:#cfcfc7;
   /* text */
-  --txt:#1b1b1a; --dim:#6d6d68; --faint:#9a9a94;
+  --txt:#1b1b1a; --dim:#63635e; --faint:#8f8f89;
   /* accent (teal) */
   --ind:#0d9488; --ind-h:#0f766e; --ind-s:#e2f5f1;
   /* status */
@@ -15,6 +15,18 @@
   --disp:'Space Grotesk',system-ui,sans-serif;     /* headings, wordmark, numerics */
   /* elevation */
   --sh:0 1px 2px rgba(20,20,20,.05); --sh2:0 12px 40px rgba(30,30,40,.10);
+}
+
+/* Dark theme — warm neutral charcoal (deliberately NOT slate/blue-grey, item 7).
+   Only the app shell (topbar, form cards, fields) uses these vars; the Now-playing
+   hero and queue are dark cards in both themes by design. */
+:root[data-theme="dark"]{
+  --bg:#181613; --card:#232019; --sub:#1e1b16; --line:#35312a; --line2:#443f36;
+  --txt:#f1efe9; --dim:#a8a49b; --faint:#77736a;
+  --ind:#2dd4bf; --ind-h:#5eead4; --ind-s:rgba(45,212,191,.16);
+  --ok:#4ade80; --ok-s:rgba(74,222,128,.14); --bad:#f87171; --bad-s:rgba(248,113,113,.15);
+  --warn:#fbbf24; --warn-s:rgba(251,191,36,.14);
+  --sh:0 1px 2px rgba(0,0,0,.4); --sh2:0 12px 40px rgba(0,0,0,.5);
 }
 
 *{box-sizing:border-box}

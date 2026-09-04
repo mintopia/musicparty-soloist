@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Soloist Proxy</title>
+  <script>try{var t=localStorage.getItem("soloist-theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t;}catch(e){}</script>
   <link rel="stylesheet" href="/app.css">
   <style>
     body{background-image:
@@ -34,10 +35,10 @@
     .sw{width:38px;height:22px;border-radius:20px;position:relative;flex:0 0 auto;cursor:pointer}
     .sw i{position:absolute;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:left .12s,right .12s}
     .sw.on{background:var(--ind)} .sw.on i{right:2px;left:auto}
-    .sw.off{background:#e0e0db} .sw.off i{left:2px;right:auto}
+    .sw.off{background:var(--line2)} .sw.off i{left:2px;right:auto}
     .field{width:100%;background:var(--sub);border:1px solid var(--line2);border-radius:10px;padding:10px 12px;font-size:14px;color:var(--txt);font-family:var(--sans);margin:0}
     .field:focus{outline:none;border-color:var(--ind);box-shadow:0 0 0 3px var(--ind-s)}
-    .field.ro{background:#f1f1ee;color:var(--dim)}
+    .field.ro{background:var(--sub);color:var(--dim)}
     .qrowd{cursor:default;border-radius:10px} .qrowd:hover{background:rgba(255,255,255,.06)}
     .wrap{min-height:calc(100vh - 58px);padding:24px 30px;max-width:1200px;margin:0 auto}
     .hidden{display:none!important}
@@ -77,6 +78,22 @@
     /* Single-column form pages share one centered column so the content edge is stable across tabs. */
     .fcol{max-width:720px;margin:0 auto}
 
+    /* mini-player lyrics marker (item 1) + volume popover (item 2) */
+    #mpLyrics{flex:0 0 auto;width:24px;height:24px;border-radius:7px;display:none;align-items:center;justify-content:center;color:var(--ind);background:var(--ind-s)}
+    #mpLyrics.on{display:inline-flex}
+    .mpvol{position:relative}
+    /* Fixed, not absolute: the mini player is overflow:hidden (for the progress bar),
+       which would otherwise clip this dropdown. Position is set from JS on open. */
+    #mpVolPop{position:fixed;z-index:50;display:none;padding:12px 14px;background:var(--card);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--sh2);align-items:center;gap:10px}
+    #mpVolPop.open{display:flex}
+    #mpVolRange{width:120px;accent-color:var(--ind)}
+
+    /* theme-aware chrome overrides for dark mode */
+    :root[data-theme="dark"] #topbar{background:rgba(24,22,19,.82)}
+    :root[data-theme="dark"] #saveBar{background:rgba(24,22,19,.92)}
+    :root[data-theme="dark"] .tab:hover{background:rgba(255,255,255,.06)}
+    :root[data-theme="dark"] #mpArt{background-color:var(--line)}
+
     /* Responsive: topbar collapses, two-column pages stack, grids go single-column. */
     @media (max-width:860px){
       #topbar{flex-wrap:wrap;gap:8px 10px;padding:8px 13px}
@@ -103,15 +120,21 @@
     <div id="miniPlayer" class="hidden">
       <div id="mpArt"></div>
       <div class="mpmeta"><div id="mpTitle">—</div><div id="mpArtist">—</div></div>
+      <div id="mpLyrics" title="Synced lyrics available for this track"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 10h13M4 14h8M4 18h11"/></svg></div>
       <div class="mpctl">
         <button id="mpPrev" class="mpb" title="Previous"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6L9 12l11 6z"/></svg></button>
         <button id="mpPlay" class="mpb mpplay" title="Play/Pause"><svg id="mpPlayIcon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
         <button id="mpNext" class="mpb" title="Next"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l11 6L4 18z"/></svg></button>
+        <div class="mpvol">
+          <button id="mpVolBtn" class="mpb" title="Volume"><svg id="mpVolIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+          <div id="mpVolPop"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--dim)" stroke-width="2" stroke-linecap="round"><path d="M11 5 6 9H2v6h4l5 4z"/></svg><input id="mpVolRange" type="range" min="0" max="100" step="1" value="50"><span id="mpVolVal" style="font-size:12px;color:var(--dim);min-width:30px;text-align:right;font-variant-numeric:tabular-nums">50</span></div>
+        </div>
       </div>
       <div id="mpProg"></div>
     </div>
     <a id="snapweb" class="btn" href="#" target="_blank" title="Open Snapweb" style="text-decoration:none"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4M7 6v12M11 3v18M15 8v8M19 5v14"/></svg>Snapweb</a>
     <span id="wsPill" class="pill" style="background:var(--warn-s);color:var(--warn)"><span class="dot" style="background:var(--warn)"></span>Connecting…</span>
+    <button id="themeBtn" class="iconbtn" title="Toggle theme"></button>
     <form method="POST" action="/logout" style="margin:0"><button class="iconbtn" type="submit" title="Sign out"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button></form>
   </header>
 

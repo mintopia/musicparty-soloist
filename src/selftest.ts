@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, type UpstreamFrame, type WebhookStats } from "./proxy.js";
+import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, SoloistRelay, type UpstreamFrame, type WebhookStats } from "./proxy.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
-import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride } from "./supervisor.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
@@ -165,6 +165,18 @@ assert.ok(view.stats["http://a"], "live stats map included");
 const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
 assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
 
+// relayView: reports url + auth presence + live status, never the Authorization value.
+const relayCfg = { relay: { url: "wss://relay.example/x", authorization: "Bearer topsecret" } } as unknown as Config;
+const rStatus = { enabled: true, connected: true, lastConnectAt: 123, lastError: null };
+const rView = relayView(relayCfg, rStatus) as { config: { url: string; hasAuth: boolean }; status: typeof rStatus };
+assert.equal(rView.config.url, "wss://relay.example/x", "relay url reported");
+assert.equal(rView.config.hasAuth, true, "auth presence exposed as boolean");
+assert.equal(JSON.stringify(rView).includes("topsecret"), false, "Authorization value never serialized");
+assert.deepEqual(rView.status, rStatus, "live status passed through");
+const rViewOff = relayView({ relay: { url: "", authorization: "" } } as unknown as Config) as { config: { hasAuth: boolean }; status: { enabled: boolean } };
+assert.equal(rViewOff.config.hasAuth, false, "empty auth -> hasAuth false");
+assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
+
 // Lyrics Overlay engine: parseLRC + currentIndex (folded in from the prototype).
 {
   const lrc = ["[ar:The Weeknd]", "[00:12.50]First line", "[00:15.00]Second line", "[00:15.00]Same time echo", "not a timed line", "[01:03.20]Later"].join("\n");
@@ -236,6 +248,8 @@ assert.equal(cfg.web.username, "", "web.username absent -> empty");
 assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
 assert.deepEqual(cfg.audio.outputs, [], "audio.outputs absent -> []");
 assert.equal(cfg.audio.snapcast, true, "audio.snapcast defaults on");
+assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
+assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
 assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
 
 // `${VAR}` is no longer special — it is stored and returned verbatim.
@@ -300,9 +314,10 @@ sCfg.soloist.apiKey = "SECRET_API";
 sCfg.proxy.token = "SECRET_TOK";
 sCfg.proxy.readonlyToken = "SECRET_RO";
 sCfg.webhooks.secret = "SECRET_WH";
+sCfg.relay.authorization = "SECRET_RELAY";
 sCfg.web.password = "SECRET_PW";
 sCfg.web.sessionSecret = "SECRET_SESS";
-const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_PW", "SECRET_SESS"];
+const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_RELAY", "SECRET_PW", "SECRET_SESS"];
 
 const maskedJson = JSON.stringify(maskConfig(sCfg));
 for (const s of SECRETS) assert.ok(!maskedJson.includes(s), `maskConfig must not leak ${s}`);
@@ -405,6 +420,49 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
 
   hub.stop();
   upstream.close();
+}
+
+// Relay bridge: Soloist frames republished verbatim to the Relay Server; frames from
+// the Relay Server forwarded raw into the upstream Soloist socket (full control).
+{
+  const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await Promise.all([once(upstream, "listening"), once(relaySrv, "listening")]);
+  const upPort = (upstream.address() as { port: number }).port;
+  const relayPort = (relaySrv.address() as { port: number }).port;
+
+  const gotUpstream: string[] = [];
+  upstream.on("connection", (ws) => ws.on("message", (d: RawData) => gotUpstream.push(d.toString())));
+  const gotRelay: string[] = [];
+  let relayConn: WebSocket | null = null;
+  relaySrv.on("connection", (ws) => { relayConn = ws; ws.on("message", (d: RawData) => gotRelay.push(d.toString())); });
+
+  const hub = new SoloistHub(`ws://127.0.0.1:${upPort}`);
+  void hub.run();
+  const [upConn] = (await once(upstream, "connection")) as [WebSocket];
+
+  const relayCfg = { relay: { url: `ws://127.0.0.1:${relayPort}`, authorization: "" } } as unknown as Config;
+  const relay = new SoloistRelay(hub, relayCfg);
+  void relay.run();
+  await once(relaySrv, "connection");
+  await new Promise((r) => setTimeout(r, 30)); // let the relay socket reach OPEN
+
+  // Outbound: a genuine Soloist frame is mirrored verbatim to the Relay Server.
+  upConn.send('{"type":"track_changed","item":{"uri":"x"}}');
+  for (let i = 0; i < 100 && !gotRelay.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(gotRelay, ['{"type":"track_changed","item":{"uri":"x"}}'], "Soloist frame republished to Relay Server verbatim");
+  assert.equal(relay.status.connected, true, "relay reports connected");
+  assert.equal(relay.status.enabled, true, "relay reports enabled");
+
+  // Inbound: a Relay Server frame is forwarded raw into the upstream Soloist socket.
+  relayConn!.send('{"type":"command","command":"pause"}');
+  for (let i = 0; i < 100 && !gotUpstream.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(gotUpstream, ['{"type":"command","command":"pause"}'], "Relay Server frame forwarded raw upstream");
+
+  relay.stop();
+  hub.stop();
+  upstream.close();
+  relaySrv.close();
 }
 
 // buildArgv reflects the Soloist command line; a change to any of the args means

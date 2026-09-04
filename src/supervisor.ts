@@ -25,6 +25,12 @@ export function setPipewireDeviceOverride(name: string): void {
   pipewireDeviceOverride = name.trim();
 }
 
+// The --pipewire-device override is set only by the Docker s6 run script (ADR-0011),
+// so its presence is the reliable "running in the container" signal.
+export function isDockerMode(): boolean {
+  return pipewireDeviceOverride !== "";
+}
+
 export function buildArgv(cfg: Config): string[] {
   const argv = [
     "-w", cfg.soloistWs,

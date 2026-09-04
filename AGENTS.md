@@ -1,6 +1,7 @@
 ## Resources
 
-A Spotify Soloist API Key is in `.env`.
+This requires Linux, not MacOS. Details on a Linux server you have access to are in `.hardware` along with live instance details.
+You may do anything with the live instance.
 
 ## jcodemunch-mcp (v1.50.0)
 
