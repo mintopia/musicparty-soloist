@@ -13,6 +13,8 @@ function animate() {
   const c = clip.value, s = span.value;
   if (!c || !s) return;
   s.getAnimations().forEach((a) => a.cancel());
+  // Honor reduced-motion: leave the text static (clipped) rather than scroll it forever.
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
   s.style.transform = "translateX(0)";
   requestAnimationFrame(() => {
     const overflow = s.scrollWidth - c.clientWidth;

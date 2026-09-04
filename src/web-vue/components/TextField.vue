@@ -11,9 +11,5 @@ const model = defineModel<string>({ required: true });
 </template>
 
 <style scoped>
-.flabel {
-  font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
-  color: var(--dim); margin-bottom: 6px; display: block;
-}
 .field { width: 100%; }
 </style>

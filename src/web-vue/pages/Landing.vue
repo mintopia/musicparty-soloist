@@ -77,23 +77,23 @@ const repeatTitle = computed(() =>
 
         <div class="row transport-row">
           <div class="row transport">
-            <button class="hbtn" :class="{ act: state.shuffle }" title="Shuffle"
+            <button class="hbtn" :class="{ act: state.shuffle }" title="Shuffle" aria-label="Shuffle"
               @click="sendCommand('set_shuffle', { enabled: !state.shuffle })">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6M4 4l5 5"/></svg>
             </button>
-            <button class="hbtn" title="Previous" @click="sendCommand('skip_prev')">
+            <button class="hbtn" title="Previous" aria-label="Previous track" @click="sendCommand('skip_prev')">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6L9 12l11 6z"/></svg>
             </button>
-            <button class="hplay" title="Play/Pause" @click="sendCommand(state.playing ? 'pause' : 'play')">
+            <button class="hplay" title="Play/Pause" :aria-label="state.playing ? 'Pause' : 'Play'" @click="sendCommand(state.playing ? 'pause' : 'play')">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
                 <path v-if="state.playing" d="M6 5h4v14H6zM14 5h4v14h-4z"/>
                 <path v-else d="M8 5v14l11-7z"/>
               </svg>
             </button>
-            <button class="hbtn" title="Next" @click="sendCommand('skip_next')">
+            <button class="hbtn" title="Next" aria-label="Next track" @click="sendCommand('skip_next')">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l11 6L4 18z"/></svg>
             </button>
-            <button class="hbtn repeat" :class="{ act: state.repeat !== 'off' }" :title="repeatTitle" @click="cycleRepeat">
+            <button class="hbtn repeat" :class="{ act: state.repeat !== 'off' }" :title="repeatTitle" :aria-label="repeatTitle" @click="cycleRepeat">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
               <span v-if="state.repeat === 'track'" class="one">1</span>
             </button>

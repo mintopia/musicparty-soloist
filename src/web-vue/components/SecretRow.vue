@@ -42,27 +42,23 @@ async function view() {
     <div class="field row box">
       <template v-if="typeof model === 'string'">
         <input class="bare" type="password" placeholder="New value" v-model="model" />
-        <a href="#" @click.prevent="cancel">Cancel</a>
+        <button type="button" class="linkbtn" @click="cancel">Cancel</button>
       </template>
       <template v-else-if="revealed">
         <input class="bare mono" readonly :value="revealedValue" />
-        <a href="#" @click.prevent="revealed = false">Hide</a>
-        <a href="#" @click.prevent="replace">Replace</a>
+        <button type="button" class="linkbtn" @click="revealed = false">Hide</button>
+        <button type="button" class="linkbtn" @click="replace">Replace</button>
       </template>
       <template v-else>
         <span class="pill" :class="isSet ? 'set' : 'unset'">{{ isSet ? "Set" : "Not set" }}</span>
-        <a v-if="revealable && isSet" href="#" @click.prevent="view">View</a>
-        <a href="#" @click.prevent="replace">Replace</a>
+        <button v-if="revealable && isSet" type="button" class="linkbtn" @click="view">View</button>
+        <button type="button" class="linkbtn" @click="replace">Replace</button>
       </template>
     </div>
   </div>
 </template>
 
 <style scoped>
-.flabel {
-  font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
-  color: var(--dim); margin-bottom: 6px; display: block;
-}
 .box { justify-content: space-between; }
 .box .pill { margin-right: auto; }
 .pill.set { background: var(--ind-s); color: var(--ind); }
@@ -73,5 +69,9 @@ async function view() {
 }
 .bare:focus { outline: none; box-shadow: none; }
 .bare.mono { font-family: ui-monospace, monospace; font-size: 13px; }
-.sr a { font-size: 12px; white-space: nowrap; margin-left: 12px; }
+.linkbtn {
+  font-size: 12px; white-space: nowrap; margin-left: 12px; border: none; background: none;
+  padding: 0; cursor: pointer; color: var(--ind); font-family: inherit;
+}
+.linkbtn:hover { color: var(--ind-h); }
 </style>

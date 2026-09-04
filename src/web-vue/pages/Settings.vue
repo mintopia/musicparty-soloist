@@ -4,6 +4,7 @@ import { useConfig } from "../composables/useConfig";
 import SectionCard from "../components/SectionCard.vue";
 import TextField from "../components/TextField.vue";
 import SecretRow from "../components/SecretRow.vue";
+import ToggleSwitch from "../components/ToggleSwitch.vue";
 
 const { config, summary, secretSet, loaded } = useConfig();
 // The working copy is a reactive Record; the typed accessors below are only for the
@@ -54,7 +55,7 @@ const pill = computed(() => {
           <div class="setrow-title">Autoplay on login</div>
           <div class="setrow-sub">Start playback automatically once Soloist signs in.</div>
         </div>
-        <div class="sw" :class="c.autoplay ? 'on' : 'off'" @click="c.autoplay = !c.autoplay"><i></i></div>
+        <ToggleSwitch :on="c.autoplay" label="Autoplay on login" @toggle="c.autoplay = !c.autoplay" />
       </div>
     </SectionCard>
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useConfig } from "../composables/useConfig";
+import ToggleSwitch from "../components/ToggleSwitch.vue";
 
 // Synthetic sentinel node.name for the Snapcast toggle (mirrors SNAPCAST_KEY in
 // src/pipewire.ts). Real PipeWire nodes never use it.
@@ -96,7 +97,7 @@ function setDelay(name: string, v: string) {
             <div class="name">{{ s.description }}</div>
             <div class="kind">{{ isSnap(s) ? "Snapcast stream" : "Hardware sink" }}</div>
           </div>
-          <div class="sw" :class="isOn(s) ? 'on' : 'off'" @click="toggle(s)"><i></i></div>
+          <ToggleSwitch :on="isOn(s)" :label="`${s.description} output`" @toggle="toggle(s)" />
         </div>
 
         <div v-if="isSnap(s) && isOn(s)" class="sub">

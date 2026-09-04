@@ -202,7 +202,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         <div>
           <label class="flabel">Alignment</label>
           <div class="seg">
-            <button v-for="opt in ALIGN_OPTS" :key="opt.value" type="button" :title="opt.title" :class="{ on: o.alignment === opt.value }" @click="o.alignment = opt.value">
+            <button v-for="opt in ALIGN_OPTS" :key="opt.value" type="button" :title="opt.title" :aria-label="opt.title" :class="{ on: o.alignment === opt.value }" @click="o.alignment = opt.value">
               <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="opt.icon" /></svg>
             </button>
           </div>
@@ -210,7 +210,8 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         <div>
           <label class="flabel">Anchor</label>
           <div class="seg">
-            <button v-for="opt in ANCHOR_OPTS" :key="opt.value" type="button" :title="opt.title" :class="{ on: o.anchor === opt.value }" @click="o.anchor = opt.value">
+            <button v-for="opt in ANCHOR_OPTS" :key="opt.value" type="button" :title="opt.title" :aria-label="opt.title" :class="{ on: o.anchor === opt.value }" @click="o.anchor = opt.value">
+              <!-- opt.icon is a static developer constant (multi-path SVG markup), never user data — safe for v-html. -->
               <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="opt.icon"></svg>
             </button>
           </div>
