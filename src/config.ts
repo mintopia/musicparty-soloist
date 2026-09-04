@@ -9,6 +9,7 @@ export const DEFAULT_PROXY_LISTEN = "0.0.0.0:8687";
 export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
+export const MAX_OUTPUT_DELAY_MS = 5000;
 
 export class ConfigError extends Error {}
 
@@ -72,6 +73,7 @@ export interface RelayConfig {
 export interface AudioConfig {
   outputs: string[];
   snapcast: boolean;
+  outputDelays: Record<string, number>; // node.name -> ms, hardware sinks only; 0/absent = none
 }
 
 export interface OverlayConfig {
@@ -207,6 +209,15 @@ function parseConfig(raw: unknown): Config {
     throw new ConfigError("audio.outputs must be a list");
   }
 
+  const outputDelaysRaw = audio.output_delays ?? {};
+  if (typeof outputDelaysRaw !== "object" || Array.isArray(outputDelaysRaw)) {
+    throw new ConfigError("audio.output_delays must be a mapping");
+  }
+  const outputDelays: Record<string, number> = {};
+  for (const [k, v] of Object.entries(outputDelaysRaw)) {
+    outputDelays[k] = Math.min(MAX_OUTPUT_DELAY_MS, Math.max(0, coerceInt(v, 0)));
+  }
+
   return {
     soloist: {
       // Optional at load so a fresh install boots into first-run setup mode with no
@@ -243,6 +254,7 @@ function parseConfig(raw: unknown): Config {
     audio: {
       outputs: outputsRaw.map((o: unknown) => String(o)),
       snapcast: coerceBool(audio.snapcast, true),
+      outputDelays,
     },
     overlay: parseOverlay(overlay),
   };
@@ -315,6 +327,7 @@ function configToRaw(c: Config): Record<string, unknown> {
     audio: {
       outputs: c.audio.outputs,
       snapcast: c.audio.snapcast,
+      output_delays: c.audio.outputDelays,
     },
     overlay: overlayToRaw(c.overlay),
   };

@@ -17,7 +17,20 @@ import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverrid
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
-import { parseSinks, parseMonitorTargets, desiredTargets, pipewireSinksResponse, reconcileOutputs, SNAPCAST_KEY, type Runner } from "./pipewire.js";
+import {
+  parseSinks,
+  parseMonitorTargets,
+  desiredTargets,
+  desiredDelays,
+  buildDelayTokens,
+  generateFilterChainConf,
+  pipewireSinksResponse,
+  reconcileOutputs,
+  SNAPCAST_KEY,
+  DELAY_PREFIX,
+  type Runner,
+  type Spawner,
+} from "./pipewire.js";
 
 // Overlay engine lives in src/web/ (browser ESM, copied to dist/web/). Computed
 // specifier so tsc treats it as `any` — it ships no .d.ts.
@@ -269,6 +282,7 @@ assert.equal(cfg.web.username, "", "web.username absent -> empty");
 assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
 assert.deepEqual(cfg.audio.outputs, [], "audio.outputs absent -> []");
 assert.equal(cfg.audio.snapcast, true, "audio.snapcast defaults on");
+assert.deepEqual(cfg.audio.outputDelays, {}, "audio.output_delays absent -> {}");
 assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
 assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
 assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
@@ -283,6 +297,7 @@ assert.throws(() => loadConfig(join(dir, "nope.yaml")), ConfigError, "missing fi
 // saveConfig round-trips preserving comments and writes the new value.
 cfg.soloist.deviceName = "Renamed Speaker";
 cfg.audio.outputs = ["alsa_output.hw_0"];
+cfg.audio.outputDelays = { "alsa_output.hw_0": 250, over_range: 9999 };
 cfg.overlay.fontSize = 72;
 saveConfig(cfgPath, cfg);
 const savedText = readFileSync(cfgPath, "utf8");
@@ -291,6 +306,8 @@ assert.match(savedText, /inline note/, "inline comment preserved");
 const reloaded = loadConfig(cfgPath);
 assert.equal(reloaded.soloist.deviceName, "Renamed Speaker", "changed value persisted");
 assert.deepEqual(reloaded.audio.outputs, ["alsa_output.hw_0"], "list persisted");
+assert.equal(reloaded.audio.outputDelays["alsa_output.hw_0"], 250, "output_delays round-trips through save/load");
+assert.equal(reloaded.audio.outputDelays.over_range, 5000, "output_delays clamped to 5000ms max on load");
 assert.equal(reloaded.overlay.fontSize, 72, "overlay value persisted");
 
 // Atomic write leaves no temp file behind.
@@ -678,6 +695,83 @@ assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []"
   const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
   assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
   assert.deepEqual(res.linked, [], "reconcile: absent node not linked");
+}
+
+// Per-output playback delay (ADR-0013, filter-chain).
+assert.deepEqual(desiredDelays(dcfg(true, ["alsa_x", "alsa_y"])), {}, "desiredDelays: no outputDelays configured -> {}");
+{
+  const withDelay = { audio: { snapcast: true, outputs: ["alsa_x", "alsa_y", "snapcast"], outputDelays: { alsa_x: 250, alsa_y: 0, ghost: 10 } }, streamName: "Spotify" } as unknown as Config;
+  assert.deepEqual(desiredDelays(withDelay), { alsa_x: 250 }, "desiredDelays: only enabled hardware outputs with >0ms; snapcast/absent excluded");
+}
+
+const tokens = buildDelayTokens({ "alsa_output.hw:0": 250, "alsa/weird name!": 100 });
+assert.equal(tokens.get("alsa_output.hw:0"), "alsa-output-hw-0", "buildDelayTokens: sanitizes to safe token");
+assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayTokens: strips/collapses unsafe chars");
+{
+  const collide = buildDelayTokens({ "a!b": 1, "a?b": 2 });
+  assert.equal(collide.get("a!b"), "a-b", "buildDelayTokens: first owner keeps the base token");
+  assert.equal(collide.get("a?b"), "a-b-2", "buildDelayTokens: collision gets a -2 suffix");
+}
+
+{
+  const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
+  assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
+  assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
+  assert.ok(conf.includes(`node.name = "${DELAY_PREFIX}alsa-x"`), "generateFilterChainConf: node.name is soloist-delay-<token>");
+  assert.ok(conf.includes('"Delay (s)" = 0.250'), "generateFilterChainConf: ms converted to seconds");
+}
+
+// reconcile: a delayed output routes through the filter-chain node, not a direct link,
+// and the shared child is spawned once (not per output) and killed on empty map.
+{
+  const calls: string[] = [];
+  const spawnedCmds: string[] = [];
+  let killed = 0;
+  const spawner: Spawner = (cmd, args) => {
+    spawnedCmds.push([cmd, ...args].join(" "));
+    return { kill: () => { killed++; }, on: () => {} } as unknown as ReturnType<Spawner>;
+  };
+  const run: Runner = async (_cmd, args) => {
+    calls.push(["pw-link", ...args].join(" "));
+    if (args[0] === "-i") return "input.soloist-delay-alsa-x:input_FL\nalsa_x:playback_FL\n";
+    if (args.includes("-l")) return "";
+    return "";
+  };
+  const delayedCfg = { audio: { snapcast: false, outputs: ["alsa_x"], outputDelays: { alsa_x: 250 } }, streamName: "Spotify" } as unknown as Config;
+  const res = await reconcileOutputs(delayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
+  assert.deepEqual(res.linked, ["alsa_x"], "reconcile+delay: reported linked under the real sink name");
+  assert.equal(spawnedCmds.length, 1, "reconcile+delay: one filter-chain child spawned, not one per output");
+  assert.ok(spawnedCmds[0].startsWith("pipewire -c "), "reconcile+delay: spawns pipewire -c <conf>");
+  assert.ok(calls.includes("pw-link soloist-sink:monitor_FL input.soloist-delay-alsa-x:input_FL"), "reconcile+delay: monitor -> filter input");
+  assert.ok(calls.includes("pw-link output.soloist-delay-alsa-x:output_FL alsa_x:playback_FL"), "reconcile+delay: filter output -> hw sink");
+  assert.ok(!calls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile+delay: no direct link for a delayed output");
+
+  // Unchanged delay map on the next reconcile -> no respawn.
+  const res2 = await reconcileOutputs(delayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
+  assert.equal(spawnedCmds.length, 1, "reconcile+delay: same delay map does not respawn the child");
+  void res2;
+
+  // Delay removed -> child killed, no new spawn, direct link used.
+  const undelayedCfg = { audio: { snapcast: false, outputs: ["alsa_x"], outputDelays: { alsa_x: 0 } }, streamName: "Spotify" } as unknown as Config;
+  const res3 = await reconcileOutputs(undelayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
+  assert.equal(killed, 1, "reconcile: delay dropped to 0 kills the running filter-chain child");
+  assert.equal(spawnedCmds.length, 1, "reconcile: dropping to 0 does not spawn a new child");
+  assert.deepEqual(res3.linked, ["alsa_x"], "reconcile: output relinks directly once its delay is gone");
+}
+
+// no delay configured at all -> identical topology/behaviour to pre-ADR-0013 (ADR-0011).
+{
+  const calls: string[] = [];
+  const run: Runner = async (cmd, args) => {
+    calls.push([cmd, ...args].join(" "));
+    if (args[0] === "-i") return "alsa_x:playback_FL\n";
+    if (args.includes("-l")) return "";
+    return "";
+  };
+  const spawner: Spawner = () => { throw new Error("must not spawn a filter-chain child with no delays configured"); };
+  const res = await reconcileOutputs(dcfg(false, ["alsa_x"]), { run, spawn: spawner, retries: 1, intervalMs: 0 });
+  assert.deepEqual(res.linked, ["alsa_x"], "reconcile no-delay: unchanged direct-link behaviour");
+  assert.ok(calls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile no-delay: direct link, same as ADR-0011");
 }
 
 // Landing-page view-model helpers.

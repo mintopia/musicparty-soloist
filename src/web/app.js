@@ -397,6 +397,15 @@ function buildAudio(view) {
       sub.appendChild(sf);
       box.appendChild(sub);
     }
+    // Hardware sinks get a playback delay knob, to push a local DAC late for sync.
+    if (!isSnap && on) {
+      const sub = document.createElement("div");
+      sub.style.cssText = "padding:12px 14px;border-top:1px solid rgba(13,148,136,.22)";
+      const df = field("Delay (ms)", c.audio.outputDelays[sink.name] || 0, (v) => { c.audio.outputDelays[sink.name] = Number(v) || 0; markDirty(); }, { type: "number" });
+      df.style.maxWidth = "160px";
+      sub.appendChild(df);
+      box.appendChild(sub);
+    }
     list.appendChild(box);
   }
   if (!state.sinks.length) list.innerHTML = '<div style="font-size:13px;color:var(--faint);padding:20px 0;text-align:center">No PipeWire sinks reported. Is the audio path up?</div>';
