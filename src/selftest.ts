@@ -6,12 +6,14 @@ import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, sameOrigin } from "./auth.js";
+import { safeStrEqual } from "./util.js";
+import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
 import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
 import { resolveWebhookUrl, WebhookQueue, recordWebhookStat, type WebhookStats } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride } from "./supervisor.js";
 import { rmSync } from "node:fs";
@@ -28,6 +30,7 @@ import {
   reconcileOutputs,
   SNAPCAST_KEY,
   DELAY_PREFIX,
+  getSinkCache,
   type Runner,
   type Spawner,
 } from "./pipewire.js";
@@ -107,6 +110,21 @@ assert.equal(coerceBool("garbage", true), true, "unrecognized falls back to defa
 assert.equal(coerceInt("42", 0), 42);
 assert.equal(coerceInt("", 5), 5, "empty falls back to default");
 assert.equal(coerceInt("nope", 7), 7, "non-numeric falls back to default");
+assert.equal(coerceFloat("0.35", 1), 0.35, "parses a fractional value");
+assert.equal(coerceFloat("", 0.5), 0.5, "empty falls back to default");
+assert.equal(coerceFloat(undefined, 0.5), 0.5, "unset falls back to default");
+assert.equal(coerceFloat("nope", 0.25), 0.25, "non-numeric falls back to default");
+
+// safeStrEqual: constant-time compare, length-guarded so timingSafeEqual never throws.
+assert.equal(safeStrEqual("abc", "abc"), true, "equal strings match");
+assert.equal(safeStrEqual("abc", "abd"), false, "same-length mismatch rejected");
+assert.equal(safeStrEqual("abc", "abcd"), false, "different lengths rejected without throwing");
+assert.equal(safeStrEqual("", ""), true, "empty equals empty");
+
+// backoffStep: crash-loop backoff doubles up to the cap, resets after a healthy run.
+assert.deepEqual(backoffStep(BACKOFF_BASE, 0), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "quick crash sleeps current, doubles next");
+assert.deepEqual(backoffStep(BACKOFF_MAX, 0), { sleep: BACKOFF_MAX, next: BACKOFF_MAX }, "doubling is capped at BACKOFF_MAX");
+assert.deepEqual(backoffStep(BACKOFF_MAX, 999), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "a run past HEALTHY_SECONDS resets to base");
 
 // listenParts (item C): split at the LAST colon (IPv6-safe), error clearly on garbage
 // rather than silently producing NaN.
@@ -664,6 +682,11 @@ assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
 const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
 assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
 assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
+
+// Sink cache starts empty with refreshedAt 0 ("never") so /api/pipewire-sinks knows to
+// force a synchronous dump before the background poll has landed one. (refreshSinkCache
+// itself shells out to pw-dump — exercised at runtime, not here.)
+assert.deepEqual(getSinkCache(), { sinks: [], refreshedAt: 0 }, "getSinkCache: empty until first poll, refreshedAt 0 = never");
 
 const dcfg = (snapcast: boolean, outputs: string[], streamName = "Spotify"): Config =>
   ({ audio: { snapcast, outputs }, streamName }) as unknown as Config;

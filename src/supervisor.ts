@@ -13,6 +13,15 @@ export const TERM_TIMEOUT = 10.0;
 
 export class Aborted extends Error {}
 
+// Crash-loop backoff arithmetic, pure so it can be table-tested without fake timers.
+// `sleep` is how long to wait before the next restart; `next` is the backoff to carry
+// forward. A run that stayed up past HEALTHY_SECONDS resets to BACKOFF_BASE; otherwise it
+// doubles, capped at BACKOFF_MAX.
+export function backoffStep(current: number, ranSeconds: number): { sleep: number; next: number } {
+  const wait = ranSeconds >= HEALTHY_SECONDS ? BACKOFF_BASE : current;
+  return { sleep: wait, next: Math.min(wait * 2, BACKOFF_MAX) };
+}
+
 const log = makeLog("supervisor");
 
 // ponytail: module-global set once at boot. Docker pins Soloist's output to the
@@ -168,9 +177,9 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
       backoff = BACKOFF_BASE;
       continue;
     }
-    if (ran >= HEALTHY_SECONDS) backoff = BACKOFF_BASE;
-    log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), backoff);
-    await sleep(backoff * 1000);
-    backoff = Math.min(backoff * 2, BACKOFF_MAX);
+    const { sleep: waitS, next } = backoffStep(backoff, ran);
+    log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
+    await sleep(waitS * 1000);
+    backoff = next;
   }
 }
