@@ -10,6 +10,7 @@ import { attachWebhooks, STATE_EVENTS } from "./webhooks.js";
 import { SoloistRelay, type RelayStatus } from "./relay.js";
 import { handleWebRequest } from "./web.js";
 import { reconcileOutputs, startSinkPolling } from "./pipewire.js";
+import { isDockerMode } from "./supervisor.js";
 import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
 
@@ -290,12 +291,15 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   const relayRun = relay.run();
   relayRun.catch((e) => log("relay crashed: %s", (e as Error).message));
 
-  // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
-  // Fire-and-forget — it waits/retries for target nodes and must not block listen.
-  void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
-
-  // Keep the Audio page's sink list warm so it paints populated (see startSinkPolling).
-  startSinkPolling(cfg);
+  // Docker only (ADR-0011/0015): the Snapcast + hardware fan-out and its sink cache. In
+  // standalone there is no soloist-sink to reconcile — Soloist outputs to its device direct.
+  if (isDockerMode()) {
+    // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
+    // Fire-and-forget — it waits/retries for target nodes and must not block listen.
+    void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
+    // Keep the Audio page's sink list warm so it paints populated (see startSinkPolling).
+    startSinkPolling(cfg);
+  }
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);

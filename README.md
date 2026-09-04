@@ -194,9 +194,21 @@ Then recreate the container; the new sinks appear in the Audio Outputs list to e
 | 1705 | Snapcast control (TCP JSON-RPC) |
 | 1780 | Snapcast web UI |
 
-## Standalone proxy (no audio, any OS)
+## Standalone (npx, no Snapcast)
 
-Runs the supervisor and proxy without the Snapcast audio path.
+Runs everything except the Snapcast fan-out: Soloist itself (supervised, auto-reacquired),
+the web UI with synced lyrics, the webhooks, the authenticated control WebSocket, and the
+WebSocket relay. There is no Snapserver and no multi-output PipeWire routing — Soloist plays
+straight to a PipeWire device on the host. Point it at a specific device if you don't want
+Soloist's default.
+
+Once published you can run it with no checkout:
+
+```bash
+npx @mintopia/musicparty-soloist --config config.yaml
+```
+
+Or build from source:
 
 ```bash
 npm install
@@ -205,13 +217,22 @@ cp config.example.yaml config.yaml   # then set data_dir to ./.soloist-data
 node dist/main.js --config config.yaml
 ```
 
-The only flag is `--config` (default `./config.yaml`). On first run, with no web
-credentials in the file, the Proxy serves the Setup Page at `http://localhost:8687/setup`
-to set them; then log in and edit the rest in the browser. `SIGINT` and `SIGTERM` shut it
-down cleanly — Soloist is terminated first, then the process exits.
+Flags:
 
-One catch: the standalone still needs the one-time Spotify login, which still needs LAN
-zeroconf. Run it on a host that sits on the LAN, not inside an isolated container.
+- `--config <path>` — Config File location (default `./config.yaml`).
+- `--pipewire-device <name>` — optional; the PipeWire node Soloist outputs to. Equivalent to
+  setting `soloist.pipewire_device` in the Config File or the **PipeWire output device** field
+  on the Settings page (a change there needs a Soloist restart, which the UI prompts for).
+  Leave it unset to use Soloist's default sink. `--docker` is reserved for the container image
+  and turns on the Snapcast fan-out — do not pass it in standalone.
+
+On first run, with no web credentials in the file, the Proxy serves the Setup Page at
+`http://localhost:8687/setup` to set them; then log in and edit the rest in the browser.
+`SIGINT` and `SIGTERM` shut it down cleanly — Soloist is terminated first, then the process
+exits.
+
+Audio out needs PipeWire running on the host (Linux). And the one-time Spotify login still
+needs LAN zeroconf, so run it on a host that sits on the LAN, not inside an isolated container.
 
 ## Development
 

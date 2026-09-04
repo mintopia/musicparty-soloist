@@ -24,20 +24,26 @@ export function backoffStep(current: number, ranSeconds: number): { sleep: numbe
 
 const log = makeLog("supervisor");
 
-// ponytail: module-global set once at boot. Docker pins Soloist's output to the
-// soloist-sink null-sink (the fan-out anchor, ADR-0011) via --pipewire-device; the
-// Config File must not carry it (soloist-sink is Docker infra, not user config, and
-// config.example.yaml is shared with standalone), so it comes from a main.js flag
-// instead of cfg — and stays out of buildArgv's persisted round-trip.
+// ponytail: module-global set once at boot. A --pipewire-device flag pins Soloist's
+// output node. In Docker it's the soloist-sink null-sink (the fan-out anchor, ADR-0011);
+// in standalone it's an optional user-supplied device (ADR-0015). Either way it comes
+// from a main.js flag rather than cfg, so it stays out of buildArgv's persisted round-trip
+// — though cfg.soloist.pipewireDevice still wins over it when both are set.
 let pipewireDeviceOverride = "";
 export function setPipewireDeviceOverride(name: string): void {
   pipewireDeviceOverride = name.trim();
 }
 
-// The --pipewire-device override is set only by the Docker s6 run script (ADR-0011),
-// so its presence is the reliable "running in the container" signal.
+// Docker mode = the managed-audio deployment (ADR-0011/0015): the Proxy owns a Snapcast +
+// hardware-sink fan-out and serves the Audio Route UI. Set explicitly by the container's
+// s6 run script (--docker). Standalone (npx) leaves it false: no Snapcast, no fan-out —
+// Soloist outputs straight to its optional --pipewire-device / soloist.pipewire_device.
+let dockerMode = false;
+export function setDockerMode(on: boolean): void {
+  dockerMode = on;
+}
 export function isDockerMode(): boolean {
-  return pipewireDeviceOverride !== "";
+  return dockerMode;
 }
 
 export function buildArgv(cfg: Config): string[] {

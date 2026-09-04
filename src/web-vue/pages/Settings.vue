@@ -41,6 +41,7 @@ const pill = computed(() => {
       <div class="grid2">
         <TextField label="Device name" v-model="c.soloist.deviceName" />
         <TextField v-if="!summary.dockerMode" label="Soloist WS" v-model="c.soloistWs" />
+        <TextField v-if="!summary.dockerMode" label="PipeWire output device" placeholder="Optional — Soloist's default if blank" v-model="c.soloist.pipewireDevice" />
         <SecretRow
           label="Spotify API key" section="soloist" field-key="apiKey" revealable
           :is-set="secretSet['soloist.apiKey']" v-model="c.soloist.apiKey"

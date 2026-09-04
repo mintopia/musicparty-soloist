@@ -15,7 +15,7 @@ import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
-import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride } from "./supervisor.js";
+import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./supervisor.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
@@ -725,6 +725,21 @@ await test("buildArgv Soloist command line", async () => {
   assert.ok(buildArgv(pinned).includes("alsa_x") && !buildArgv(pinned).includes("soloist-sink"),
     "explicit pipewire_device overrides the Docker pin");
   setPipewireDeviceOverride(""); // reset so later assertions see no pin
+});
+
+// Run mode is explicit (--docker), never inferred from --pipewire-device — so a standalone
+// user can pin Soloist's output device without turning on the Docker fan-out (ADR-0015).
+await test("run mode is explicit, not inferred from --pipewire-device", async () => {
+  assert.equal(isDockerMode(), false, "default is standalone");
+  setPipewireDeviceOverride("hw:0");
+  assert.equal(isDockerMode(), false, "a --pipewire-device (standalone output pin) does not imply Docker mode");
+  const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "x" } as unknown as Config;
+  assert.ok(buildArgv(cfg).join(" ").endsWith("--pipewire-device hw:0"), "standalone --pipewire-device still flows to Soloist argv");
+  setDockerMode(true);
+  assert.equal(isDockerMode(), true, "--docker turns on Docker mode");
+  setDockerMode(false);
+  setPipewireDeviceOverride("");
+  assert.equal(isDockerMode(), false, "reset to standalone");
 });
 
 

@@ -246,9 +246,9 @@ async function handlePutConfig(
   }
   Object.assign(cfg, next);
   log("config saved and applied live");
-  // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Runtime,
-  // idempotent, and fire-and-forget so the save response isn't held on pw-link.
-  void reconcileOutputs(cfg).catch((err) => log("reconcile after save failed: %s", (err as Error).message));
+  // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Docker only
+  // (ADR-0015); runtime, idempotent, and fire-and-forget so the save isn't held on pw-link.
+  if (isDockerMode()) void reconcileOutputs(cfg).catch((err) => log("reconcile after save failed: %s", (err as Error).message));
   // Push the new Overlay Config to any open overlays so they restyle immediately.
   onConfigChange?.(cfg);
   json(res, 200, maskConfig(cfg));
@@ -443,6 +443,8 @@ export function handleWebRequest(
   }
 
   if (path === "/api/pipewire-sinks" && method === "GET") {
+    // Standalone has no managed fan-out (ADR-0015) — the Audio Route UI is Docker only.
+    if (!isDockerMode()) return json(res, 404, { error: "not available in standalone mode" }), true;
     if (apiAuthed(req, res, cfg)) void handlePipewireSinks(req, res, cfg);
     return true;
   }

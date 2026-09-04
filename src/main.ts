@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ConfigError, DEFAULT_CONFIG_PATH, defaultConfig, ensureSecrets, loadConfig, soloistReady } from "./config.js";
 import { serveProxy } from "./proxy.js";
-import { supervise, Aborted, SoloistControl, setPipewireDeviceOverride } from "./supervisor.js";
+import { supervise, Aborted, SoloistControl, setPipewireDeviceOverride, setDockerMode } from "./supervisor.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("main");
@@ -12,12 +12,17 @@ async function main(): Promise<number> {
   const { values } = parseArgs({
     options: {
       config: { type: "string" },
-      // Docker-only: pin Soloist's output to the soloist-sink null-sink (ADR-0011).
-      // Not env (ADR-0010) and not in the Config File — set by the s6 run script.
+      // Managed-audio deployment (ADR-0011/0015): enable the Proxy's Snapcast + hardware
+      // fan-out and the Audio Route UI. Set by the container's s6 run script; absent in
+      // standalone (npx), which runs Soloist with no fan-out.
+      docker: { type: "boolean" },
+      // Pin Soloist's output node. Docker passes the soloist-sink null-sink; standalone
+      // users may pass their own PipeWire device (optional). Not env, not persisted config.
       "pipewire-device": { type: "string" },
     },
   });
 
+  if (values.docker) setDockerMode(true);
   if (values["pipewire-device"]) setPipewireDeviceOverride(values["pipewire-device"]);
 
   const configPath = values.config ?? DEFAULT_CONFIG_PATH;

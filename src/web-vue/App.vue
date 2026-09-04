@@ -10,13 +10,21 @@ const { theme, toggle } = useTheme();
 const cfg = useConfig();
 const playback = usePlayback();
 
-const tabs = [
-  { to: "/", label: "Now Playing" },
-  { to: "/audio", label: "Audio" },
-  { to: "/webhooks", label: "Webhooks" },
-  { to: "/lyrics", label: "Lyrics" },
-  { to: "/settings", label: "Settings" },
-];
+// Standalone (npx) has no Snapcast fan-out (ADR-0015). Treat "unknown" (pre-load) as
+// Docker so the existing container UI never flickers; hide Docker-only chrome only once
+// the summary confirms standalone.
+const standalone = computed(() => cfg.summary.dockerMode === false);
+
+const tabs = computed(() => {
+  const all = [
+    { to: "/", label: "Now Playing" },
+    { to: "/audio", label: "Audio" },
+    { to: "/webhooks", label: "Webhooks" },
+    { to: "/lyrics", label: "Lyrics" },
+    { to: "/settings", label: "Settings" },
+  ];
+  return standalone.value ? all.filter((t) => t.to !== "/audio") : all;
+});
 
 // Snapweb (Snapcast web UI) runs on the deployment host's port 1780 (docker-compose).
 const snapwebUrl = `http://${location.hostname}:1780`;
@@ -60,7 +68,7 @@ onMounted(() => {
 
       <MiniPlayer />
 
-      <a class="btn snapweb" :href="snapwebUrl" target="_blank" rel="noopener" title="Open Snapweb">
+      <a v-if="!standalone" class="btn snapweb" :href="snapwebUrl" target="_blank" rel="noopener" title="Open Snapweb">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4M7 6v12M11 3v18M15 8v8M19 5v14"/></svg>
         Snapweb
       </a>
