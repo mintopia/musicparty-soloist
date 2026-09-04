@@ -57,17 +57,28 @@ function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
 
+let passed = 0, failed = 0;
+async function test(name: string, fn: () => void | Promise<void>) {
+  try { await fn(); passed++; }
+  catch (e) { failed++; console.error(`FAIL  ${name}\n      ${(e as Error).stack ?? (e as Error).message}`); }
+}
+
+
+await test("detectArch", async () => {
 assert.equal(detectArch("x64"), "x86_64");
 assert.equal(detectArch("arm64"), "arm64");
 assert.equal(detectArch("arm"), "arm32");
 assert.throws(() => detectArch("sparc"), AcquisitionError);
 assert.equal(tarballUrl("arm64", "https://x/y/"), "https://x/y/soloist_release_arm64.tar.gz");
+});
+
 
 const CT = "s3cret";
 const RT = "readonly-tok";
 const AUTH_SECRET = "authsess";
 const authCfg = (token: string, readonlyToken = "", web = { username: "", password: "", sessionSecret: AUTH_SECRET }): Config =>
   ({ proxy: { token, readonlyToken }, web }) as unknown as Config;
+await test("checkAuth", async () => {
 assert.equal(checkAuth(req({ authorization: `Bearer ${CT}` }), authCfg(CT, RT)), "control", "auth token -> control");
 assert.equal(checkAuth(req({}, `/?token=${CT}`), authCfg(CT, RT)), "control", "query auth token -> control");
 assert.equal(checkAuth(req({ authorization: `Bearer ${RT}` }), authCfg(CT, RT)), "readonly", "readonly token -> readonly");
@@ -81,16 +92,22 @@ assert.equal(
   "control",
   "valid web session -> control",
 );
+});
+
 
 // sameOrigin: cookie-authed WS upgrades must be same-origin (CSWSH defense). Token
 // clients bypass this; only the tokenless cookie path is gated in proxy's upgrade handler.
+await test("sameOrigin: cookie-authed WS upgrades must be same-origin (CSWSH de...", async () => {
 assert.equal(sameOrigin(req({ origin: "http://host:8687", host: "host:8687" })), true, "matching origin/host");
 assert.equal(sameOrigin(req({ origin: "http://evil.example", host: "host:8687" })), false, "cross-origin rejected");
 assert.equal(sameOrigin(req({ host: "host:8687" })), false, "missing Origin rejected (browsers always send it)");
 assert.equal(sameOrigin(req({ origin: "http://host:8687" })), false, "missing Host rejected");
 assert.equal(sameOrigin(req({ origin: "::not a url::", host: "host:8687" })), false, "unparseable Origin rejected");
+});
+
 
 const buf = (s: string): RawData => Buffer.from(s) as unknown as RawData;
+await test("decodeFrame", async () => {
 assert.deepEqual(decodeFrame(buf('{"type":"auth_state","logged_in":true}'), false), {
   type: "auth_state",
   message: { type: "auth_state", logged_in: true },
@@ -100,7 +117,10 @@ assert.equal(decodeFrame(buf("{"), false), null, "malformed JSON skipped");
 assert.equal(decodeFrame(buf('{"no":"type"}'), false), null, "type-less frame skipped");
 assert.equal(decodeFrame(buf('"a string"'), false), null, "non-object JSON skipped");
 assert.equal(decodeFrame(buf('{"type":"x"}'), true), null, "binary frame skipped");
+});
 
+
+await test("coerceBool", async () => {
 assert.equal(coerceBool("true", false), true);
 assert.equal(coerceBool("NO", true), false);
 assert.equal(coerceBool("1", false), true);
@@ -114,26 +134,37 @@ assert.equal(coerceFloat("0.35", 1), 0.35, "parses a fractional value");
 assert.equal(coerceFloat("", 0.5), 0.5, "empty falls back to default");
 assert.equal(coerceFloat(undefined, 0.5), 0.5, "unset falls back to default");
 assert.equal(coerceFloat("nope", 0.25), 0.25, "non-numeric falls back to default");
+});
+
 
 // safeStrEqual: constant-time compare, length-guarded so timingSafeEqual never throws.
+await test("safeStrEqual: constant-time compare, length-guarded so timingSafeEq...", async () => {
 assert.equal(safeStrEqual("abc", "abc"), true, "equal strings match");
 assert.equal(safeStrEqual("abc", "abd"), false, "same-length mismatch rejected");
 assert.equal(safeStrEqual("abc", "abcd"), false, "different lengths rejected without throwing");
 assert.equal(safeStrEqual("", ""), true, "empty equals empty");
+});
+
 
 // backoffStep: crash-loop backoff doubles up to the cap, resets after a healthy run.
+await test("backoffStep: crash-loop backoff doubles up to the cap, resets after...", async () => {
 assert.deepEqual(backoffStep(BACKOFF_BASE, 0), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "quick crash sleeps current, doubles next");
 assert.deepEqual(backoffStep(BACKOFF_MAX, 0), { sleep: BACKOFF_MAX, next: BACKOFF_MAX }, "doubling is capped at BACKOFF_MAX");
 assert.deepEqual(backoffStep(BACKOFF_MAX, 999), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "a run past HEALTHY_SECONDS resets to base");
+});
+
 
 // listenParts (item C): split at the LAST colon (IPv6-safe), error clearly on garbage
 // rather than silently producing NaN.
+await test("listenParts (item C): split at the LAST colon (IPv6-safe), error cl...", async () => {
 assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
 assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
 assert.deepEqual(listenParts("[::1]:8687"), { host: "::1", port: 8687 }, "IPv6 literal splits at the port colon and sheds its brackets for server.listen");
 assert.throws(() => listenParts("8687"), /invalid proxy.listen/, "no colon: clear error, not NaN");
 assert.throws(() => listenParts("host:notaport"), /invalid proxy.listen/, "non-numeric port: clear error");
 assert.throws(() => listenParts("host:0"), /invalid proxy.listen/, "port 0: clear error");
+});
+
 
 const frame = (msg: Record<string, unknown>): UpstreamFrame => ({
   type: String(msg.type),
@@ -141,28 +172,38 @@ const frame = (msg: Record<string, unknown>): UpstreamFrame => ({
   raw: JSON.stringify(msg),
 });
 const loggedIn = frame({ type: "auth_state", logged_in: true });
+await test("shouldAutoplay", async () => {
 assert.equal(shouldAutoplay({ fired: false }, frame({ type: "auth_state", logged_in: false })), false, "not logged in: no autoplay");
 assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "false->true fires");
 assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "already-true on connect fires");
 assert.equal(shouldAutoplay({ fired: true }, loggedIn), false, "once-per-connection guard");
 assert.equal(shouldAutoplay({ fired: false }, frame({ type: "playback_state", logged_in: true })), false, "non-auth_state ignored");
+});
 
+
+await test("section 1", async () => {
 assert.deepEqual(
   AUTOPLAY_FRAMES,
   [{ type: "command", command: "activate" }, { type: "command", command: "play" }],
   "autoplay injects Soloist command envelopes (activate then play)",
 );
+});
+
 
 const whCfg = { defaultUrl: "http://def", urls: { track_changed: "http://tc", error: "http://err" }, secret: "", delayMs: 0 };
+await test("resolveWebhookUrl", async () => {
 assert.equal(resolveWebhookUrl("auth_state", whCfg), "http://def", "state event -> default_url");
 assert.equal(resolveWebhookUrl("track_changed", whCfg), "http://tc", "override replaces default");
 assert.equal(resolveWebhookUrl("error", whCfg), "http://err", "error only with explicit override");
 assert.equal(resolveWebhookUrl("command_result", whCfg), null, "command_result without override -> none");
 assert.equal(resolveWebhookUrl("auth_state", { defaultUrl: "", urls: {}, secret: "", delayMs: 0 }), null, "no default/override -> none");
+});
+
 
 const fires: number[] = [];
 const spaced: (() => void)[] = [];
 const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
+await test("section 2", async () => {
 q1.push(() => fires.push(1));
 assert.deepEqual(fires, [1], "first task fires immediately");
 q1.push(() => fires.push(2));
@@ -171,33 +212,45 @@ assert.deepEqual(fires, [1], "throttle holds queued tasks");
 spaced.shift()!();
 spaced.shift()!();
 assert.deepEqual(fires, [1, 2, 3], "queued tasks drain FIFO");
+});
+
 
 const order: string[] = [];
 const drops: number[] = [];
 const held: (() => void)[] = [];
 const q2 = new WebhookQueue(50, { cap: 3, schedule: (fn) => held.push(fn), onDrop: () => drops.push(1) });
+await test("q2", async () => {
 for (const c of ["A", "B", "C", "D", "E"]) q2.push(() => order.push(c));
 assert.equal(q2.size(), 3, "queue bounded at cap");
 assert.equal(drops.length, 1, "one drop at cap");
 while (held.length) held.shift()!();
 assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest FIFO");
+});
+
 
 const sync: number[] = [];
 const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
+await test("section 3", async () => {
 q0.push(() => sync.push(1));
 q0.push(() => sync.push(2));
 assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
+});
+
 
 // A throwing task must not wedge the drain loop (item E).
 const seen: number[] = [];
 const qThrow = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
+await test("section 4", async () => {
 qThrow.push(() => { throw new Error("boom"); });
 qThrow.push(() => seen.push(1));
 assert.deepEqual(seen, [1], "drain continues past a task that throws");
 assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
+});
+
 
 // Webhook delivery stats: ok/fail counters, lastStatus/lastError per destination.
 const wstats: WebhookStats = new Map();
+await test("wstats", async () => {
 recordWebhookStat(wstats, "http://a", 200, null);
 recordWebhookStat(wstats, "http://a", 204, null);
 assert.deepEqual(wstats.get("http://a")!.ok, 2, "2xx increments ok");
@@ -211,32 +264,46 @@ assert.equal(wstats.get("http://a")!.fail, 2, "network error increments fail");
 assert.equal(wstats.get("http://a")!.lastError, "timeout", "network error message recorded");
 assert.equal(wstats.get("http://a")!.lastStatus, null, "network error clears lastStatus");
 assert.ok(wstats.get("http://a")!.lastAt! > 0, "lastAt timestamp set");
+});
+
 
 // webhooksView: reports config + stats, never the secret value.
 const viewCfg = { webhooks: { defaultUrl: "http://def", urls: { track_changed: "http://tc" }, secret: "topsecret", delayMs: 0 } } as unknown as Config;
 const view = webhooksView(viewCfg, wstats) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; stats: Record<string, unknown> };
+await test("view", async () => {
 assert.equal(view.config.hasSecret, true, "secret presence exposed as boolean");
 assert.equal(JSON.stringify(view).includes("topsecret"), false, "secret value never serialized");
 assert.deepEqual(view.config.urls, { track_changed: "http://tc" }, "type->url overrides reported");
 assert.equal(view.config.defaultUrl, "http://def", "default url reported");
 assert.ok(view.stats["http://a"], "live stats map included");
+});
+
 const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
+await test("noSecretView", async () => {
 assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
+});
+
 
 // relayView: reports url + auth presence + live status, never the Authorization value.
 const relayCfg = { relay: { url: "wss://relay.example/x", authorization: "Bearer topsecret" } } as unknown as Config;
 const rStatus = { enabled: true, connected: true, lastConnectAt: 123, lastError: null };
 const rView = relayView(relayCfg, rStatus) as { config: { url: string; hasAuth: boolean }; status: typeof rStatus };
+await test("rView", async () => {
 assert.equal(rView.config.url, "wss://relay.example/x", "relay url reported");
 assert.equal(rView.config.hasAuth, true, "auth presence exposed as boolean");
 assert.equal(JSON.stringify(rView).includes("topsecret"), false, "Authorization value never serialized");
 assert.deepEqual(rView.status, rStatus, "live status passed through");
+});
+
 const rViewOff = relayView({ relay: { url: "", authorization: "" } } as unknown as Config) as { config: { hasAuth: boolean }; status: { enabled: boolean } };
+await test("rViewOff", async () => {
 assert.equal(rViewOff.config.hasAuth, false, "empty auth -> hasAuth false");
 assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
+});
+
 
 // Lyrics Overlay engine: parseLRC + currentIndex (folded in from the prototype).
-{
+await test("Lyrics Overlay engine: parseLRC + currentIndex (folded in from the ...", async () => {
   const lrc = ["[ar:The Weeknd]", "[00:12.50]First line", "[00:15.00]Second line", "[00:15.00]Same time echo", "not a timed line", "[01:03.20]Later"].join("\n");
   const lines = parseLRC(lrc);
   assert.deepEqual(lines.map((l) => l.time), [12.5, 15, 15, 63.2], "parseLRC extracts sorted numeric timestamps, drops metadata + untimed");
@@ -250,11 +317,12 @@ assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
   assert.equal(currentIndex(lines, 15), 2, "ties resolve to the last matching line");
   assert.equal(currentIndex(lines, 999), 3, "past the last line stays on it");
   assert.equal(currentIndex([], 10), -1, "no lines -> -1");
-}
+});
+
 
 // Overlay bootstrap: embeds only the Read-only Token + Overlay Config subset,
 // never other secrets, and escapes `<` so it can't break out of <script>.
-{
+await test("Overlay bootstrap: embeds only the Read-only Token + Overlay Config...", async () => {
   const ovCfg = {
     proxy: { token: "CONTROL-SECRET", readonlyToken: "RO-TOKEN", listen: "x" },
     soloist: { apiKey: "SPOTIFY-KEY" },
@@ -271,7 +339,8 @@ assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
   assert.equal(boot.includes("whsecret"), false, "webhook secret never embedded");
   assert.equal(boot.indexOf("</script>"), boot.lastIndexOf("</script>"), "only the wrapper's closing tag — no </script> breakout from config");
   assert.match(boot, /\\u003c\/script>/, "`<` in overlay config escaped");
-}
+});
+
 
 const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
 const cfgPath = join(dir, "config.yaml");
@@ -291,6 +360,7 @@ writeFileSync(
 );
 
 const cfg = loadConfig(cfgPath);
+await test("cfg", async () => {
 assert.equal(cfg.soloist.deviceName, "Party Speaker", "literal device_name, no interpolation");
 assert.equal(cfg.soloist.apiKey, "key123", "literal value, no env");
 assert.equal(cfg.proxy.token, "tok123");
@@ -299,8 +369,11 @@ assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
 assert.equal(cfg.webhooks.defaultUrl, "", "webhooks absent -> empty default_url");
 assert.deepEqual(cfg.webhooks.urls, {}, "webhooks absent -> no urls");
 assert.equal(cfg.webhooks.delayMs, 0, "delay_ms default 0");
+});
+
 
 // New config sections default sanely when absent.
+await test("New config sections default sanely when absent", async () => {
 assert.equal(cfg.proxy.readonlyToken, "", "readonly_token absent -> empty");
 assert.equal(cfg.web.username, "", "web.username absent -> empty");
 assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
@@ -310,13 +383,21 @@ assert.deepEqual(cfg.audio.outputDelays, {}, "audio.output_delays absent -> {}")
 assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
 assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
 assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
+});
+
 
 // `${VAR}` is no longer special — it is stored and returned verbatim.
 const litPath = join(dir, "literal.yaml");
+await test("loadConfig", async () => {
 writeFileSync(litPath, ['soloist:', '  device_name: "d"', '  api_key: "${API}"', "  extra_args: []", "proxy:", '  token: "t"'].join("\n"));
 assert.equal(loadConfig(litPath).soloist.apiKey, "${API}", "no interpolation: ${VAR} kept literal");
+});
 
+
+await test("loadConfig", async () => {
 assert.throws(() => loadConfig(join(dir, "nope.yaml")), ConfigError, "missing file fails fast");
+});
+
 
 // saveConfig round-trips preserving comments and writes the new value.
 cfg.soloist.deviceName = "Renamed Speaker";
@@ -325,50 +406,71 @@ cfg.audio.outputDelays = { "alsa_output.hw_0": 250, over_range: 9999 };
 cfg.overlay.fontSize = 72;
 saveConfig(cfgPath, cfg);
 const savedText = readFileSync(cfgPath, "utf8");
+await test("section 5", async () => {
 assert.match(savedText, /hand-written comment that must survive/, "block comment preserved");
 assert.match(savedText, /inline note/, "inline comment preserved");
+});
+
 const reloaded = loadConfig(cfgPath);
+await test("reloaded", async () => {
 assert.equal(reloaded.soloist.deviceName, "Renamed Speaker", "changed value persisted");
 assert.deepEqual(reloaded.audio.outputs, ["alsa_output.hw_0"], "list persisted");
 assert.equal(reloaded.audio.outputDelays["alsa_output.hw_0"], 250, "output_delays round-trips through save/load");
 assert.equal(reloaded.audio.outputDelays.over_range, 5000, "output_delays clamped to 5000ms max on load");
 assert.equal(reloaded.overlay.fontSize, 72, "overlay value persisted");
+});
+
 
 // Atomic write leaves no temp file behind.
+await test("Atomic write leaves no temp file behind", async () => {
 assert.deepEqual(
   readdirSync(dir).filter((f) => f.includes(".tmp-")),
   [],
   "no temp file left after save",
 );
+});
+
 
 // saveConfig never persists an invalid config. (Empty creds are valid now — setup
 // mode — so use a genuinely malformed field: extra_args must be a list.)
 const before = readFileSync(cfgPath, "utf8");
 const bad = loadConfig(cfgPath);
+await test("saveConfig", async () => {
 (bad.soloist as { extraArgs: unknown }).extraArgs = "not-a-list";
 assert.throws(() => saveConfig(cfgPath, bad), ConfigError, "invalid config rejected");
 assert.equal(readFileSync(cfgPath, "utf8"), before, "file untouched after rejected save");
+});
+
 
 // ensureSecrets mints and persists absent secrets, then is idempotent.
 const secretsCfg = loadConfig(cfgPath);
+await test("secretsCfg", async () => {
 assert.equal(secretsCfg.web.sessionSecret, "", "precondition: no session_secret");
 assert.equal(ensureSecrets(cfgPath, secretsCfg), true, "first boot writes secrets");
 assert.notEqual(secretsCfg.web.sessionSecret, "", "session_secret generated");
 assert.notEqual(secretsCfg.proxy.readonlyToken, "", "readonly_token generated");
+});
+
 const persisted = loadConfig(cfgPath);
+await test("persisted", async () => {
 assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
 assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
 assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
+});
+
 
 // Fresh install (no config file): ensureSecrets mints proxy.token too, so control-tier
 // token auth works out of the box after setup.
 const freshPath = join(dir, "fresh.yaml");
 const fresh = defaultConfig();
+await test("fresh", async () => {
 assert.equal(fresh.proxy.token, "", "precondition: default config has no proxy.token");
 assert.equal(ensureSecrets(freshPath, fresh), true, "fresh config: secrets minted");
 assert.notEqual(fresh.proxy.token, "", "proxy.token minted");
 assert.notEqual(fresh.web.sessionSecret, "", "session_secret minted");
 assert.equal(loadConfig(freshPath).proxy.token, fresh.proxy.token, "proxy.token persisted");
+});
+
 
 // Config API: GET masks secrets, config-summary never leaks, PUT round-trips.
 const sCfg = loadConfig(cfgPath);
@@ -384,18 +486,24 @@ const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_R
 const maskedJson = JSON.stringify(maskConfig(sCfg));
 for (const s of SECRETS) assert.ok(!maskedJson.includes(s), `maskConfig must not leak ${s}`);
 const masked = maskConfig(sCfg) as any;
+await test("masked", async () => {
 assert.equal(masked.soloist.apiKey, true, "set secret masks to true");
 assert.equal(masked.proxy.readonlyToken, true, "set secret masks to true");
 assert.equal(masked.soloist.deviceName, sCfg.soloist.deviceName, "non-secret preserved in mask");
+});
+
 
 const summaryJson = JSON.stringify(configSummary(sCfg));
 for (const s of SECRETS) assert.ok(!summaryJson.includes(s), `configSummary must not leak ${s}`);
 const summary = configSummary(sCfg) as any;
+await test("summary", async () => {
 assert.equal(summary.secrets.apiKey, true, "summary flags set secret");
 assert.equal(summary.deviceName, sCfg.soloist.deviceName, "summary reports device name");
 assert.equal(summary.soloistWs, sCfg.soloistWs, "summary reports soloist_ws");
 assert.equal(summary.wsUrl, `ws://${sCfg.soloistWs}`, "summary reports WS URL");
 assert.equal((configSummary(loadConfig(cfgPath)) as any).secrets.webPassword, false, "unset secret flags false");
+});
+
 
 const applied = applyApiConfig(sCfg, {
   autoplay: true,
@@ -403,6 +511,7 @@ const applied = applyApiConfig(sCfg, {
   soloist: { apiKey: true, deviceName: "Renamed", dataDir: "/hacked" },
   web: { password: false, sessionSecret: "" },
 });
+await test("applied", async () => {
 assert.equal(applied.proxy.token, "SECRET_TOK", "masked-true secret keeps stored value");
 assert.equal(applied.proxy.readonlyToken, "NEW_RO", "fresh string secret updates");
 assert.equal(applied.soloist.apiKey, "SECRET_API", "masked-true apiKey keeps stored value");
@@ -414,42 +523,55 @@ assert.equal(applied.proxy.listen, sCfg.proxy.listen, "locked proxy.listen uncha
 assert.equal(applied.soloist.dataDir, sCfg.soloist.dataDir, "locked data_dir unchanged");
 assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
 assert.throws(() => applyApiConfig(sCfg, { webhooks: { urls: "nope" } }), ConfigError, "invalid result rejected");
+});
+
 
 // Prototype pollution (item 1 fix): a PUT body's "__proto__"/"constructor" keys must
 // never reach Object.prototype via deepMerge.
-{
+await test("Prototype pollution (item 1 fix): a PUT body's \"__proto__\"/\"cons...", async () => {
   const evil = JSON.parse('{"autoplay":true,"__proto__":{"polluted":"yes"},"soloist":{"__proto__":{"polluted":"yes"}}}');
   applyApiConfig(sCfg, evil);
   assert.equal(({} as any).polluted, undefined, "Object.prototype not polluted by top-level __proto__");
   assert.equal((sCfg as any).polluted, undefined, "target itself not polluted");
-}
+});
+
 
 // webhooks.urls is a full-replace map: a dropped URL disappears (not merged).
 const whCfgBase = loadConfig(cfgPath);
 whCfgBase.webhooks.urls = { track_changed: "http://a", error: "http://b" };
 const whApplied = applyApiConfig(whCfgBase, { webhooks: { urls: { track_changed: "http://a" } } });
+await test("whApplied", async () => {
 assert.deepEqual(whApplied.webhooks.urls, { track_changed: "http://a" }, "removed webhook URL dropped from config");
 // ...and the removal persists through saveConfig (mergeInto alone would keep it).
 saveConfig(cfgPath, whApplied);
 assert.deepEqual(loadConfig(cfgPath).webhooks.urls, { track_changed: "http://a" }, "webhook URL removal persisted to file");
+});
+
 
 // Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed, expiry.
 const SECRET = "sessionsecret";
 const signed = signSession("admin", SECRET);
+await test("verifySession", async () => {
 assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
 assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
 assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
-{
+});
+
+await test("section 6", async () => {
   // Forge a payload for a different user; its signature won't match the original MAC.
   const forgedPayload = Buffer.from(`root|${Date.now()}`).toString("base64url");
   const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
   assert.equal(verifySession(`${forgedPayload}.${originalMac}`, SECRET), null, "tampered payload rejected");
-}
+});
+
+await test("verifySession", async () => {
 assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
+});
+
 
 // Session never expires (item 2 fix): a cookie older than the max age is rejected
 // even with a valid signature.
-{
+await test("Session never expires (item 2 fix): a cookie older than the max age...", async () => {
   // Mirror web.ts's key derivation (secret + password binding) so we can forge a cookie
   // with a chosen issued-at. Default binding "" matches an unbound signSession/verifySession.
   const mkMac = (payload: string, pw = "") => {
@@ -460,32 +582,45 @@ assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
   assert.equal(verifySession(`${oldPayload}.${mkMac(oldPayload)}`, SECRET), null, "expired session rejected");
   const freshPayload = Buffer.from(`admin|${Date.now() - 24 * 60 * 60 * 1000}`).toString("base64url");
   assert.equal(verifySession(`${freshPayload}.${mkMac(freshPayload)}`, SECRET), "admin", "1-day-old session still valid");
-}
+});
 
+
+await test("parseCookies", async () => {
 assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
 assert.deepEqual(parseCookies(undefined), {}, "no cookie header -> empty");
+});
+
 
 const webReq = (cookie?: string) => ({ headers: cookie ? { cookie } : {} }) as unknown as IncomingMessage;
 const webCfg = (u: string, p: string): Config => ({ web: { username: u, password: p, sessionSecret: SECRET } }) as unknown as Config;
 
+await test("webConfigured", async () => {
 assert.equal(webConfigured(webCfg("admin", "pw")), true, "creds set -> configured");
 assert.equal(webConfigured(webCfg("", "")), false, "creds unset -> not configured");
 assert.equal(webConfigured(webCfg("admin", "")), false, "half-set creds -> not configured");
+});
+
 
 const cfgSet = webCfg("admin", "pw");
+await test("sessionUser", async () => {
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), cfgSet), "admin", "valid cookie -> user");
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong", "pw")}`), cfgSet), null, "bad-secret cookie -> null");
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET, "pw")}`), cfgSet), null, "cookie for other user -> null");
 assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
+});
+
 
 // Rotating the password revokes live sessions: the MAC key folds in the password, so a
 // cookie signed under the old password no longer verifies once it changes.
+await test("Rotating the password revokes live sessions: the MAC key folds in t...", async () => {
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "old-pw")}`), webCfg("admin", "new-pw")), null, "password change revokes existing session");
 assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B"), null, "session signed under a different password is rejected");
+});
+
 
 // Hub read-only drop + state replay, against a real in-process upstream.
-{
+await test("Hub read-only drop + state replay, against a real in-process upstream", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(upstream, "listening");
   const port = (upstream.address() as { port: number }).port;
@@ -516,11 +651,12 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
 
   hub.stop();
   upstream.close();
-}
+});
+
 
 // Relay bridge: Soloist frames republished verbatim to the Relay Server; frames from
 // the Relay Server forwarded raw into the upstream Soloist socket (full control).
-{
+await test("Relay bridge: Soloist frames republished verbatim to the Relay Serv...", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await Promise.all([once(upstream, "listening"), once(relaySrv, "listening")]);
@@ -559,11 +695,12 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
   hub.stop();
   upstream.close();
   relaySrv.close();
-}
+});
+
 
 // buildArgv reflects the Soloist command line; a change to any of the args means
 // the running Soloist is stale and needs a restart.
-{
+await test("buildArgv reflects the Soloist command line; a change to any of the...", async () => {
   const base = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
   assert.deepEqual(
     buildArgv(base),
@@ -582,10 +719,11 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
   assert.ok(buildArgv(pinned).includes("alsa_x") && !buildArgv(pinned).includes("soloist-sink"),
     "explicit pipewire_device overrides the Docker pin");
   setPipewireDeviceOverride(""); // reset so later assertions see no pin
-}
+});
+
 
 // SoloistControl: pending derives from live config vs last-spawned args; restart clears it.
-{
+await test("SoloistControl: pending derives from live config vs last-spawned ar...", async () => {
   const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
   const control = new SoloistControl();
   assert.equal(control.pendingRestart(cfg), false, "no spawn yet -> not pending");
@@ -599,12 +737,13 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
   assert.equal(control.pendingRestart(cfg), true, "soloist_ws change -> pending");
   control.restart(cfg);
   assert.equal(control.pendingRestart(cfg), false, "restart clears pending optimistically");
-}
+});
+
 
 // Integration: restart aborts the current Soloist run and the supervise loop
 // re-spawns (the Proxy — driven by the same process — is never dropped), while a
 // real shutdown ends the loop.
-{
+await test("Integration: restart aborts the current Soloist run and the supervi...", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-"));
   const logf = join(sdir, "runs.log");
   const script = join(sdir, "fake-soloist.sh");
@@ -636,12 +775,13 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
   const finalErr: unknown = supErr;
   assert.ok(finalErr instanceof Aborted, "shutdown ends the supervise loop with Aborted");
   rmSync(sdir, { recursive: true, force: true });
-}
+});
+
 
 // Readiness gate: supervise parks (never acquires/spawns) until the config is
 // minimally valid, then spawns once web creds land — so completing first-run setup
 // starts Soloist without a process restart.
-{
+await test("Readiness gate: supervise parks (never acquires/spawns) until the c...", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-gate-"));
   const script = join(sdir, "fake-soloist.sh");
   writeFileSync(script, `#!/bin/sh\nexec sleep 30\n`, { mode: 0o755 });
@@ -661,7 +801,8 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
   ac.abort();
   await supP.catch(() => {});
   rmSync(sdir, { recursive: true, force: true });
-}
+});
+
 
 // PipeWire fan-out (ADR-0011, ticket T9).
 const pwDump = JSON.stringify([
@@ -672,24 +813,34 @@ const pwDump = JSON.stringify([
   { info: { props: { "media.class": "Audio/Source", "node.name": "mic" } } },
   { other: true },
 ]);
+await test("parseSinks", async () => {
 assert.deepEqual(
   parseSinks(pwDump, ["Spotify"]),
   [{ name: "alsa_output.hw_0", description: "Speakers" }, { name: "bare", description: "bare" }],
   "parseSinks: Audio/Sink only; soloist-sink + Snapserver capture node excluded; description falls back to name",
 );
 assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
+});
+
 
 const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
+await test("section 7", async () => {
 assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
 assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
+});
+
 
 // Sink cache starts empty with refreshedAt 0 ("never") so /api/pipewire-sinks knows to
 // force a synchronous dump before the background poll has landed one. (refreshSinkCache
 // itself shells out to pw-dump — exercised at runtime, not here.)
+await test("Sink cache starts empty with refreshedAt 0 (\"never\") so /api/pipe...", async () => {
 assert.deepEqual(getSinkCache(), { sinks: [], refreshedAt: 0 }, "getSinkCache: empty until first poll, refreshedAt 0 = never");
+});
+
 
 const dcfg = (snapcast: boolean, outputs: string[], streamName = "Spotify"): Config =>
   ({ audio: { snapcast, outputs }, streamName }) as unknown as Config;
+await test("desiredTargets", async () => {
 assert.deepEqual(desiredTargets(dcfg(true, ["alsa_x"])), ["Spotify", "alsa_x"], "desiredTargets: snapcast->streamName + hardware");
 assert.deepEqual(desiredTargets(dcfg(false, ["alsa_x"])), ["alsa_x"], "desiredTargets: snapcast off drops stream node");
 assert.deepEqual(
@@ -697,6 +848,8 @@ assert.deepEqual(
   ["Spotify", "alsa_x"],
   "desiredTargets: reserved/internal names filtered, deduped",
 );
+});
+
 
 const monitorListing = [
   "soloist-sink:monitor_FL",
@@ -706,11 +859,14 @@ const monitorListing = [
   "other-node:capture_FL",
   "  |-> unrelated:playback_FL",
 ].join("\n");
+await test("parseMonitorTargets", async () => {
 assert.deepEqual(parseMonitorTargets(monitorListing), ["old_sink"], "parseMonitorTargets: only soloist-sink monitor links");
 assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []");
+});
+
 
 // reconcile happy path: link desired (Snapcast + hardware), unlink deselected old_sink.
-{
+await test("reconcile happy path: link desired (Snapcast + hardware), unlink de...", async () => {
   const calls: string[] = [];
   const run: Runner = async (cmd, args) => {
     calls.push([cmd, ...args].join(" "));
@@ -725,33 +881,43 @@ assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []"
   assert.ok(calls.includes("pw-link soloist-sink:monitor_FL Spotify:playback_FL"), "reconcile: snapcast FL linked");
   assert.ok(calls.includes("pw-link soloist-sink:monitor_FR alsa_x:playback_FR"), "reconcile: hardware FR linked");
   assert.ok(calls.includes("pw-link -d soloist-sink:monitor_FL old_sink:playback_FL"), "reconcile: deselected FL unlinked");
-}
+});
+
 
 // reconcile: a configured output whose node never appears is skipped and flagged.
-{
+await test("reconcile: a configured output whose node never appears is skipped ...", async () => {
   const run: Runner = async (_cmd, args) => (args.includes("-l") ? "" : "");
   const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
   assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
   assert.deepEqual(res.linked, [], "reconcile: absent node not linked");
-}
+});
+
 
 // Per-output playback delay (ADR-0013, filter-chain).
+await test("Per-output playback delay (ADR-0013, filter-chain)", async () => {
 assert.deepEqual(desiredDelays(dcfg(true, ["alsa_x", "alsa_y"])), {}, "desiredDelays: no outputDelays configured -> {}");
-{
+});
+
+await test("section 8", async () => {
   const withDelay = { audio: { snapcast: true, outputs: ["alsa_x", "alsa_y", "snapcast"], outputDelays: { alsa_x: 250, alsa_y: 0, ghost: 10 } }, streamName: "Spotify" } as unknown as Config;
   assert.deepEqual(desiredDelays(withDelay), { alsa_x: 250 }, "desiredDelays: only enabled hardware outputs with >0ms; snapcast/absent excluded");
-}
+});
+
 
 const tokens = buildDelayTokens({ "alsa_output.hw:0": 250, "alsa/weird name!": 100 });
+await test("tokens", async () => {
 assert.equal(tokens.get("alsa_output.hw:0"), "alsa-output-hw-0", "buildDelayTokens: sanitizes to safe token");
 assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayTokens: strips/collapses unsafe chars");
-{
+});
+
+await test("section 9", async () => {
   const collide = buildDelayTokens({ "a!b": 1, "a?b": 2 });
   assert.equal(collide.get("a!b"), "a-b", "buildDelayTokens: first owner keeps the base token");
   assert.equal(collide.get("a?b"), "a-b-2", "buildDelayTokens: collision gets a -2 suffix");
-}
+});
 
-{
+
+await test("section 10", async () => {
   const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
   assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
   assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
@@ -760,11 +926,12 @@ assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayToken
   assert.ok(conf.includes("node.autoconnect = false"), "generateFilterChainConf: autoconnect off (no leak to default sink)");
   assert.ok(conf.includes(`node.name = "${DELAY_PREFIX}alsa-x"`), "generateFilterChainConf: node.name is soloist-delay-<token>");
   assert.ok(conf.includes('"Delay (s)" = 0.250'), "generateFilterChainConf: ms converted to seconds");
-}
+});
+
 
 // reconcile: a delayed output routes through the filter-chain node, not a direct link,
 // and the shared child is spawned once (not per output) and killed on empty map.
-{
+await test("reconcile: a delayed output routes through the filter-chain node, n...", async () => {
   const calls: string[] = [];
   const spawnedCmds: string[] = [];
   let killed = 0;
@@ -798,10 +965,11 @@ assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayToken
   assert.equal(killed, 1, "reconcile: delay dropped to 0 kills the running filter-chain child");
   assert.equal(spawnedCmds.length, 1, "reconcile: dropping to 0 does not spawn a new child");
   assert.deepEqual(res3.linked, ["alsa_x"], "reconcile: output relinks directly once its delay is gone");
-}
+});
+
 
 // no delay configured at all -> identical topology/behaviour to pre-ADR-0013 (ADR-0011).
-{
+await test("no delay configured at all -> identical topology/behaviour to pre-A...", async () => {
   const calls: string[] = [];
   const run: Runner = async (cmd, args) => {
     calls.push([cmd, ...args].join(" "));
@@ -813,13 +981,17 @@ assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayToken
   const res = await reconcileOutputs(dcfg(false, ["alsa_x"]), { run, spawn: spawner, retries: 1, intervalMs: 0 });
   assert.deepEqual(res.linked, ["alsa_x"], "reconcile no-delay: unchanged direct-link behaviour");
   assert.ok(calls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile no-delay: direct link, same as ADR-0011");
-}
+});
+
 
 // Landing-page view-model helpers.
+await test("Landing-page view-model helpers", async () => {
 assert.equal(fmtTime(0), "0:00");
 assert.equal(fmtTime(194000), "3:14");
 assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
 assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
+});
+
 
 // Sample built to the real Soloist Entity schema (decorations.identity/creators/
 // parent/visual_identity/playback).
@@ -834,7 +1006,7 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
     playback: { duration_ms: durationMs },
   },
 });
-{
+await test("section 11", async () => {
   const item = entity("Blinding Lights", "The Weeknd", "After Hours", 200000, [
     { url: "https://img/small", size: "small" },
     { url: "https://img/large", size: "large" },
@@ -842,8 +1014,9 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   const t = readTrack({ type: "track_changed", item });
   assert.deepEqual(t, { uri: "spotify:track:x", title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", durationMs: 200000, art: "https://img/large" }, "readTrack: Entity decorations, prefers large cover");
   assert.equal(readTrack({ type: "auth_state", logged_in: true }), null, "readTrack: no item -> null");
-}
-{
+});
+
+await test("section 12", async () => {
   const p = readPlayback({ type: "playback_state", status: "paused", position: { position_ms: 4200, timestamp_ms: 1788460353479, speed: 0 }, volume: 55 });
   assert.deepEqual(p, { positionMs: 4200, timestampMs: 1788460353479, speed: 0, playing: false, volume: 55 }, "readPlayback: status/position anchor/volume");
   const ps = readPlayback({ type: "position_sync", position: { position_ms: 10, timestamp_ms: 1788460353480, speed: 1 } });
@@ -851,13 +1024,15 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   assert.equal(readPlayback({ type: "playback_changed", status: "playing" }).playing, true, "readPlayback: status playing -> true");
   assert.equal(readPlayback({}).positionMs, null, "readPlayback: absent position -> null");
   assert.equal(readPlayback({}).timestampMs, null, "readPlayback: absent position -> null timestamp");
-}
-{
+});
+
+await test("section 13", async () => {
   const q = readQueue({ type: "queue_changed", upcoming: [{ uid: "a", source: "context", item: entity("Levitating", "Dua Lipa", "", 203000) }] });
   assert.deepEqual(q, [{ uri: "spotify:track:x", title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }], "readQueue: reads upcoming list");
   assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no upcoming -> null");
-}
-{
+});
+
+await test("section 14", async () => {
   const h = hashPassword("hunter2");
   assert.ok(isPasswordHashed(h) && h.startsWith("scrypt$"), "hashPassword: scrypt-encoded");
   assert.equal(h.includes("hunter2"), false, "hashPassword: plaintext not present");
@@ -866,11 +1041,12 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   assert.equal(verifyPassword("wrong", h), false, "verifyPassword: wrong password");
   assert.ok(verifyPassword("legacy", "legacy"), "verifyPassword: legacy cleartext accepted");
   assert.equal(verifyPassword("legacy", "other"), false, "verifyPassword: legacy cleartext mismatch");
-}
+});
+
 
 // First-run setup gating: creds unset -> only /setup served, everything else fails
 // closed; POST /setup sets creds + redirects to login; then /setup is unreachable.
-{
+await test("First-run setup gating: creds unset -> only /setup served, everythi...", async () => {
   function fakeRes() {
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => (resolveDone = r));
@@ -961,11 +1137,12 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   scfg.soloist.deviceName = "Speaker";
   scfg.soloist.apiKey = "key";
   assert.equal(soloistReady(scfg), true, "web creds + soloist args -> ready");
-}
+});
+
 
 // Setup TOCTOU guard (item D): two concurrent POST /setup for the same config path
 // racing the webConfigured() check must not both save.
-{
+await test("Setup TOCTOU guard (item D): two concurrent POST /setup for the sam...", async () => {
   function fakeRes() {
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => (resolveDone = r));
@@ -1019,6 +1196,9 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   assert.equal(webConfigured(raceCfg), true, "the winner's creds were applied");
   assert.equal(loadConfig(racePath).web.username, "dj", "exactly one save persisted, uncorrupted");
   rmSync(raceDir, { recursive: true, force: true });
-}
+});
 
-console.log("selftest OK");
+
+console.log(`\nselftest: ${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);
+
