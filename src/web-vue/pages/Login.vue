@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SiteFooter from "../components/SiteFooter.vue";
 // Standalone auth entry (ADR-0014): a native form POST to /login — the server owns the
 // 302 redirect and sets ?error=1 on a bad credential, which we surface as the banner.
 const showError = new URLSearchParams(location.search).has("error");
@@ -25,16 +26,16 @@ const showError = new URLSearchParams(location.search).has("error");
         </div>
         <button class="btn pri wide" type="submit">Sign in</button>
       </form>
-      <div class="foot">Session kept in a signed, HttpOnly cookie</div>
     </div>
+    <SiteFooter />
   </div>
 </template>
 
 <style scoped>
 .wrap {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 40px 20px;
+  min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 20px;
 }
-.col { width: 400px; }
+.col { width: 400px; margin: auto; }
 .head { text-align: center; margin-bottom: 24px; }
 .mark {
   width: 48px; height: 48px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center;
@@ -48,5 +49,4 @@ const showError = new URLSearchParams(location.search).has("error");
 .field { width: 100%; display: block; }
 .lbl { display: block; margin-bottom: 6px; }
 .btn.wide { width: 100%; justify-content: center; }
-.foot { text-align: center; margin-top: 22px; font-size: 12px; color: var(--faint); }
 </style>

@@ -366,3 +366,34 @@ export async function listPipewireSinks(cfg: Config): Promise<PwSink[]> {
   const dump = await defaultRun("pw-dump", []);
   return pipewireSinksResponse(parseSinks(dump, [cfg.streamName]));
 }
+
+// Server-side sink cache (ADR-0011 UI path): a background timer runs pw-dump on an
+// interval so /api/pipewire-sinks answers from a warm cache — the Audio page is
+// populated on first paint instead of waiting on a per-request pw-dump. `refreshedAt`
+// is 0 until the first dump lands; the endpoint forces one synchronously in that case.
+export interface SinkCache {
+  sinks: PwSink[];
+  refreshedAt: number; // epoch ms of the dump; 0 = never
+}
+
+let sinkCache: SinkCache = { sinks: [], refreshedAt: 0 };
+let sinkPollTimer: ReturnType<typeof setInterval> | null = null;
+
+export async function refreshSinkCache(cfg: Config): Promise<SinkCache> {
+  sinkCache = { sinks: await listPipewireSinks(cfg), refreshedAt: Date.now() };
+  return sinkCache;
+}
+
+export function getSinkCache(): SinkCache {
+  return sinkCache;
+}
+
+// Kick one refresh immediately, then poll on an interval. Idempotent: a second call
+// is a no-op. The timer is unref'd so it never keeps the process alive on shutdown.
+export function startSinkPolling(cfg: Config, intervalMs = 30_000): void {
+  if (sinkPollTimer) return;
+  const tick = () => void refreshSinkCache(cfg).catch((e) => log("sink poll failed: %s", (e as Error).message));
+  tick();
+  sinkPollTimer = setInterval(tick, intervalMs);
+  sinkPollTimer.unref?.();
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useConfig } from "../composables/useConfig";
 
 // Synthetic sentinel node.name for the Snapcast toggle (mirrors SNAPCAST_KEY in
@@ -20,16 +20,29 @@ const { config, loaded } = useConfig();
 const c = config as unknown as AudioCfg;
 
 const sinks = ref<PwSink[]>([]);
+const sinksLoaded = ref(false);
+const refreshedAt = ref(0);
+const refreshing = ref(false);
 
-async function refresh() {
+async function refresh(force = false) {
+  refreshing.value = true;
   try {
-    const res = await fetch("/api/pipewire-sinks", { credentials: "same-origin" });
-    sinks.value = res.ok ? await res.json() : [];
+    const res = await fetch(force ? "/api/pipewire-sinks?refresh=1" : "/api/pipewire-sinks", { credentials: "same-origin" });
+    const data = res.ok ? await res.json() : { sinks: [], refreshedAt: 0 };
+    sinks.value = data.sinks ?? [];
+    refreshedAt.value = data.refreshedAt ?? 0;
   } catch {
     sinks.value = [];
+  } finally {
+    sinksLoaded.value = true;
+    refreshing.value = false;
   }
 }
-onMounted(refresh);
+onMounted(() => refresh());
+
+const refreshedLabel = computed(() =>
+  refreshedAt.value ? `Updated ${new Date(refreshedAt.value).toLocaleTimeString()}` : "",
+);
 
 const isSnap = (s: PwSink) => s.name === SNAPCAST_KEY;
 const isOn = (s: PwSink) => (isSnap(s) ? c.audio.snapcast : c.audio.outputs.includes(s.name));
@@ -56,7 +69,12 @@ function setDelay(name: string, v: string) {
   <section class="card view">
     <div class="head">
       <span class="head-title">Audio outputs</span>
-      <button class="btn" @click="refresh">Refresh sinks</button>
+      <div class="head-right">
+        <span v-if="refreshedLabel" class="stamp">{{ refreshedLabel }}</span>
+        <button class="btn" :disabled="refreshing" @click="refresh(true)">
+          {{ refreshing ? "Refreshing…" : "Refresh sinks" }}
+        </button>
+      </div>
     </div>
 
     <div v-if="loaded && sinks.length" class="list">
@@ -99,7 +117,7 @@ function setDelay(name: string, v: string) {
       </div>
     </div>
 
-    <p v-else-if="loaded" class="empty">No PipeWire sinks reported. Is the audio path up?</p>
+    <p v-else-if="loaded && sinksLoaded" class="empty">No PipeWire sinks reported. Is the audio path up?</p>
     <p v-else class="empty">Loading…</p>
   </section>
   </div>
@@ -108,6 +126,8 @@ function setDelay(name: string, v: string) {
 <style scoped>
 .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .head-title { font-family: var(--disp); font-size: 16px; font-weight: 700; }
+.head-right { display: flex; align-items: center; gap: 12px; }
+.stamp { font-size: 12px; color: var(--faint); white-space: nowrap; }
 .list { display: flex; flex-direction: column; gap: 10px; }
 
 .out { border: 1px solid var(--line); border-radius: 12px; background: var(--sub); overflow: hidden; }

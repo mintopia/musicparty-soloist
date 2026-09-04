@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import SiteFooter from "../components/SiteFooter.vue";
 
 // Standalone first-run entry (ADR-0014): native form POST to /setup — the server owns
 // the 302 and re-serves /setup?error=1 on a mismatch. Mirror that password-match guard
@@ -47,12 +48,13 @@ function onSubmit(e: Event) {
         </div>
       </form>
     </div>
+    <SiteFooter />
   </div>
 </template>
 
 <style scoped>
-.wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 40px 20px; }
-.col { width: 400px; }
+.wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; }
+.col { width: 400px; margin: auto; }
 .head { text-align: center; margin-bottom: 24px; }
 .mark {
   width: 48px; height: 48px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center;

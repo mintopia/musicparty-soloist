@@ -4,6 +4,7 @@ import { useTheme } from "./composables/useTheme";
 import { useConfig } from "./composables/useConfig";
 import { usePlayback } from "./composables/usePlayback";
 import MiniPlayer from "./components/MiniPlayer.vue";
+import SiteFooter from "./components/SiteFooter.vue";
 
 const { theme, toggle } = useTheme();
 const cfg = useConfig();
@@ -88,6 +89,8 @@ onMounted(() => {
     <main class="wrap">
       <RouterView />
     </main>
+
+    <SiteFooter />
 
     <div v-if="showSaveBar" class="savebar">
       <span class="save-label">{{ saveLabel }}</span>

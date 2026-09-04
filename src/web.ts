@@ -11,7 +11,7 @@ import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHas
 import type { WebhookStats } from "./webhooks.js";
 import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
-import { listPipewireSinks, reconcileOutputs } from "./pipewire.js";
+import { getSinkCache, refreshSinkCache, reconcileOutputs } from "./pipewire.js";
 import { isDockerMode } from "./supervisor.js";
 import { safeStrEqual } from "./util.js";
 import { makeLog } from "./log.js";
@@ -247,9 +247,13 @@ async function handlePutConfig(
   json(res, 200, maskConfig(cfg));
 }
 
-async function handlePipewireSinks(res: ServerResponse, cfg: Config): Promise<void> {
+// Serve the cached sink list (kept warm by the background poll). ?refresh=1 (the
+// manual "Refresh sinks" button) forces a fresh pw-dump; an empty cache also does.
+async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cfg: Config): Promise<void> {
+  const force = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
   try {
-    json(res, 200, await listPipewireSinks(cfg));
+    const cache = force || getSinkCache().refreshedAt === 0 ? await refreshSinkCache(cfg) : getSinkCache();
+    json(res, 200, cache);
   } catch (err) {
     log("pw-dump failed: %s", (err as Error).message);
     json(res, 500, { error: "failed to enumerate sinks" });
@@ -432,7 +436,7 @@ export function handleWebRequest(
   }
 
   if (path === "/api/pipewire-sinks" && method === "GET") {
-    if (apiAuthed(req, res, cfg)) void handlePipewireSinks(res, cfg);
+    if (apiAuthed(req, res, cfg)) void handlePipewireSinks(req, res, cfg);
     return true;
   }
 

@@ -9,7 +9,7 @@ import { checkAuth } from "./auth.js";
 import { attachWebhooks, STATE_EVENTS } from "./webhooks.js";
 import { SoloistRelay, type RelayStatus } from "./relay.js";
 import { handleWebRequest } from "./web.js";
-import { reconcileOutputs } from "./pipewire.js";
+import { reconcileOutputs, startSinkPolling } from "./pipewire.js";
 import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
 
@@ -284,6 +284,9 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
   // Fire-and-forget — it waits/retries for target nodes and must not block listen.
   void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
+
+  // Keep the Audio page's sink list warm so it paints populated (see startSinkPolling).
+  startSinkPolling(cfg);
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);
