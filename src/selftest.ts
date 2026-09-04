@@ -53,6 +53,14 @@ const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
   readQueue(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string }[] | null;
 };
 
+// Escape-safe JSON highlighter (ADR-0016). Unlike the ./web/*.js imports above (prebuilt
+// browser JS copied into dist/), this reaches into the raw Vue-app .ts source, which
+// tsc excludes from dist/ — Node's on-the-fly type-stripping runs it at runtime. That way
+// the selftest exercises the exact helper the Debug chunk ships, not a re-implementation.
+// Computed specifier so tsc leaves the import as `any` rather than trying to resolve it.
+const hl = await import(new URL("../src/web-vue/lib/highlight.ts", import.meta.url).href);
+const { highlightJson } = hl as { highlightJson(src: string): Promise<string> };
+
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
@@ -1190,6 +1198,64 @@ await test("setup TOCTOU guard", async () => {
   assert.equal(webConfigured(raceCfg), true, "the winner's creds were applied");
   assert.equal(loadConfig(racePath).web.username, "dj", "exactly one save persisted, uncorrupted");
   rmSync(raceDir, { recursive: true, force: true });
+});
+
+
+await test("highlightJson escapes XSS payloads to inert text", async () => {
+  // The two canonical break-out attempts from the T7 contract: an attribute-handler
+  // injection and a tag that tries to close hljs's own <pre><code> wrapper. Both must
+  // come back with every raw angle bracket from the input HTML-escaped.
+  for (const payload of ['<img src=x onerror=alert(1)>', '</code></pre><script>alert(1)</script>']) {
+    const out = await highlightJson(JSON.stringify({ v: payload }));
+    // hljs wraps tokens in its own <span class="hljs-…"> tags; strip those and any of its
+    // closing </span>, then assert no raw < or > from the input survives.
+    const bare = out.replace(/<span class="hljs-[^"]*">/g, "").replace(/<\/span>/g, "");
+    assert.ok(!bare.includes("<"), `escaped output leaked a raw '<': ${out}`);
+    assert.ok(!bare.includes(">"), `escaped output leaked a raw '>': ${out}`);
+    assert.ok(out.includes("&lt;") && out.includes("&gt;"), "payload angle brackets should render as entities");
+    assert.ok(!out.includes("<img") && !out.includes("<script"), `live tag survived: ${out}`);
+  }
+});
+
+await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle", async () => {
+  // manifest: true (vite.config.ts) lets us prove the code-split from the emitted graph
+  // rather than by eyeballing bundle sizes (T7 acceptance, ADR-0018).
+  const webDir = new URL("./web/", import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL(".vite/manifest.json", webDir), "utf8")) as Record<
+    string,
+    { file: string; isEntry?: boolean; isDynamicEntry?: boolean; imports?: string[]; dynamicImports?: string[]; css?: string[] }
+  >;
+
+  const debug = manifest["pages/Debug.vue"];
+  assert.ok(debug, "Debug.vue must be its own chunk in the manifest");
+  assert.equal(debug.isDynamicEntry, true, "Debug.vue must be a dynamic (lazy) chunk, not an entry");
+
+  const hljsKeys = Object.keys(manifest).filter((k) => k.includes("highlight.js"));
+  assert.ok(hljsKeys.some((k) => k.endsWith("/core.js")), "hljs core must be a manifest chunk");
+  assert.ok(hljsKeys.some((k) => k.endsWith("/languages/json.js")), "hljs json grammar must be a manifest chunk");
+  for (const k of hljsKeys) assert.equal(manifest[k].isDynamicEntry, true, `${k} must be an async chunk`);
+
+  // Debug pulls hljs core + json only via dynamicImports (the await import() in the helper).
+  for (const k of hljsKeys) assert.ok((debug.dynamicImports ?? []).includes(k), `Debug chunk must dynamic-import ${k}`);
+
+  // No entry bundle may reach hljs through *static* imports (transitive walk).
+  for (const [key, rec] of Object.entries(manifest)) {
+    if (!rec.isEntry) continue;
+    const seen = new Set<string>();
+    const stack = [...(rec.imports ?? [])];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      assert.ok(!cur.includes("highlight.js"), `entry ${key} statically imports hljs via ${cur}`);
+      stack.push(...(manifest[cur]?.imports ?? []));
+    }
+  }
+
+  // The theme CSS rides the Debug chunk and actually carries hljs rules.
+  assert.ok(debug.css?.length, "Debug chunk must ship a CSS asset (the hljs theme)");
+  const themeCss = readFileSync(new URL(debug.css![0], webDir), "utf8");
+  assert.ok(themeCss.includes(".hljs"), "Debug chunk CSS must contain hljs theme rules");
 });
 
 
