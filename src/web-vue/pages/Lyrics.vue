@@ -119,10 +119,11 @@ const galleryStages = reactive<Record<string, HTMLElement | null>>({});
 function setGalleryStage(eff: string, el: unknown) { galleryStages[eff] = (el as HTMLElement) || null; }
 
 function remountGallery() {
+  if (!o.value) return;
   for (const eff of OV_EFFECTS) {
     const stage = galleryStages[eff];
     if (!stage) continue;
-    const tcfg = { ...(o as Record<string, unknown>), effect: eff, anchor: "center", lineCount: 1, fontSize: 46, motion: "instant" };
+    const tcfg = { ...(o.value as unknown as Record<string, unknown>), effect: eff, anchor: "center", lineCount: 1, fontSize: 46, motion: "instant" };
     mountPreview(stage, tcfg, { checker: false, refW: 360 })([{ time: 0, text: "Abc" }], 0);
   }
 }
@@ -148,9 +149,10 @@ async function copyUrl() {
   copyLabel.value = "Copied!";
   setTimeout(() => (copyLabel.value = "Copy URL"), 1500);
 }
+const openUrl = () => window.open(overlayUrl, "_blank");
 
 // Any Overlay Config change re-mounts the preview and the gallery (style-dependent).
-watch(() => JSON.stringify(o), () => { remountPreview(); nextTick(remountGallery); });
+watch(() => JSON.stringify(o.value), () => { remountPreview(); nextTick(remountGallery); });
 // Switching to Motion & FX mounts the gallery once its stages exist.
 watch(ovTab, () => nextTick(remountGallery));
 // Track change re-probes lrclib.
@@ -180,6 +182,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         <button v-for="[k, label] in TABS" :key="k" type="button" :class="{ on: ovTab === k }" @click="ovTab = k as any">{{ label }}</button>
       </div>
 
+      <template v-if="o">
       <!-- Layout -->
       <div v-if="ovTab === 'layout'" class="grid2">
         <div>
@@ -275,6 +278,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
           </div>
         </div>
       </div>
+      </template>
 
       <!-- OBS output -->
       <div class="obs">
@@ -282,7 +286,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         <input class="field ro url" readonly :value="overlayUrl" />
         <div class="row btns">
           <button class="btn" @click="copyUrl">{{ copyLabel }}</button>
-          <button class="btn" @click="() => window.open(overlayUrl, '_blank')">Open ↗</button>
+          <button class="btn" @click="openUrl">Open ↗</button>
         </div>
       </div>
     </div>
