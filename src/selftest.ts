@@ -9,7 +9,7 @@ import { checkAuth, sameOrigin } from "./auth.js";
 import { safeStrEqual } from "./util.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
 import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
-import { resolveWebhookUrl, WebhookQueue, recordWebhookStat, type WebhookStats } from "./webhooks.js";
+import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -268,37 +268,135 @@ assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
 });
 
 
-// Webhook delivery stats: ok/fail counters, lastStatus/lastError per destination.
-const wstats: WebhookStats = new Map();
-await test("wstats", async () => {
-recordWebhookStat(wstats, "http://a", 200, null);
-recordWebhookStat(wstats, "http://a", 204, null);
-assert.deepEqual(wstats.get("http://a")!.ok, 2, "2xx increments ok");
-assert.equal(wstats.get("http://a")!.fail, 0, "2xx does not fail");
-assert.equal(wstats.get("http://a")!.lastStatus, 204, "lastStatus tracks last delivery");
-recordWebhookStat(wstats, "http://a", 500, null);
-assert.equal(wstats.get("http://a")!.fail, 1, "5xx increments fail");
-assert.equal(wstats.get("http://a")!.lastError, "HTTP 500", "non-2xx status recorded as lastError");
-recordWebhookStat(wstats, "http://a", null, "timeout");
-assert.equal(wstats.get("http://a")!.fail, 2, "network error increments fail");
-assert.equal(wstats.get("http://a")!.lastError, "timeout", "network error message recorded");
-assert.equal(wstats.get("http://a")!.lastStatus, null, "network error clears lastStatus");
-assert.ok(wstats.get("http://a")!.lastAt! > 0, "lastAt timestamp set");
+// WebhookHistory + postWebhook (T3: Webhook Delivery History).
+function fakeFetch(status: number, headers: Record<string, string>, body: string): typeof fetch {
+  return (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
+}
+
+// a) Capture shape: a successful delivery records type/url/status/timing/body.
+await test("postWebhook records delivery capture shape", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "sek", fakeFetch(200, { "content-type": "application/json" }, "ok"));
+  const d = h.last();
+  assert.ok(d, "delivery recorded");
+  assert.equal(d!.type, "track_changed", "type recorded");
+  assert.equal(d!.url, "http://t", "url recorded");
+  assert.equal(d!.status, 200, "status recorded");
+  assert.equal(d!.error, null, "no error on success");
+  assert.equal(d!.respBody, "ok", "response body recorded");
+  assert.equal(typeof d!.at, "number", "at is a number");
+  assert.ok(d!.at > 0, "at is a real timestamp");
+  assert.ok(d!.durationMs >= 0, "durationMs recorded");
+});
+
+// b) Request redaction: the Authorization header is masked in the recorded delivery,
+// and the raw secret never appears anywhere in it.
+await test("postWebhook redacts the request secret", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "supersecret", fakeFetch(200, { "content-type": "application/json" }, "ok"));
+  const d = h.last()!;
+  assert.equal(d.reqHeaders.authorization, "Bearer ***", "authorization header redacted");
+  assert.equal(d.reqHeaders["content-type"], "application/json", "content-type header preserved");
+  assertNoLeak("postWebhook delivery", d, ["supersecret"]);
+});
+
+// c) Response header allowlist: only allowlisted response headers survive; anything
+// else (e.g. vendor/API-key headers) is dropped, never recorded.
+await test("postWebhook allowlists response headers", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {
+    "content-type": "application/json",
+    "date": "Fri, 04 Sep 2026 00:00:00 GMT",
+    "x-api-key": "leak",
+    "x-vendor-sig": "sig",
+  }, "ok"));
+  const d = h.last()!;
+  assert.ok(d.respHeaders["content-type"], "allowlisted content-type kept");
+  assert.ok(d.respHeaders["date"], "allowlisted date kept");
+  assert.ok(!("x-api-key" in d.respHeaders), "non-allowlisted x-api-key dropped");
+  assert.ok(!("x-vendor-sig" in d.respHeaders), "non-allowlisted x-vendor-sig dropped");
+  assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak", "sig"]);
+});
+
+// d) Streamed body cap + truncation: an oversized body is capped and marked truncated;
+// a short body records verbatim with no marker.
+await test("postWebhook caps and truncates an oversized streamed body", async () => {
+  const h = new WebhookHistory();
+  const big = "x".repeat(WEBHOOK_RESP_BODY_CAP + 5000);
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, big));
+  const d = h.last()!;
+  assert.ok(d.respBody.includes("…[truncated]"), "truncation marker present");
+  const capped = d.respBody.slice(0, WEBHOOK_RESP_BODY_CAP);
+  assert.ok(/^x+$/.test(capped) && capped.length === WEBHOOK_RESP_BODY_CAP, "body content capped at WEBHOOK_RESP_BODY_CAP");
+  assert.equal(d.respBody.length, WEBHOOK_RESP_BODY_CAP + "…[truncated]".length, "total length is cap + marker length");
+});
+
+await test("postWebhook records a short body verbatim, no marker", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, "short body"));
+  const d = h.last()!;
+  assert.equal(d.respBody, "short body", "short body recorded verbatim");
+  assert.ok(!d.respBody.includes("…[truncated]"), "no truncation marker for a short body");
+});
+
+await test("postWebhook does not mark a body sized exactly to the cap as truncated", async () => {
+  const h = new WebhookHistory();
+  const exact = "x".repeat(WEBHOOK_RESP_BODY_CAP);
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, exact));
+  const d = h.last()!;
+  assert.equal(d.respBody, exact, "body exactly at the cap recorded verbatim");
+  assert.ok(!d.respBody.includes("…[truncated]"), "no marker when body length equals the cap");
+});
+
+// e) onEntry disposer is idempotent: calling it twice must not throw, and must not
+// affect other still-registered listeners.
+await test("WebhookHistory onEntry disposer is idempotent", async () => {
+  const h = new WebhookHistory();
+  let n = 0;
+  let m = 0;
+  const off = h.onEntry(() => n++);
+  h.onEntry(() => m++);
+  const mkDelivery = (i: number): WebhookDelivery =>
+    ({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
+
+  h.record(mkDelivery(0));
+  assert.equal(n, 1, "listener fires on first record");
+  off();
+  h.record(mkDelivery(1));
+  assert.equal(n, 1, "disposed listener does not fire again");
+  assert.doesNotThrow(() => off(), "calling the disposer a second time does not throw");
+  h.record(mkDelivery(2));
+  assert.equal(n, 1, "still disposed after a second off() call");
+  assert.equal(m, 3, "the other, still-registered listener keeps firing after the first is disposed");
+});
+
+// f) Ring eviction at 10: the buffer caps at WEBHOOK_HISTORY_CAP, oldest-first.
+await test("WebhookHistory evicts oldest entries at cap 10", async () => {
+  const h = new WebhookHistory();
+  for (let i = 0; i < 12; i++) {
+    h.record({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
+  }
+  const entries = h.entries();
+  assert.equal(entries.length, 10, "ring buffer capped at 10");
+  assert.equal(entries[0].url, "u2", "oldest surviving entry is the 3rd recorded");
+  assert.equal(h.last()!.url, "u11", "last() returns the most recent entry");
 });
 
 
-// webhooksView: reports config + stats, never the secret value.
+// webhooksView: reports config + history, never the secret value.
 const viewCfg = { webhooks: { defaultUrl: "http://def", urls: { track_changed: "http://tc" }, secret: "topsecret", delayMs: 0 } } as unknown as Config;
-const view = webhooksView(viewCfg, wstats) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; stats: Record<string, unknown> };
+const viewHistory = new WebhookHistory();
+viewHistory.record({ at: 1, type: "track_changed", url: "http://a", status: 200, durationMs: 1, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
+const view = webhooksView(viewCfg, viewHistory) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; history: WebhookDelivery[] };
 await test("webhooksView hides secret", async () => {
 assert.equal(view.config.hasSecret, true, "secret presence exposed as boolean");
 assertNoLeak("webhooksView", view, ["topsecret"]);
 assert.deepEqual(view.config.urls, { track_changed: "http://tc" }, "type->url overrides reported");
 assert.equal(view.config.defaultUrl, "http://def", "default url reported");
-assert.ok(view.stats["http://a"], "live stats map included");
+assert.ok(Array.isArray(view.history) && view.history.some((d) => d.url === "http://a"), "live delivery history included");
 });
 
-const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
+const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new WebhookHistory()) as { config: { hasSecret: boolean } };
 await test("webhooksView empty secret", async () => {
 assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
 });
