@@ -3,7 +3,8 @@
 // Output on boot and on config save, and unlinks deselected ones. Snapcast is a
 // synthetic output special-cased to the Snapserver capture node (named after
 // snapcast.stream_name); hardware sinks link generically to <sink>:playback_{FL,FR}.
-// Docker-only: it shells pw-link/pw-dump with XDG_RUNTIME_DIR=/run/pipewire.
+// Shells pw-link/pw-dump against the session's XDG_RUNTIME_DIR (Docker's ENV
+// sets /run/pipewire; a native run inherits its own).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
@@ -34,10 +35,15 @@ export const DELAY_OUTPUT_PORTS = ["output_FL", "output_FR"] as const;
 // Runs a command and resolves its stdout; rejects on non-zero exit.
 export type Runner = (cmd: string, args: string[]) => Promise<string>;
 
+// PipeWire socket dir: inherit the session's XDG_RUNTIME_DIR (native run), else
+// default to the Docker path the image's ENV sets. Docker already exports
+// /run/pipewire, so inheriting is a no-op there; only the native case needs it.
+const pwEnv = { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || "/run/pipewire" };
+
 const pexec = promisify(execFile);
 const defaultRun: Runner = async (cmd, args) => {
   const { stdout } = await pexec(cmd, args, {
-    env: { ...process.env, XDG_RUNTIME_DIR: "/run/pipewire" },
+    env: pwEnv,
     timeout: 10_000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -189,7 +195,7 @@ export function parseMonitorTargets(pwLinkOutput: string): string[] {
 export type Spawner = (cmd: string, args: string[]) => ChildProcess;
 
 const defaultSpawn: Spawner = (cmd, args) =>
-  spawn(cmd, args, { env: { ...process.env, XDG_RUNTIME_DIR: "/run/pipewire" }, stdio: "ignore" });
+  spawn(cmd, args, { env: pwEnv, stdio: "ignore" });
 
 export interface ReconcileOptions {
   run?: Runner;
