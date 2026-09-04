@@ -4,8 +4,8 @@ import { useConfig } from "../composables/useConfig";
 
 const props = defineProps<{
   label: string;
-  section: string;
-  fieldKey: string;
+  section?: string;
+  fieldKey?: string;
   isSet: boolean;
   revealable?: boolean;
 }>();
@@ -28,6 +28,7 @@ function cancel() {
   revealed.value = false;
 }
 async function view() {
+  if (!props.section || !props.fieldKey) return;
   try {
     revealedValue.value = await revealSecret(props.section, props.fieldKey);
     revealed.value = true;
