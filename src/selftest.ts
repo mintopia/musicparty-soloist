@@ -63,6 +63,13 @@ async function test(name: string, fn: () => void | Promise<void>) {
   catch (e) { failed++; console.error(`FAIL  ${name}\n      ${(e as Error).stack ?? (e as Error).message}`); }
 }
 
+// Asserts none of `secrets` appears in the serialized form of `obj` — the recurring
+// "a view/mask/bootstrap must never leak a secret value" invariant, stated once.
+function assertNoLeak(label: string, obj: unknown, secrets: string[]): void {
+  const j = typeof obj === "string" ? obj : JSON.stringify(obj);
+  for (const s of secrets) assert.ok(!j.includes(s), `${label} leaked ${s}`);
+}
+
 
 await test("detectArch", async () => {
 assert.equal(detectArch("x64"), "x86_64");
@@ -78,26 +85,31 @@ const RT = "readonly-tok";
 const AUTH_SECRET = "authsess";
 const authCfg = (token: string, readonlyToken = "", web = { username: "", password: "", sessionSecret: AUTH_SECRET }): Config =>
   ({ proxy: { token, readonlyToken }, web }) as unknown as Config;
-await test("checkAuth", async () => {
-assert.equal(checkAuth(req({ authorization: `Bearer ${CT}` }), authCfg(CT, RT)), "control", "auth token -> control");
-assert.equal(checkAuth(req({}, `/?token=${CT}`), authCfg(CT, RT)), "control", "query auth token -> control");
-assert.equal(checkAuth(req({ authorization: `Bearer ${RT}` }), authCfg(CT, RT)), "readonly", "readonly token -> readonly");
-assert.equal(checkAuth(req({ authorization: "Bearer nope" }), authCfg(CT, RT)), "none", "bad token -> none");
-assert.equal(checkAuth(req({}), authCfg(CT, RT)), "none", "missing token -> none");
-assert.equal(checkAuth(req({ authorization: "Bearer " + CT + "x" }), authCfg(CT, RT)), "none", "wrong length -> none");
-assert.equal(checkAuth(req({}, "/?token="), authCfg(CT, "")), "none", "empty presented never matches empty readonly");
-assert.equal(checkAuth(req({}, "/?token="), authCfg("", "")), "none", "setup mode: empty proxy.token never grants control");
-assert.equal(
-  checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
-  "control",
-  "valid web session -> control",
-);
+await test("checkAuth token/tier resolution", async () => {
+  for (const [hdr, url, cfg, want, msg] of [
+    [{ authorization: `Bearer ${CT}` }, "/", authCfg(CT, RT), "control", "auth token -> control"],
+    [{}, `/?token=${CT}`, authCfg(CT, RT), "control", "query auth token -> control"],
+    [{ authorization: `Bearer ${RT}` }, "/", authCfg(CT, RT), "readonly", "readonly token -> readonly"],
+    [{ authorization: "Bearer nope" }, "/", authCfg(CT, RT), "none", "bad token -> none"],
+    [{}, "/", authCfg(CT, RT), "none", "missing token -> none"],
+    [{ authorization: "Bearer " + CT + "x" }, "/", authCfg(CT, RT), "none", "wrong length -> none"],
+    [{}, "/?token=", authCfg(CT, ""), "none", "empty presented never matches empty readonly"],
+    [{}, "/?token=", authCfg("", ""), "none", "setup mode: empty proxy.token never grants control"],
+  ] as const) {
+    assert.equal(checkAuth(req(hdr, url), cfg), want, msg);
+  }
+  // Web-session cookie path (different shape) kept explicit.
+  assert.equal(
+    checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
+    "control",
+    "valid web session -> control",
+  );
 });
 
 
 // sameOrigin: cookie-authed WS upgrades must be same-origin (CSWSH defense). Token
 // clients bypass this; only the tokenless cookie path is gated in proxy's upgrade handler.
-await test("sameOrigin: cookie-authed WS upgrades must be same-origin (CSWSH de...", async () => {
+await test("sameOrigin CSWSH guard", async () => {
 assert.equal(sameOrigin(req({ origin: "http://host:8687", host: "host:8687" })), true, "matching origin/host");
 assert.equal(sameOrigin(req({ origin: "http://evil.example", host: "host:8687" })), false, "cross-origin rejected");
 assert.equal(sameOrigin(req({ host: "host:8687" })), false, "missing Origin rejected (browsers always send it)");
@@ -138,7 +150,7 @@ assert.equal(coerceFloat("nope", 0.25), 0.25, "non-numeric falls back to default
 
 
 // safeStrEqual: constant-time compare, length-guarded so timingSafeEqual never throws.
-await test("safeStrEqual: constant-time compare, length-guarded so timingSafeEq...", async () => {
+await test("safeStrEqual constant-time compare", async () => {
 assert.equal(safeStrEqual("abc", "abc"), true, "equal strings match");
 assert.equal(safeStrEqual("abc", "abd"), false, "same-length mismatch rejected");
 assert.equal(safeStrEqual("abc", "abcd"), false, "different lengths rejected without throwing");
@@ -147,7 +159,7 @@ assert.equal(safeStrEqual("", ""), true, "empty equals empty");
 
 
 // backoffStep: crash-loop backoff doubles up to the cap, resets after a healthy run.
-await test("backoffStep: crash-loop backoff doubles up to the cap, resets after...", async () => {
+await test("backoffStep crash-loop backoff", async () => {
 assert.deepEqual(backoffStep(BACKOFF_BASE, 0), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "quick crash sleeps current, doubles next");
 assert.deepEqual(backoffStep(BACKOFF_MAX, 0), { sleep: BACKOFF_MAX, next: BACKOFF_MAX }, "doubling is capped at BACKOFF_MAX");
 assert.deepEqual(backoffStep(BACKOFF_MAX, 999), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "a run past HEALTHY_SECONDS resets to base");
@@ -156,7 +168,7 @@ assert.deepEqual(backoffStep(BACKOFF_MAX, 999), { sleep: BACKOFF_BASE, next: BAC
 
 // listenParts (item C): split at the LAST colon (IPv6-safe), error clearly on garbage
 // rather than silently producing NaN.
-await test("listenParts (item C): split at the LAST colon (IPv6-safe), error cl...", async () => {
+await test("listenParts host:port split", async () => {
 assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
 assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
 assert.deepEqual(listenParts("[::1]:8687"), { host: "::1", port: 8687 }, "IPv6 literal splits at the port colon and sheds its brackets for server.listen");
@@ -181,7 +193,7 @@ assert.equal(shouldAutoplay({ fired: false }, frame({ type: "playback_state", lo
 });
 
 
-await test("section 1", async () => {
+await test("AUTOPLAY_FRAMES command envelopes", async () => {
 assert.deepEqual(
   AUTOPLAY_FRAMES,
   [{ type: "command", command: "activate" }, { type: "command", command: "play" }],
@@ -203,7 +215,7 @@ assert.equal(resolveWebhookUrl("auth_state", { defaultUrl: "", urls: {}, secret:
 const fires: number[] = [];
 const spaced: (() => void)[] = [];
 const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
-await test("section 2", async () => {
+await test("WebhookQueue throttle spacing", async () => {
 q1.push(() => fires.push(1));
 assert.deepEqual(fires, [1], "first task fires immediately");
 q1.push(() => fires.push(2));
@@ -230,7 +242,7 @@ assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest F
 
 const sync: number[] = [];
 const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
-await test("section 3", async () => {
+await test("WebhookQueue no timer when delayMs 0", async () => {
 q0.push(() => sync.push(1));
 q0.push(() => sync.push(2));
 assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
@@ -240,7 +252,7 @@ assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
 // A throwing task must not wedge the drain loop (item E).
 const seen: number[] = [];
 const qThrow = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
-await test("section 4", async () => {
+await test("WebhookQueue handler error isolation", async () => {
 qThrow.push(() => { throw new Error("boom"); });
 qThrow.push(() => seen.push(1));
 assert.deepEqual(seen, [1], "drain continues past a task that throws");
@@ -270,16 +282,16 @@ assert.ok(wstats.get("http://a")!.lastAt! > 0, "lastAt timestamp set");
 // webhooksView: reports config + stats, never the secret value.
 const viewCfg = { webhooks: { defaultUrl: "http://def", urls: { track_changed: "http://tc" }, secret: "topsecret", delayMs: 0 } } as unknown as Config;
 const view = webhooksView(viewCfg, wstats) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; stats: Record<string, unknown> };
-await test("view", async () => {
+await test("webhooksView hides secret", async () => {
 assert.equal(view.config.hasSecret, true, "secret presence exposed as boolean");
-assert.equal(JSON.stringify(view).includes("topsecret"), false, "secret value never serialized");
+assertNoLeak("webhooksView", view, ["topsecret"]);
 assert.deepEqual(view.config.urls, { track_changed: "http://tc" }, "type->url overrides reported");
 assert.equal(view.config.defaultUrl, "http://def", "default url reported");
 assert.ok(view.stats["http://a"], "live stats map included");
 });
 
 const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
-await test("noSecretView", async () => {
+await test("webhooksView empty secret", async () => {
 assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
 });
 
@@ -288,22 +300,22 @@ assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret fa
 const relayCfg = { relay: { url: "wss://relay.example/x", authorization: "Bearer topsecret" } } as unknown as Config;
 const rStatus = { enabled: true, connected: true, lastConnectAt: 123, lastError: null };
 const rView = relayView(relayCfg, rStatus) as { config: { url: string; hasAuth: boolean }; status: typeof rStatus };
-await test("rView", async () => {
+await test("relayView hides auth", async () => {
 assert.equal(rView.config.url, "wss://relay.example/x", "relay url reported");
 assert.equal(rView.config.hasAuth, true, "auth presence exposed as boolean");
-assert.equal(JSON.stringify(rView).includes("topsecret"), false, "Authorization value never serialized");
+assertNoLeak("relayView", rView, ["topsecret"]);
 assert.deepEqual(rView.status, rStatus, "live status passed through");
 });
 
 const rViewOff = relayView({ relay: { url: "", authorization: "" } } as unknown as Config) as { config: { hasAuth: boolean }; status: { enabled: boolean } };
-await test("rViewOff", async () => {
+await test("relayView disabled", async () => {
 assert.equal(rViewOff.config.hasAuth, false, "empty auth -> hasAuth false");
 assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
 });
 
 
 // Lyrics Overlay engine: parseLRC + currentIndex (folded in from the prototype).
-await test("Lyrics Overlay engine: parseLRC + currentIndex (folded in from the ...", async () => {
+await test("Lyrics overlay parseLRC + currentIndex", async () => {
   const lrc = ["[ar:The Weeknd]", "[00:12.50]First line", "[00:15.00]Second line", "[00:15.00]Same time echo", "not a timed line", "[01:03.20]Later"].join("\n");
   const lines = parseLRC(lrc);
   assert.deepEqual(lines.map((l) => l.time), [12.5, 15, 15, 63.2], "parseLRC extracts sorted numeric timestamps, drops metadata + untimed");
@@ -322,7 +334,7 @@ await test("Lyrics Overlay engine: parseLRC + currentIndex (folded in from the .
 
 // Overlay bootstrap: embeds only the Read-only Token + Overlay Config subset,
 // never other secrets, and escapes `<` so it can't break out of <script>.
-await test("Overlay bootstrap: embeds only the Read-only Token + Overlay Config...", async () => {
+await test("overlayBootstrap token + overlay only", async () => {
   const ovCfg = {
     proxy: { token: "CONTROL-SECRET", readonlyToken: "RO-TOKEN", listen: "x" },
     soloist: { apiKey: "SPOTIFY-KEY" },
@@ -332,11 +344,7 @@ await test("Overlay bootstrap: embeds only the Read-only Token + Overlay Config.
   } as unknown as Config;
   const boot = overlayBootstrap(ovCfg);
   assert.match(boot, /RO-TOKEN/, "read-only token embedded");
-  assert.equal(boot.includes("CONTROL-SECRET"), false, "Auth Token never embedded");
-  assert.equal(boot.includes("SPOTIFY-KEY"), false, "API Key never embedded");
-  assert.equal(boot.includes("webpass"), false, "web password never embedded");
-  assert.equal(boot.includes("sess"), false, "session secret never embedded");
-  assert.equal(boot.includes("whsecret"), false, "webhook secret never embedded");
+  assertNoLeak("overlayBootstrap", boot, ["CONTROL-SECRET", "SPOTIFY-KEY", "webpass", "sess", "whsecret"]);
   assert.equal(boot.indexOf("</script>"), boot.lastIndexOf("</script>"), "only the wrapper's closing tag — no </script> breakout from config");
   assert.match(boot, /\\u003c\/script>/, "`<` in overlay config escaped");
 });
@@ -406,7 +414,7 @@ cfg.audio.outputDelays = { "alsa_output.hw_0": 250, over_range: 9999 };
 cfg.overlay.fontSize = 72;
 saveConfig(cfgPath, cfg);
 const savedText = readFileSync(cfgPath, "utf8");
-await test("section 5", async () => {
+await test("saveConfig preserves file comments", async () => {
 assert.match(savedText, /hand-written comment that must survive/, "block comment preserved");
 assert.match(savedText, /inline note/, "inline comment preserved");
 });
@@ -483,20 +491,18 @@ sCfg.web.password = "SECRET_PW";
 sCfg.web.sessionSecret = "SECRET_SESS";
 const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_RELAY", "SECRET_PW", "SECRET_SESS"];
 
-const maskedJson = JSON.stringify(maskConfig(sCfg));
-for (const s of SECRETS) assert.ok(!maskedJson.includes(s), `maskConfig must not leak ${s}`);
 const masked = maskConfig(sCfg) as any;
-await test("masked", async () => {
+await test("maskConfig masks secrets", async () => {
+assertNoLeak("maskConfig", masked, SECRETS);
 assert.equal(masked.soloist.apiKey, true, "set secret masks to true");
 assert.equal(masked.proxy.readonlyToken, true, "set secret masks to true");
 assert.equal(masked.soloist.deviceName, sCfg.soloist.deviceName, "non-secret preserved in mask");
 });
 
 
-const summaryJson = JSON.stringify(configSummary(sCfg));
-for (const s of SECRETS) assert.ok(!summaryJson.includes(s), `configSummary must not leak ${s}`);
 const summary = configSummary(sCfg) as any;
-await test("summary", async () => {
+await test("configSummary flags secrets", async () => {
+assertNoLeak("configSummary", summary, SECRETS);
 assert.equal(summary.secrets.apiKey, true, "summary flags set secret");
 assert.equal(summary.deviceName, sCfg.soloist.deviceName, "summary reports device name");
 assert.equal(summary.soloistWs, sCfg.soloistWs, "summary reports soloist_ws");
@@ -557,7 +563,7 @@ assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected"
 assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
 });
 
-await test("section 6", async () => {
+await test("session tamper rejection", async () => {
   // Forge a payload for a different user; its signature won't match the original MAC.
   const forgedPayload = Buffer.from(`root|${Date.now()}`).toString("base64url");
   const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
@@ -571,7 +577,7 @@ assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
 
 // Session never expires (item 2 fix): a cookie older than the max age is rejected
 // even with a valid signature.
-await test("Session never expires (item 2 fix): a cookie older than the max age...", async () => {
+await test("session expiry rejection", async () => {
   // Mirror web.ts's key derivation (secret + password binding) so we can forge a cookie
   // with a chosen issued-at. Default binding "" matches an unbound signSession/verifySession.
   const mkMac = (payload: string, pw = "") => {
@@ -613,7 +619,7 @@ assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET
 
 // Rotating the password revokes live sessions: the MAC key folds in the password, so a
 // cookie signed under the old password no longer verifies once it changes.
-await test("Rotating the password revokes live sessions: the MAC key folds in t...", async () => {
+await test("password rotation revokes sessions", async () => {
 assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "old-pw")}`), webCfg("admin", "new-pw")), null, "password change revokes existing session");
 assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B"), null, "session signed under a different password is rejected");
 });
@@ -656,7 +662,7 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
 
 // Relay bridge: Soloist frames republished verbatim to the Relay Server; frames from
 // the Relay Server forwarded raw into the upstream Soloist socket (full control).
-await test("Relay bridge: Soloist frames republished verbatim to the Relay Serv...", async () => {
+await test("Relay bridge republishes frames", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await Promise.all([once(upstream, "listening"), once(relaySrv, "listening")]);
@@ -700,7 +706,7 @@ await test("Relay bridge: Soloist frames republished verbatim to the Relay Serv.
 
 // buildArgv reflects the Soloist command line; a change to any of the args means
 // the running Soloist is stale and needs a restart.
-await test("buildArgv reflects the Soloist command line; a change to any of the...", async () => {
+await test("buildArgv Soloist command line", async () => {
   const base = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
   assert.deepEqual(
     buildArgv(base),
@@ -723,7 +729,7 @@ await test("buildArgv reflects the Soloist command line; a change to any of the.
 
 
 // SoloistControl: pending derives from live config vs last-spawned args; restart clears it.
-await test("SoloistControl: pending derives from live config vs last-spawned ar...", async () => {
+await test("SoloistControl pending vs applied", async () => {
   const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
   const control = new SoloistControl();
   assert.equal(control.pendingRestart(cfg), false, "no spawn yet -> not pending");
@@ -743,7 +749,7 @@ await test("SoloistControl: pending derives from live config vs last-spawned ar.
 // Integration: restart aborts the current Soloist run and the supervise loop
 // re-spawns (the Proxy — driven by the same process — is never dropped), while a
 // real shutdown ends the loop.
-await test("Integration: restart aborts the current Soloist run and the supervi...", async () => {
+await test("supervise restart aborts current run", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-"));
   const logf = join(sdir, "runs.log");
   const script = join(sdir, "fake-soloist.sh");
@@ -781,7 +787,7 @@ await test("Integration: restart aborts the current Soloist run and the supervi.
 // Readiness gate: supervise parks (never acquires/spawns) until the config is
 // minimally valid, then spawns once web creds land — so completing first-run setup
 // starts Soloist without a process restart.
-await test("Readiness gate: supervise parks (never acquires/spawns) until the c...", async () => {
+await test("supervise readiness gate parks", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-gate-"));
   const script = join(sdir, "fake-soloist.sh");
   writeFileSync(script, `#!/bin/sh\nexec sleep 30\n`, { mode: 0o755 });
@@ -824,7 +830,7 @@ assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
 
 
 const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
-await test("section 7", async () => {
+await test("pipewireSinksResponse ordering", async () => {
 assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
 assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
 });
@@ -866,7 +872,7 @@ assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []"
 
 
 // reconcile happy path: link desired (Snapcast + hardware), unlink deselected old_sink.
-await test("reconcile happy path: link desired (Snapcast + hardware), unlink de...", async () => {
+await test("reconcile happy path", async () => {
   const calls: string[] = [];
   const run: Runner = async (cmd, args) => {
     calls.push([cmd, ...args].join(" "));
@@ -885,7 +891,7 @@ await test("reconcile happy path: link desired (Snapcast + hardware), unlink de.
 
 
 // reconcile: a configured output whose node never appears is skipped and flagged.
-await test("reconcile: a configured output whose node never appears is skipped ...", async () => {
+await test("reconcile skips absent node", async () => {
   const run: Runner = async (_cmd, args) => (args.includes("-l") ? "" : "");
   const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
   assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
@@ -898,7 +904,7 @@ await test("Per-output playback delay (ADR-0013, filter-chain)", async () => {
 assert.deepEqual(desiredDelays(dcfg(true, ["alsa_x", "alsa_y"])), {}, "desiredDelays: no outputDelays configured -> {}");
 });
 
-await test("section 8", async () => {
+await test("desiredDelays maps output delays", async () => {
   const withDelay = { audio: { snapcast: true, outputs: ["alsa_x", "alsa_y", "snapcast"], outputDelays: { alsa_x: 250, alsa_y: 0, ghost: 10 } }, streamName: "Spotify" } as unknown as Config;
   assert.deepEqual(desiredDelays(withDelay), { alsa_x: 250 }, "desiredDelays: only enabled hardware outputs with >0ms; snapcast/absent excluded");
 });
@@ -910,14 +916,14 @@ assert.equal(tokens.get("alsa_output.hw:0"), "alsa-output-hw-0", "buildDelayToke
 assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayTokens: strips/collapses unsafe chars");
 });
 
-await test("section 9", async () => {
+await test("buildDelayTokens collision safety", async () => {
   const collide = buildDelayTokens({ "a!b": 1, "a?b": 2 });
   assert.equal(collide.get("a!b"), "a-b", "buildDelayTokens: first owner keeps the base token");
   assert.equal(collide.get("a?b"), "a-b-2", "buildDelayTokens: collision gets a -2 suffix");
 });
 
 
-await test("section 10", async () => {
+await test("generateFilterChainConf output", async () => {
   const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
   assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
   assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
@@ -931,7 +937,7 @@ await test("section 10", async () => {
 
 // reconcile: a delayed output routes through the filter-chain node, not a direct link,
 // and the shared child is spawned once (not per output) and killed on empty map.
-await test("reconcile: a delayed output routes through the filter-chain node, n...", async () => {
+await test("reconcile delayed output via filter-chain", async () => {
   const calls: string[] = [];
   const spawnedCmds: string[] = [];
   let killed = 0;
@@ -969,7 +975,7 @@ await test("reconcile: a delayed output routes through the filter-chain node, n.
 
 
 // no delay configured at all -> identical topology/behaviour to pre-ADR-0013 (ADR-0011).
-await test("no delay configured at all -> identical topology/behaviour to pre-A...", async () => {
+await test("reconcile no-delay topology unchanged", async () => {
   const calls: string[] = [];
   const run: Runner = async (cmd, args) => {
     calls.push([cmd, ...args].join(" "));
@@ -1006,7 +1012,7 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
     playback: { duration_ms: durationMs },
   },
 });
-await test("section 11", async () => {
+await test("readTrack view-model", async () => {
   const item = entity("Blinding Lights", "The Weeknd", "After Hours", 200000, [
     { url: "https://img/small", size: "small" },
     { url: "https://img/large", size: "large" },
@@ -1016,7 +1022,7 @@ await test("section 11", async () => {
   assert.equal(readTrack({ type: "auth_state", logged_in: true }), null, "readTrack: no item -> null");
 });
 
-await test("section 12", async () => {
+await test("readPlayback view-model", async () => {
   const p = readPlayback({ type: "playback_state", status: "paused", position: { position_ms: 4200, timestamp_ms: 1788460353479, speed: 0 }, volume: 55 });
   assert.deepEqual(p, { positionMs: 4200, timestampMs: 1788460353479, speed: 0, playing: false, volume: 55 }, "readPlayback: status/position anchor/volume");
   const ps = readPlayback({ type: "position_sync", position: { position_ms: 10, timestamp_ms: 1788460353480, speed: 1 } });
@@ -1026,13 +1032,13 @@ await test("section 12", async () => {
   assert.equal(readPlayback({}).timestampMs, null, "readPlayback: absent position -> null timestamp");
 });
 
-await test("section 13", async () => {
+await test("readQueue view-model", async () => {
   const q = readQueue({ type: "queue_changed", upcoming: [{ uid: "a", source: "context", item: entity("Levitating", "Dua Lipa", "", 203000) }] });
   assert.deepEqual(q, [{ uri: "spotify:track:x", title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }], "readQueue: reads upcoming list");
   assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no upcoming -> null");
 });
 
-await test("section 14", async () => {
+await test("hashPassword / verifyPassword", async () => {
   const h = hashPassword("hunter2");
   assert.ok(isPasswordHashed(h) && h.startsWith("scrypt$"), "hashPassword: scrypt-encoded");
   assert.equal(h.includes("hunter2"), false, "hashPassword: plaintext not present");
@@ -1044,40 +1050,43 @@ await test("section 14", async () => {
 });
 
 
+// Shared mock req/res for the setup-handler tests below. fakeRes captures the response
+// body; setupReq builds an IncomingMessage with a readable body stream.
+function fakeRes() {
+  let resolveDone!: () => void;
+  const done = new Promise<void>((r) => (resolveDone = r));
+  return {
+    statusCode: 0,
+    headers: {} as Record<string, string>,
+    body: "",
+    done,
+    writeHead(code: number, hdrs?: Record<string, string>) {
+      this.statusCode = code;
+      if (hdrs) for (const [k, v] of Object.entries(hdrs)) this.headers[k.toLowerCase()] = v;
+      return this;
+    },
+    setHeader(k: string, v: string) {
+      this.headers[k.toLowerCase()] = v;
+    },
+    end(chunk?: string | Buffer) {
+      if (chunk) this.body += chunk.toString();
+      resolveDone();
+      return this;
+    },
+  };
+}
+const setupReq = (method: string, url: string, body = ""): IncomingMessage => {
+  const r = Readable.from(body ? [Buffer.from(body)] : []) as unknown as IncomingMessage & Record<string, unknown>;
+  r.method = method;
+  r.url = url;
+  (r as { headers: Record<string, string> }).headers = {};
+  (r as { socket: unknown }).socket = { remoteAddress: "test" };
+  return r as IncomingMessage;
+};
+
 // First-run setup gating: creds unset -> only /setup served, everything else fails
 // closed; POST /setup sets creds + redirects to login; then /setup is unreachable.
-await test("First-run setup gating: creds unset -> only /setup served, everythi...", async () => {
-  function fakeRes() {
-    let resolveDone!: () => void;
-    const done = new Promise<void>((r) => (resolveDone = r));
-    return {
-      statusCode: 0,
-      headers: {} as Record<string, string>,
-      body: "",
-      done,
-      writeHead(code: number, hdrs?: Record<string, string>) {
-        this.statusCode = code;
-        if (hdrs) for (const [k, v] of Object.entries(hdrs)) this.headers[k.toLowerCase()] = v;
-        return this;
-      },
-      setHeader(k: string, v: string) {
-        this.headers[k.toLowerCase()] = v;
-      },
-      end(chunk?: string | Buffer) {
-        if (chunk) this.body += chunk.toString();
-        resolveDone();
-        return this;
-      },
-    };
-  }
-  const setupReq = (method: string, url: string, body = ""): IncomingMessage => {
-    const r = Readable.from(body ? [Buffer.from(body)] : []) as unknown as IncomingMessage & Record<string, unknown>;
-    r.method = method;
-    r.url = url;
-    (r as { headers: Record<string, string> }).headers = {};
-    (r as { socket: unknown }).socket = { remoteAddress: "test" };
-    return r as IncomingMessage;
-  };
+await test("first-run setup gating", async () => {
   const call = (r: ReturnType<typeof fakeRes>, req: IncomingMessage, cfg: Config) =>
     handleWebRequest(req, r as unknown as ServerResponse, cfg, setupCfgPath);
 
@@ -1142,37 +1151,7 @@ await test("First-run setup gating: creds unset -> only /setup served, everythi.
 
 // Setup TOCTOU guard (item D): two concurrent POST /setup for the same config path
 // racing the webConfigured() check must not both save.
-await test("Setup TOCTOU guard (item D): two concurrent POST /setup for the sam...", async () => {
-  function fakeRes() {
-    let resolveDone!: () => void;
-    const done = new Promise<void>((r) => (resolveDone = r));
-    return {
-      statusCode: 0,
-      headers: {} as Record<string, string>,
-      done,
-      writeHead(code: number, hdrs?: Record<string, string>) {
-        this.statusCode = code;
-        if (hdrs) for (const [k, v] of Object.entries(hdrs)) this.headers[k.toLowerCase()] = v;
-        return this;
-      },
-      setHeader(k: string, v: string) {
-        this.headers[k.toLowerCase()] = v;
-      },
-      end() {
-        resolveDone();
-        return this;
-      },
-    };
-  }
-  const setupReq = (body: string): IncomingMessage => {
-    const r = Readable.from([Buffer.from(body)]) as unknown as IncomingMessage & Record<string, unknown>;
-    r.method = "POST";
-    r.url = "/setup";
-    (r as { headers: Record<string, string> }).headers = {};
-    (r as { socket: unknown }).socket = { remoteAddress: "test" };
-    return r as IncomingMessage;
-  };
-
+await test("setup TOCTOU guard", async () => {
   const raceDir = mkdtempSync(join(tmpdir(), "setup-race-"));
   const racePath = join(raceDir, "config.yaml");
   const raceCfg = defaultConfig();
@@ -1181,8 +1160,8 @@ await test("Setup TOCTOU guard (item D): two concurrent POST /setup for the sam.
 
   const r1 = fakeRes();
   const r2 = fakeRes();
-  handleWebRequest(setupReq(body), r1 as unknown as ServerResponse, raceCfg, racePath);
-  handleWebRequest(setupReq(body), r2 as unknown as ServerResponse, raceCfg, racePath);
+  handleWebRequest(setupReq("POST", "/setup", body), r1 as unknown as ServerResponse, raceCfg, racePath);
+  handleWebRequest(setupReq("POST", "/setup", body), r2 as unknown as ServerResponse, raceCfg, racePath);
   await Promise.all([r1.done, r2.done]);
 
   // Node's fully-synchronous-after-readBody handler means one request's completion
