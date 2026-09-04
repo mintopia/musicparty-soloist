@@ -135,6 +135,8 @@ export function generateFilterChainConf(delays: Record<string, number>, tokens: 
       media.class = Audio/Filter
       audio.channels = 2
       audio.position = [ FL FR ]
+      capture.props  = { node.autoconnect = false }
+      playback.props = { node.autoconnect = false }
       filter.graph = {
         nodes = [
           { type = builtin label = delay name = dL config = { "max-delay" = 5.0 } control = { "Delay (s)" = ${seconds} } }
