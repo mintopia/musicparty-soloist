@@ -4,10 +4,17 @@ import { reactive, ref, computed } from "vue";
 export type Config = Record<string, Record<string, unknown>>;
 export interface Summary {
   pendingRestart?: boolean;
-  dockerMode?: boolean;
   [k: string]: unknown;
 }
-type SaveStatus = "idle" | "unsaved" | "saving" | "saved";
+type SaveStatus = "idle" | "saving" | "saved";
+
+// The maskConfig contract masks only these fields to a boolean `true` when set; every
+// other config value is passed through verbatim. Flagging any `=== true` value as a
+// secret would mislabel genuine booleans, so match this fixed list (mirrors src/web).
+const SECRET_FIELDS: [string, string][] = [
+  ["soloist", "apiKey"], ["proxy", "token"], ["webhooks", "secret"],
+  ["relay", "authorization"], ["web", "password"],
+];
 
 async function api(path: string, opts?: RequestInit) {
   const res = await fetch(path, { credentials: "same-origin", ...opts });
@@ -33,11 +40,8 @@ function replace(target: Config, next: Config) {
 
 function deriveSecrets(cfg: Config) {
   for (const k of Object.keys(secretSet)) delete secretSet[k];
-  for (const section of Object.keys(cfg)) {
-    const sec = cfg[section];
-    if (sec && typeof sec === "object") {
-      for (const key of Object.keys(sec)) secretSet[`${section}.${key}`] = sec[key] === true;
-    }
+  for (const [section, key] of SECRET_FIELDS) {
+    secretSet[`${section}.${key}`] = cfg[section]?.[key] === true;
   }
 }
 
@@ -62,6 +66,7 @@ async function save() {
   saved.value = JSON.stringify(updated);
   deriveSecrets(updated);
   status.value = "saved";
+  setTimeout(() => { if (status.value === "saved") status.value = "idle"; }, 1200);
   await refreshSummary();
 }
 

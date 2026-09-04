@@ -21,7 +21,5 @@ const sections = () => Object.keys(config);
 </template>
 
 <style scoped>
-.view { padding: 22px; }
-h1 { font-family: var(--disp); font-weight: 700; font-size: 22px; letter-spacing: -.015em; margin: 0 0 4px; }
 p { font-size: 14px; }
 </style>

@@ -81,7 +81,7 @@ onMounted(() => {
 .theme-toggle { font-size: 15px; line-height: 1; padding: 8px 11px; }
 .banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  background: var(--warn-s); border: 1px solid var(--warn); color: var(--warn);
+  background: var(--warn-s); border: 1px solid #f0d9a8; color: var(--warn);
   border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-weight: 600; font-size: 13px;
 }
 .savebar {

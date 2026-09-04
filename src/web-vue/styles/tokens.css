@@ -82,3 +82,7 @@ a:hover { color: var(--ind-h); }
 .field.ro { background: #f1f1ee; color: var(--dim); }
 .navi { font-size: 13px; font-weight: 600; color: var(--dim); padding: 9px 12px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; gap: 9px; }
 .navi.act { background: var(--ind-s); color: var(--ind); }
+
+/* Routed placeholder view (shared shell for the not-yet-ported tabs). */
+.view { padding: 22px; }
+.view h1 { font-family: var(--disp); font-weight: 700; font-size: 22px; letter-spacing: -.015em; margin: 0 0 4px; }

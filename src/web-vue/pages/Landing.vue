@@ -31,8 +31,6 @@ const { state, positionMs, isStale, sendCommand } = usePlayback();
 </template>
 
 <style scoped>
-.view { padding: 22px; }
-h1 { font-family: var(--disp); font-weight: 700; font-size: 22px; letter-spacing: -.015em; margin: 0 0 4px; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 18px 0; font-size: 14px; }
 dt { color: var(--dim); font-weight: 600; }
 dd { margin: 0; font-family: var(--disp); }
