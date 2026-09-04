@@ -44,18 +44,25 @@ const CONTENT_TYPES: Record<string, string> = {
 // forever with no revocation — anything older than this is rejected outright.
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-export function signSession(username: string, secret: string): string {
+// Derives the MAC key from the session secret AND the current password, so rotating the
+// password (e.g. because it leaked) revokes every live session. The password stays in the
+// key, never the visible payload. `pwBinding` defaults to "" for callers that don't bind.
+function sessionKey(secret: string, pwBinding: string): Buffer {
+  return createHmac("sha256", secret).update("pw\0").update(pwBinding).digest();
+}
+
+export function signSession(username: string, secret: string, pwBinding = ""): string {
   const payload = `${username}|${Date.now()}`;
   const p = Buffer.from(payload).toString("base64url");
-  const mac = createHmac("sha256", secret).update(p).digest("base64url");
+  const mac = createHmac("sha256", sessionKey(secret, pwBinding)).update(p).digest("base64url");
   return `${p}.${mac}`;
 }
 
-export function verifySession(token: string, secret: string): string | null {
+export function verifySession(token: string, secret: string, pwBinding = ""): string | null {
   const dot = token.lastIndexOf(".");
   if (dot < 0) return null;
   const p = token.slice(0, dot);
-  const expected = createHmac("sha256", secret).update(p).digest();
+  const expected = createHmac("sha256", sessionKey(secret, pwBinding)).update(p).digest();
   let got: Buffer;
   try {
     got = Buffer.from(token.slice(dot + 1), "base64url");
@@ -88,7 +95,7 @@ export function sessionUser(req: IncomingMessage, cfg: Config): string | null {
   if (!webConfigured(cfg)) return null;
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   if (!token) return null;
-  const user = verifySession(token, cfg.web.sessionSecret);
+  const user = verifySession(token, cfg.web.sessionSecret, cfg.web.password);
   return user !== null && safeStrEqual(user, cfg.web.username) ? user : null;
 }
 
@@ -193,7 +200,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 // No Secure flag: the Proxy is commonly reached over plain HTTP on the LAN, so
 // requiring HTTPS would silently break login. HttpOnly + SameSite=Lax stand.
 function setSession(res: ServerResponse, cfg: Config): void {
-  const token = signSession(cfg.web.username, cfg.web.sessionSecret);
+  const token = signSession(cfg.web.username, cfg.web.sessionSecret, cfg.web.password);
   res.setHeader("set-cookie", `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`);
 }
 

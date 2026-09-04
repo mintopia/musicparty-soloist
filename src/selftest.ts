@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth } from "./auth.js";
+import { checkAuth, sameOrigin } from "./auth.js";
 import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
 import { resolveWebhookUrl, WebhookQueue, recordWebhookStat, type WebhookStats } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
@@ -74,10 +74,18 @@ assert.equal(checkAuth(req({ authorization: "Bearer " + CT + "x" }), authCfg(CT,
 assert.equal(checkAuth(req({}, "/?token="), authCfg(CT, "")), "none", "empty presented never matches empty readonly");
 assert.equal(checkAuth(req({}, "/?token="), authCfg("", "")), "none", "setup mode: empty proxy.token never grants control");
 assert.equal(
-  checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET)}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
+  checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
   "control",
   "valid web session -> control",
 );
+
+// sameOrigin: cookie-authed WS upgrades must be same-origin (CSWSH defense). Token
+// clients bypass this; only the tokenless cookie path is gated in proxy's upgrade handler.
+assert.equal(sameOrigin(req({ origin: "http://host:8687", host: "host:8687" })), true, "matching origin/host");
+assert.equal(sameOrigin(req({ origin: "http://evil.example", host: "host:8687" })), false, "cross-origin rejected");
+assert.equal(sameOrigin(req({ host: "host:8687" })), false, "missing Origin rejected (browsers always send it)");
+assert.equal(sameOrigin(req({ origin: "http://host:8687" })), false, "missing Host rejected");
+assert.equal(sameOrigin(req({ origin: "::not a url::", host: "host:8687" })), false, "unparseable Origin rejected");
 
 const buf = (s: string): RawData => Buffer.from(s) as unknown as RawData;
 assert.deepEqual(decodeFrame(buf('{"type":"auth_state","logged_in":true}'), false), {
@@ -104,7 +112,7 @@ assert.equal(coerceInt("nope", 7), 7, "non-numeric falls back to default");
 // rather than silently producing NaN.
 assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
 assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
-assert.deepEqual(listenParts("[::1]:8687"), { host: "[::1]", port: 8687 }, "IPv6 literal splits at the port colon, not an inner one");
+assert.deepEqual(listenParts("[::1]:8687"), { host: "::1", port: 8687 }, "IPv6 literal splits at the port colon and sheds its brackets for server.listen");
 assert.throws(() => listenParts("8687"), /invalid proxy.listen/, "no colon: clear error, not NaN");
 assert.throws(() => listenParts("host:notaport"), /invalid proxy.listen/, "non-numeric port: clear error");
 assert.throws(() => listenParts("host:0"), /invalid proxy.listen/, "port 0: clear error");
@@ -424,12 +432,16 @@ assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
 // Session never expires (item 2 fix): a cookie older than the max age is rejected
 // even with a valid signature.
 {
+  // Mirror web.ts's key derivation (secret + password binding) so we can forge a cookie
+  // with a chosen issued-at. Default binding "" matches an unbound signSession/verifySession.
+  const mkMac = (payload: string, pw = "") => {
+    const key = createHmac("sha256", SECRET).update("pw\0").update(pw).digest();
+    return createHmac("sha256", key).update(payload).digest("base64url");
+  };
   const oldPayload = Buffer.from(`admin|${Date.now() - 31 * 24 * 60 * 60 * 1000}`).toString("base64url");
-  const mac = createHmac("sha256", SECRET).update(oldPayload).digest("base64url");
-  assert.equal(verifySession(`${oldPayload}.${mac}`, SECRET), null, "expired session rejected");
+  assert.equal(verifySession(`${oldPayload}.${mkMac(oldPayload)}`, SECRET), null, "expired session rejected");
   const freshPayload = Buffer.from(`admin|${Date.now() - 24 * 60 * 60 * 1000}`).toString("base64url");
-  const freshMac = createHmac("sha256", SECRET).update(freshPayload).digest("base64url");
-  assert.equal(verifySession(`${freshPayload}.${freshMac}`, SECRET), "admin", "1-day-old session still valid");
+  assert.equal(verifySession(`${freshPayload}.${mkMac(freshPayload)}`, SECRET), "admin", "1-day-old session still valid");
 }
 
 assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
@@ -443,11 +455,16 @@ assert.equal(webConfigured(webCfg("", "")), false, "creds unset -> not configure
 assert.equal(webConfigured(webCfg("admin", "")), false, "half-set creds -> not configured");
 
 const cfgSet = webCfg("admin", "pw");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET)}`), cfgSet), "admin", "valid cookie -> user");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong")}`), cfgSet), null, "bad-secret cookie -> null");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET)}`), cfgSet), null, "cookie for other user -> null");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), cfgSet), "admin", "valid cookie -> user");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong", "pw")}`), cfgSet), null, "bad-secret cookie -> null");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET, "pw")}`), cfgSet), null, "cookie for other user -> null");
 assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET)}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
+
+// Rotating the password revokes live sessions: the MAC key folds in the password, so a
+// cookie signed under the old password no longer verifies once it changes.
+assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "old-pw")}`), webCfg("admin", "new-pw")), null, "password change revokes existing session");
+assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B"), null, "session signed under a different password is rejected");
 
 // Hub read-only drop + state replay, against a real in-process upstream.
 {

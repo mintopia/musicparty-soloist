@@ -22,6 +22,20 @@ function tokenEquals(presented: string, token: string): boolean {
 
 export type AuthTier = "control" | "readonly" | "none";
 
+// CSWSH defense for cookie-authenticated upgrades: a browser always sends Origin on a
+// WebSocket handshake, so require it to match the Host we were reached on. Token clients
+// (presentedToken !== null) are exempt — they're not browsers and carry no ambient cookie.
+export function sameOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers["origin"];
+  const host = req.headers["host"];
+  if (!origin || !host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
   const presented = presentedToken(req);
   if (presented !== null) {
