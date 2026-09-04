@@ -776,7 +776,6 @@ const PREVIEW_LINES = [
   { time: 6, text: "Never gonna make you cry" },
   { time: 8, text: "Never gonna say goodbye" },
 ];
-const PREVIEW_IDX = 2;
 
 let overlayEngine = null;
 async function loadOverlayEngine() {
@@ -1043,7 +1042,11 @@ function previewFrame() {
     const idx = overlayEngine ? overlayEngine.currentIndex(pl.lines, nowMs() / 1000 + off) : -1;
     return { lines: pl.lines, idx };
   }
-  return { lines: PREVIEW_LINES, idx: PREVIEW_IDX };
+  // No live lyrics: cycle the sample so the motion style animates. Ping-pong (0..n..0)
+  // keeps every step a single line, so the preview glides instead of snapping on wrap.
+  const span = PREVIEW_LINES.length - 1;
+  const pos = Math.floor(Date.now() / 2000) % (span * 2);
+  return { lines: PREVIEW_LINES, idx: pos <= span ? pos : span * 2 - pos };
 }
 
 // Guards tickPreview: only re-render when the active line (or the lyric set) changes,
