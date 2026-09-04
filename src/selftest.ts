@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, decodeFrame, shouldAutoplay, resolveWebhookUrl, WebhookQueue, recordWebhookStat, AUTOPLAY_FRAMES, SoloistHub, SoloistRelay, type UpstreamFrame, type WebhookStats } from "./proxy.js";
+import { checkAuth } from "./auth.js";
+import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
+import { resolveWebhookUrl, WebhookQueue, recordWebhookStat, type WebhookStats } from "./webhooks.js";
+import { SoloistRelay } from "./relay.js";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
@@ -85,6 +89,15 @@ assert.equal(coerceInt("42", 0), 42);
 assert.equal(coerceInt("", 5), 5, "empty falls back to default");
 assert.equal(coerceInt("nope", 7), 7, "non-numeric falls back to default");
 
+// listenParts (item C): split at the LAST colon (IPv6-safe), error clearly on garbage
+// rather than silently producing NaN.
+assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
+assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
+assert.deepEqual(listenParts("[::1]:8687"), { host: "[::1]", port: 8687 }, "IPv6 literal splits at the port colon, not an inner one");
+assert.throws(() => listenParts("8687"), /invalid proxy.listen/, "no colon: clear error, not NaN");
+assert.throws(() => listenParts("host:notaport"), /invalid proxy.listen/, "non-numeric port: clear error");
+assert.throws(() => listenParts("host:0"), /invalid proxy.listen/, "port 0: clear error");
+
 const frame = (msg: Record<string, unknown>): UpstreamFrame => ({
   type: String(msg.type),
   message: msg,
@@ -137,6 +150,14 @@ const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when dela
 q0.push(() => sync.push(1));
 q0.push(() => sync.push(2));
 assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
+
+// A throwing task must not wedge the drain loop (item E).
+const seen: number[] = [];
+const qThrow = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
+qThrow.push(() => { throw new Error("boom"); });
+qThrow.push(() => seen.push(1));
+assert.deepEqual(seen, [1], "drain continues past a task that throws");
+assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
 
 // Webhook delivery stats: ok/fail counters, lastStatus/lastError per destination.
 const wstats: WebhookStats = new Map();
@@ -353,6 +374,15 @@ assert.equal(applied.soloist.dataDir, sCfg.soloist.dataDir, "locked data_dir unc
 assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
 assert.throws(() => applyApiConfig(sCfg, { webhooks: { urls: "nope" } }), ConfigError, "invalid result rejected");
 
+// Prototype pollution (item 1 fix): a PUT body's "__proto__"/"constructor" keys must
+// never reach Object.prototype via deepMerge.
+{
+  const evil = JSON.parse('{"autoplay":true,"__proto__":{"polluted":"yes"},"soloist":{"__proto__":{"polluted":"yes"}}}');
+  applyApiConfig(sCfg, evil);
+  assert.equal(({} as any).polluted, undefined, "Object.prototype not polluted by top-level __proto__");
+  assert.equal((sCfg as any).polluted, undefined, "target itself not polluted");
+}
+
 // webhooks.urls is a full-replace map: a dropped URL disappears (not merged).
 const whCfgBase = loadConfig(cfgPath);
 whCfgBase.webhooks.urls = { track_changed: "http://a", error: "http://b" };
@@ -362,14 +392,30 @@ assert.deepEqual(whApplied.webhooks.urls, { track_changed: "http://a" }, "remove
 saveConfig(cfgPath, whApplied);
 assert.deepEqual(loadConfig(cfgPath).webhooks.urls, { track_changed: "http://a" }, "webhook URL removal persisted to file");
 
-// Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed.
+// Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed, expiry.
 const SECRET = "sessionsecret";
 const signed = signSession("admin", SECRET);
 assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
 assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
 assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
-assert.equal(verifySession(signed.replace("YWRtaW4", "cm9vdA"), SECRET), null, "tampered payload rejected");
+{
+  // Forge a payload for a different user; its signature won't match the original MAC.
+  const forgedPayload = Buffer.from(`root|${Date.now()}`).toString("base64url");
+  const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
+  assert.equal(verifySession(`${forgedPayload}.${originalMac}`, SECRET), null, "tampered payload rejected");
+}
 assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
+
+// Session never expires (item 2 fix): a cookie older than the max age is rejected
+// even with a valid signature.
+{
+  const oldPayload = Buffer.from(`admin|${Date.now() - 31 * 24 * 60 * 60 * 1000}`).toString("base64url");
+  const mac = createHmac("sha256", SECRET).update(oldPayload).digest("base64url");
+  assert.equal(verifySession(`${oldPayload}.${mac}`, SECRET), null, "expired session rejected");
+  const freshPayload = Buffer.from(`admin|${Date.now() - 24 * 60 * 60 * 1000}`).toString("base64url");
+  const freshMac = createHmac("sha256", SECRET).update(freshPayload).digest("base64url");
+  assert.equal(verifySession(`${freshPayload}.${freshMac}`, SECRET), "admin", "1-day-old session still valid");
+}
 
 assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
 assert.deepEqual(parseCookies(undefined), {}, "no cookie header -> empty");
@@ -796,6 +842,64 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   scfg.soloist.deviceName = "Speaker";
   scfg.soloist.apiKey = "key";
   assert.equal(soloistReady(scfg), true, "web creds + soloist args -> ready");
+}
+
+// Setup TOCTOU guard (item D): two concurrent POST /setup for the same config path
+// racing the webConfigured() check must not both save.
+{
+  function fakeRes() {
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => (resolveDone = r));
+    return {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      done,
+      writeHead(code: number, hdrs?: Record<string, string>) {
+        this.statusCode = code;
+        if (hdrs) for (const [k, v] of Object.entries(hdrs)) this.headers[k.toLowerCase()] = v;
+        return this;
+      },
+      setHeader(k: string, v: string) {
+        this.headers[k.toLowerCase()] = v;
+      },
+      end() {
+        resolveDone();
+        return this;
+      },
+    };
+  }
+  const setupReq = (body: string): IncomingMessage => {
+    const r = Readable.from([Buffer.from(body)]) as unknown as IncomingMessage & Record<string, unknown>;
+    r.method = "POST";
+    r.url = "/setup";
+    (r as { headers: Record<string, string> }).headers = {};
+    (r as { socket: unknown }).socket = { remoteAddress: "test" };
+    return r as IncomingMessage;
+  };
+
+  const raceDir = mkdtempSync(join(tmpdir(), "setup-race-"));
+  const racePath = join(raceDir, "config.yaml");
+  const raceCfg = defaultConfig();
+  raceCfg.web.sessionSecret = "sess";
+  const body = "username=dj&password=hunter2&confirm=hunter2";
+
+  const r1 = fakeRes();
+  const r2 = fakeRes();
+  handleWebRequest(setupReq(body), r1 as unknown as ServerResponse, raceCfg, racePath);
+  handleWebRequest(setupReq(body), r2 as unknown as ServerResponse, raceCfg, racePath);
+  await Promise.all([r1.done, r2.done]);
+
+  // Node's fully-synchronous-after-readBody handler means one request's completion
+  // (claim through save) always finishes atomically before the other's continuation
+  // runs, so the loser may see either this latch or the pre-existing webConfigured()
+  // check — either way, exactly one save must win and the account must be uncorrupted.
+  assert.deepEqual([r1.statusCode, r2.statusCode], [302, 302], "both requests get a redirect response");
+  const locations = [r1.headers.location, r2.headers.location];
+  assert.ok(locations.includes("/login"), "one request completes setup and redirects to login");
+  assert.ok(locations.every((l) => l === "/login" || l === "/setup?error=1"), "no other outcome for a concurrent setup POST");
+  assert.equal(webConfigured(raceCfg), true, "the winner's creds were applied");
+  assert.equal(loadConfig(racePath).web.username, "dj", "exactly one save persisted, uncorrupted");
+  rmSync(raceDir, { recursive: true, force: true });
 }
 
 console.log("selftest OK");

@@ -7,10 +7,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHashed, maskConfig, saveConfig, verifyPassword, type Config } from "./config.js";
-import type { WebhookStats, RelayStatus } from "./proxy.js";
+import type { WebhookStats } from "./webhooks.js";
+import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
 import { listPipewireSinks, reconcileOutputs } from "./pipewire.js";
 import { isDockerMode } from "./supervisor.js";
+import { safeStrEqual } from "./util.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("web");
@@ -27,6 +29,10 @@ const STATIC: Record<string, string> = {
   "/app.css": "app.css",
   "/app.js": "app.js",
   "/overlay.js": "overlay.js",
+  "/frame.js": "frame.js",
+  "/playback.js": "playback.js",
+  "/widgets.js": "widgets.js",
+  "/overlay-panel.js": "overlay-panel.js",
 };
 
 // Client-routed view paths (History API, item 11). Each serves the same authed app
@@ -43,13 +49,12 @@ const CONTENT_TYPES: Record<string, string> = {
   js: "text/javascript; charset=utf-8",
 };
 
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && timingSafeEqual(ab, bb);
-}
+// Session cookie carries an issued-at timestamp so a signed cookie can't be replayed
+// forever with no revocation — anything older than this is rejected outright.
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-export function signSession(payload: string, secret: string): string {
+export function signSession(username: string, secret: string): string {
+  const payload = `${username}|${Date.now()}`;
   const p = Buffer.from(payload).toString("base64url");
   const mac = createHmac("sha256", secret).update(p).digest("base64url");
   return `${p}.${mac}`;
@@ -67,7 +72,12 @@ export function verifySession(token: string, secret: string): string | null {
     return null;
   }
   if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null;
-  return Buffer.from(p, "base64url").toString();
+  const payload = Buffer.from(p, "base64url").toString();
+  const sep = payload.lastIndexOf("|");
+  if (sep < 0) return null;
+  const issuedAt = Number(payload.slice(sep + 1));
+  if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > SESSION_MAX_AGE_MS) return null;
+  return payload.slice(0, sep);
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -88,7 +98,7 @@ export function sessionUser(req: IncomingMessage, cfg: Config): string | null {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   if (!token) return null;
   const user = verifySession(token, cfg.web.sessionSecret);
-  return user !== null && safeEqual(user, cfg.web.username) ? user : null;
+  return user !== null && safeStrEqual(user, cfg.web.username) ? user : null;
 }
 
 export function webConfigured(cfg: Config): boolean {
@@ -246,6 +256,11 @@ async function handlePipewireSinks(res: ServerResponse, cfg: Config): Promise<vo
   }
 }
 
+// TOCTOU guard (item D): two concurrent POST /setup can both observe webConfigured()
+// === false before either has saved. One claim per config path — this app targets
+// exactly one, but the latch is keyed so tests covering several don't collide.
+const setupClaimed = new Set<string>();
+
 // First-run setup: set web creds only, persist, redirect to login. Runs only while
 // web creds are unset (gated in handleWebRequest), so it never overwrites live creds.
 async function handleSetup(
@@ -274,6 +289,11 @@ async function handleSetup(
     redirect(res, "/login");
     return;
   }
+  if (setupClaimed.has(configPath)) {
+    redirect(res, "/setup?error=1");
+    return;
+  }
+  setupClaimed.add(configPath);
   const next = structuredClone(cfg);
   next.web.username = username;
   next.web.password = hashPassword(password);
@@ -281,6 +301,7 @@ async function handleSetup(
     saveConfig(configPath, next);
   } catch (err) {
     log("setup save failed: %s", (err as Error).message);
+    setupClaimed.delete(configPath); // save failed — allow a retry to claim it
     res.writeHead(500).end("Failed to save setup\n");
     return;
   }
@@ -299,7 +320,7 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
   }
   const form = new URLSearchParams(body);
   const password = form.get("password") ?? "";
-  const okUser = safeEqual(form.get("username") ?? "", cfg.web.username);
+  const okUser = safeStrEqual(form.get("username") ?? "", cfg.web.username);
   const okPass = verifyPassword(password, cfg.web.password);
   if (okUser && okPass) {
     // Upgrade a legacy cleartext password to a hash on first successful login.
@@ -360,16 +381,12 @@ export function handleWebRequest(
   }
 
   if (path === "/api/webhooks" && method === "GET") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
-    if (!sessionUser(req, cfg)) return json(res, 401, { error: "unauthorized" }), true;
-    json(res, 200, webhooksView(cfg, stats));
+    if (apiAuthed(req, res, cfg)) json(res, 200, webhooksView(cfg, stats));
     return true;
   }
 
   if (path === "/api/relay" && method === "GET") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
-    if (!sessionUser(req, cfg)) return json(res, 401, { error: "unauthorized" }), true;
-    json(res, 200, relayView(cfg, relayStatus));
+    if (apiAuthed(req, res, cfg)) json(res, 200, relayView(cfg, relayStatus));
     return true;
   }
 

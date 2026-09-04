@@ -1,8 +1,10 @@
-// Lyrics Overlay engine. Pure helpers (parseLRC, currentIndex, escapeHtml) are
-// importable in Node for the selftest; the browser-only bits (renderer, lrclib
-// fetch + localStorage cache, WS) run only when the served page boots them.
+// Lyrics Overlay engine. Pure helpers (parseLRC, currentIndex) are importable in
+// Node for the selftest; the browser-only bits (renderer, lrclib fetch +
+// localStorage cache, WS) run only when the served page boots them.
 // The page embeds the Read-only Token + Overlay Config subset server-side
 // (window.__SOLOIST_OVERLAY__); this engine never reads the Config File.
+
+import { readTrack, readPlayback, nowMs as anchorNowMs, applyAnchor } from "./frame.js";
 
 // [mm:ss.xx] synced-lyric lines -> sorted [{time, text}] (seconds). Metadata
 // tags ([ar:], [ti:], ...) carry no numeric timestamp and are dropped. A line
@@ -34,39 +36,6 @@ export function currentIndex(lines, timeSec) {
     else break;
   }
   return idx;
-}
-
-export function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// Current track from a Soloist frame. track_changed / playback_state nest the
-// Entity under `item`; title = decorations.identity.name, artists =
-// creators[].entity.identity.name, album = parent.entity.identity.name.
-function readTrack(msg) {
-  const item = msg && msg.item;
-  if (!item || typeof item !== "object") return null;
-  const d = item.decorations || {};
-  const title = d.identity?.name || "";
-  const creators = Array.isArray(d.creators) ? d.creators : [];
-  const artist = creators.map((c) => c?.entity?.decorations?.identity?.name).filter(Boolean).join(", ");
-  const album = d.parent?.entity?.decorations?.identity?.name || "";
-  const durationMs = Number(d.playback?.duration_ms) || 0;
-  if (!title && !artist) return null;
-  return { uri: item.uri || "", title, artist, album, durationMs };
-}
-
-function readPlayback(msg) {
-  const p = msg?.position;
-  const positionMs = p && typeof p.position_ms === "number" ? p.position_ms : null;
-  const timestampMs = p && typeof p.timestamp_ms === "number" ? p.timestamp_ms : null;
-  const speed = p && typeof p.speed === "number" ? p.speed : null;
-  const playing = typeof msg?.status === "string" ? msg.status === "playing" : undefined;
-  return { positionMs, timestampMs, speed, playing };
 }
 
 // localStorage lyrics cache. Value is the lrclib record as a JSON object
@@ -113,12 +82,26 @@ async function lrclibSearch(qs) {
   return r.json();
 }
 
-// Synced lyrics for a track: cache -> lrclib get -> lrclib search fallback.
-export async function fetchSyncedLyrics(track) {
+// Synced lyrics for a track: cache -> lrclib get -> lrclib search fallback. Two
+// independent callers (the title-bar marker and the Lyrics-tab preview) can both
+// want the same track's lyrics right after a track change; the cache alone doesn't
+// stop that race since neither request has completed yet. `inflight` shares the one
+// outstanding request per key so a track change never fires two lrclib round-trips.
+const inflight = new Map();
+export function fetchSyncedLyrics(track) {
   const key = track.uri || `${track.artist}|${track.title}`.toLowerCase();
   const cached = cacheGet(key);
-  if (cached !== undefined) return cached.syncedLyrics ? parseLRC(cached.syncedLyrics) : null;
+  if (cached !== undefined) return Promise.resolve(cached.syncedLyrics ? parseLRC(cached.syncedLyrics) : null);
 
+  let p = inflight.get(key);
+  if (!p) {
+    p = fetchSyncedLyricsUncached(track, key).finally(() => inflight.delete(key));
+    inflight.set(key, p);
+  }
+  return p;
+}
+
+async function fetchSyncedLyricsUncached(track, key) {
   let synced = null, plain = null;
   try {
     const p = new URLSearchParams({ track_name: track.title, artist_name: track.artist });
@@ -470,12 +453,9 @@ export function startOverlay(boot) {
   let track = null;
   let fetchSeq = 0;
   // Position anchor: position_ms as of server epoch anchorAt (timestamp_ms), advancing
-  // at `speed` (0 = paused). Interpolate against the server clock (Date.now), NOT
-  // frame-arrival time — a sync sampled seconds ago, or the stale snapshot replayed on
-  // reconnect, would otherwise read as "now", so lyrics drift and worsen as it ages.
-  let anchorMs = 0, anchorAt = 0, speed = 0;
-
-  const nowMs = () => anchorMs + speed * (Date.now() - anchorAt);
+  // at `speed` (0 = paused) — see frame.js for the interpolation rationale.
+  const anchor = { anchorMs: 0, anchorAt: 0, speed: 0 };
+  const nowMs = () => anchorNowMs(anchor);
 
   async function onTrack(next) {
     const same = track && (next.uri ? next.uri === track.uri : next.title === track.title && next.artist === track.artist);
@@ -497,27 +477,24 @@ export function startOverlay(boot) {
     const t = readTrack(msg);
     if (t) void onTrack(t);
     const pb = readPlayback(msg);
-    if (pb.positionMs !== null) {
-      anchorMs = pb.positionMs;
-      anchorAt = pb.timestampMs ?? Date.now();
-      if (pb.speed !== null) speed = pb.speed;
-    } else if (typeof pb.playing === "boolean") {
-      // Status-only frame: re-anchor at the current interpolated position.
-      anchorMs = nowMs();
-      anchorAt = Date.now();
-      speed = pb.playing ? 1 : 0;
-    }
+    applyAnchor(anchor, pb);
   }
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  let backoffMs = 1000;
+  const BACKOFF_MAX_MS = 15000;
   function connect() {
     const ws = new WebSocket(`${proto}//${location.host}/?token=${encodeURIComponent(boot.token || "")}`);
+    ws.onopen = () => { backoffMs = 1000; };
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg && typeof msg === "object" && !Array.isArray(msg)) onFrame(msg);
     };
-    ws.onclose = () => setTimeout(connect, 2000);
+    ws.onclose = () => {
+      setTimeout(connect, backoffMs);
+      backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS);
+    };
     ws.onerror = () => ws.close();
   }
   connect();

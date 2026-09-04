@@ -1,48 +1,23 @@
 // Fronts Soloist's unauthenticated localhost-only control WS with token auth (ADR-0001).
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import type { Config, WebhooksConfig } from "./config.js";
+import type { Config } from "./config.js";
 import type { SoloistControl } from "./supervisor.js";
-import { handleWebRequest, sessionUser } from "./web.js";
+import { checkAuth } from "./auth.js";
+import { attachWebhooks, STATE_EVENTS } from "./webhooks.js";
+import { SoloistRelay, type RelayStatus } from "./relay.js";
+import { handleWebRequest } from "./web.js";
 import { reconcileOutputs } from "./pipewire.js";
+import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("proxy");
 
-const BEARER = "Bearer ";
-
 const HUB_BACKOFF_BASE = 0.5;
 const HUB_BACKOFF_MAX = 30.0;
 const HUB_READY_TIMEOUT = 5.0;
-
-export function presentedToken(req: IncomingMessage): string | null {
-  const auth = req.headers["authorization"];
-  if (auth && auth.startsWith(BEARER)) return auth.slice(BEARER.length);
-  const url = new URL(req.url ?? "/", "http://localhost");
-  return url.searchParams.get("token");
-}
-
-function tokenEquals(presented: string, token: string): boolean {
-  if (!token) return false;
-  const a = Buffer.from(presented);
-  const b = Buffer.from(token);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-export type AuthTier = "control" | "readonly" | "none";
-
-export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
-  const presented = presentedToken(req);
-  if (presented !== null) {
-    if (tokenEquals(presented, cfg.proxy.token)) return "control";
-    if (tokenEquals(presented, cfg.proxy.readonlyToken)) return "readonly";
-  }
-  if (sessionUser(req, cfg)) return "control";
-  return "none";
-}
 
 export interface UpstreamFrame {
   type: string;
@@ -86,6 +61,7 @@ export class SoloistHub {
   private connectFn: (() => void) | null = null;
   private conn: WebSocket | null = null;
   private ready: { promise: Promise<void>; resolve: () => void };
+  private wake = deferred();
   private stopped = false;
 
   constructor(url: string | (() => string)) {
@@ -178,9 +154,15 @@ export class SoloistHub {
     }
   }
 
+  private signalWake(): void {
+    this.wake.resolve();
+    this.wake = deferred();
+  }
+
   stop(): void {
     this.stopped = true;
     this.conn?.close();
+    this.signalWake();
   }
 
   async run(): Promise<void> {
@@ -213,23 +195,24 @@ export class SoloistHub {
       }
       if (this.stopped) break;
       log("soloist upstream down; reconnecting in %ss", backoff);
-      await sleep(backoff * 1000);
+      // Backoff, but wake early on stop() so shutdown never waits out the cap.
+      await Promise.race([sleep(backoff * 1000), this.wake.promise]);
       backoff = Math.min(backoff * 2, HUB_BACKOFF_MAX);
     }
   }
 }
 
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => (resolve = r));
-  return { promise, resolve };
-}
-
-function listenParts(listen: string): { host: string; port: number } {
+// Parses "HOST:PORT" from the last colon, so an IPv6 literal like "[::1]:8687" still
+// splits at the port separator rather than an inner colon.
+export function listenParts(listen: string): { host: string; port: number } {
   const i = listen.lastIndexOf(":");
-  const host = i > 0 ? listen.slice(0, i) : "0.0.0.0";
+  if (i < 0) throw new Error(`invalid proxy.listen "${listen}": expected HOST:PORT`);
+  const host = listen.slice(0, i) || "0.0.0.0";
   const port = Number(listen.slice(i + 1));
-  return { host: host || "0.0.0.0", port };
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`invalid proxy.listen "${listen}": bad port`);
+  }
+  return { host, port };
 }
 
 export interface RunningProxy {
@@ -256,220 +239,6 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
     log("autoplay: logged in, injecting activate then play");
     for (const frame of AUTOPLAY_FRAMES) hub.inject(frame);
   });
-}
-
-const STATE_EVENTS = new Set([
-  "auth_state", "playback_state", "track_changed", "playback_changed", "volume_changed",
-  "device_changed", "context_changed", "options_changed", "position_sync", "queue_changed",
-]);
-
-export function resolveWebhookUrl(type: string, cfg: WebhooksConfig): string | null {
-  const override = cfg.urls[type];
-  if (override) return override;
-  if (STATE_EVENTS.has(type) && cfg.defaultUrl) return cfg.defaultUrl;
-  return null;
-}
-
-export const WEBHOOK_QUEUE_CAP = 1000;
-const WEBHOOK_TIMEOUT_MS = 5000;
-
-export class WebhookQueue {
-  private queue: (() => void)[] = [];
-  private draining = false;
-  private schedule: (fn: () => void, ms: number) => void;
-  private cap: number;
-  private onDrop: () => void;
-
-  private getDelay: () => number;
-
-  constructor(
-    delay: number | (() => number),
-    opts: { schedule?: (fn: () => void, ms: number) => void; cap?: number; onDrop?: () => void } = {},
-  ) {
-    this.getDelay = typeof delay === "function" ? delay : () => delay;
-    this.schedule = opts.schedule ?? ((fn, ms) => void setTimeout(fn, ms).unref?.());
-    this.cap = opts.cap ?? WEBHOOK_QUEUE_CAP;
-    this.onDrop = opts.onDrop ?? (() => {});
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  push(task: () => void): void {
-    if (this.queue.length >= this.cap) {
-      this.queue.shift();
-      this.onDrop();
-    }
-    this.queue.push(task);
-    if (!this.draining) this.drain();
-  }
-
-  private drain(): void {
-    for (;;) {
-      const task = this.queue.shift();
-      if (!task) {
-        this.draining = false;
-        return;
-      }
-      this.draining = true;
-      task();
-      const delay = this.getDelay();
-      if (delay > 0) {
-        this.schedule(() => this.drain(), delay);
-        return;
-      }
-    }
-  }
-}
-
-export interface WebhookStat {
-  lastStatus: number | null;
-  lastAt: number | null;
-  ok: number;
-  fail: number;
-  lastError: string | null;
-}
-export type WebhookStats = Map<string, WebhookStat>;
-
-async function postWebhook(url: string, body: string, secret: string): Promise<{ status: number | null; error: string | null }> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (secret) headers.authorization = `Bearer ${secret}`;
-  try {
-    const res = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
-    if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
-    return { status: res.status, error: null };
-  } catch (err) {
-    log("webhook %s failed: %s", url, (err as Error).message);
-    return { status: null, error: (err as Error).message };
-  }
-}
-
-export function recordWebhookStat(stats: WebhookStats, url: string, status: number | null, error: string | null): void {
-  const s = stats.get(url) ?? { lastStatus: null, lastAt: null, ok: 0, fail: 0, lastError: null };
-  s.lastStatus = status;
-  s.lastAt = Date.now();
-  if (error === null && status !== null && status >= 200 && status < 300) {
-    s.ok++;
-  } else {
-    s.fail++;
-    s.lastError = error ?? `HTTP ${status}`;
-  }
-  stats.set(url, s);
-}
-
-// Reads cfg.webhooks live (urls, secret, delay) so PUT /api/config edits apply
-// without a restart.
-function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookStats {
-  const stats: WebhookStats = new Map();
-  const queue = new WebhookQueue(() => cfg.webhooks.delayMs, {
-    onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
-  });
-  hub.observe((frame) => {
-    const url = resolveWebhookUrl(frame.type, cfg.webhooks);
-    if (url) queue.push(() => void postWebhook(url, frame.raw, cfg.webhooks.secret).then((r) => recordWebhookStat(stats, url, r.status, r.error)));
-  });
-  return stats;
-}
-
-const RELAY_BACKOFF_BASE = 0.5;
-const RELAY_BACKOFF_MAX = 30.0;
-
-export interface RelayStatus {
-  enabled: boolean;         // url configured
-  connected: boolean;
-  lastConnectAt: number | null;
-  lastError: string | null;
-}
-
-// A persistent outbound WS bridge to a single Relay Server (ADR-0012): republishes
-// every Soloist→downstream frame verbatim, and forwards every received frame raw to
-// the upstream Soloist socket (full control). Reconnects with backoff while a url is
-// configured; re-dials live when url/authorization changes (apply()).
-export class SoloistRelay {
-  private conn: WebSocket | null = null;
-  private stopped = false;
-  private wake = deferred();
-  private appliedUrl: string;
-  private appliedAuth: string;
-  readonly status: RelayStatus = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
-
-  constructor(hub: SoloistHub, private cfg: Config) {
-    this.appliedUrl = cfg.relay.url;
-    this.appliedAuth = cfg.relay.authorization;
-    // Outbound: mirror what a Downstream Client observes, unfiltered, verbatim.
-    hub.observe((frame) => {
-      const c = this.conn;
-      if (c && c.readyState === WebSocket.OPEN) c.send(frame.raw);
-    });
-    // Inbound: raw bytes straight upstream, transparent — the Relay Server is a
-    // full-control peer.
-    this.onMessage = (data, isBinary) => hub.sendUpstream(data, isBinary);
-  }
-
-  private onMessage: (data: RawData, isBinary: boolean) => void;
-
-  private signal(): void {
-    this.wake.resolve();
-    this.wake = deferred();
-  }
-
-  // Re-dial only if url/authorization actually changed, so an unrelated config save
-  // never needlessly drops a healthy relay connection.
-  apply(): void {
-    if (this.cfg.relay.url === this.appliedUrl && this.cfg.relay.authorization === this.appliedAuth) return;
-    this.appliedUrl = this.cfg.relay.url;
-    this.appliedAuth = this.cfg.relay.authorization;
-    this.conn?.close();
-    this.signal();
-  }
-
-  stop(): void {
-    this.stopped = true;
-    this.conn?.close();
-    this.signal();
-  }
-
-  async run(): Promise<void> {
-    let backoff = RELAY_BACKOFF_BASE;
-    while (!this.stopped) {
-      const url = this.cfg.relay.url;
-      this.status.enabled = url !== "";
-      if (!url) {
-        this.status.connected = false;
-        await this.wake.promise; // park until apply()/stop()
-        continue;
-      }
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const headers: Record<string, string> = {};
-          if (this.cfg.relay.authorization) headers.authorization = this.cfg.relay.authorization;
-          const conn = new WebSocket(url, { headers });
-          conn.on("open", () => {
-            log("relay connected to %s", url);
-            this.conn = conn;
-            this.status.connected = true;
-            this.status.lastConnectAt = Date.now();
-            this.status.lastError = null;
-            backoff = RELAY_BACKOFF_BASE;
-          });
-          conn.on("message", (data, isBinary) => this.onMessage(data, isBinary));
-          conn.on("error", (err) => reject(err));
-          conn.on("close", () => resolve());
-        });
-      } catch (err) {
-        this.status.lastError = (err as Error).message;
-        log("relay %s error: %s", url, (err as Error).message);
-      } finally {
-        this.conn = null;
-        this.status.connected = false;
-      }
-      if (this.stopped) break;
-      // Backoff, but wake early on apply()/stop().
-      await Promise.race([sleep(backoff * 1000), this.wake.promise]);
-      backoff = Math.min(backoff * 2, RELAY_BACKOFF_MAX);
-    }
-  }
 }
 
 export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {

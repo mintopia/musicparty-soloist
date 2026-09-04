@@ -57,6 +57,11 @@ export function validateBinary(path: string): boolean {
   return r.status === 0;
 }
 
+// ponytail: no checksum/signature verification — the vendor publishes no checksums to
+// check the tarball against. Accepted risk ceiling: HTTPS-only fetch + an
+// operator-trusted origin (DEFAULT_BASE_URL / SOLOIST_DOWNLOAD_BASE) is the only
+// integrity guarantee before this gets chmod +x'd and executed. Revisit if upstream
+// ever publishes hashes or signatures.
 async function download(url: string, dest: string): Promise<void> {
   const res = await fetch(url);
   if (!res.ok) throw new AcquisitionError(`download ${url} failed: HTTP ${res.status}`);

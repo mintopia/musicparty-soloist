@@ -2,31 +2,13 @@ import { readFileSync, writeFileSync, renameSync, statSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { parse as parseYaml, parseDocument, Document } from "yaml";
+import { safeStrEqual } from "./util.js";
 
 export const DEFAULT_CONFIG_PATH = "./config.yaml";
 export const DEFAULT_PROXY_LISTEN = "0.0.0.0:8687";
 export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
-
-export const DEFAULT_OVERLAY: OverlayConfig = {
-  font: "system-ui, sans-serif",
-  fontSize: 40,
-  color: "#ffffff",
-  neighbourColor: "#ffffff",
-  dimOpacity: 0.35,
-  motion: "slide",
-  easing: "cubic-bezier(.16,1,.3,1)",
-  transitionMs: 350,
-  effect: "none",
-  fxColor: "#ffd24a",
-  fxIntensity: 50,
-  fxDurMs: 1600,
-  alignment: "center",
-  anchor: "bottom",
-  lineCount: 3,
-  timingOffsetMs: 0,
-};
 
 export class ConfigError extends Error {}
 
@@ -58,8 +40,7 @@ export function verifyPassword(plain: string, stored: string): boolean {
 }
 
 function verifyLegacyCleartext(plain: string, stored: string): boolean {
-  const a = Buffer.from(plain), b = Buffer.from(stored);
-  return a.length === b.length && timingSafeEqual(a, b);
+  return safeStrEqual(plain, stored);
 }
 
 export interface SoloistConfig {
@@ -145,6 +126,55 @@ export function coerceFloat(value: unknown, def: number): number {
   return Number.isNaN(n) ? def : n;
 }
 
+function stringField(v: unknown, def: string): string {
+  return String(v ?? def);
+}
+
+// Overlay fields are ~1:1 scalar mappings (camelCase key <-> snake_case yaml key,
+// a default, a coercer) — one table drives DEFAULT_OVERLAY, parseConfig, and
+// configToRaw instead of hand-restating each field three times (mirrors SECRETS below).
+interface OverlayFieldDef {
+  key: keyof OverlayConfig;
+  yaml: string;
+  default: unknown;
+  coerce: (raw: unknown, def: any) => any;
+}
+
+const OVERLAY_FIELDS: OverlayFieldDef[] = [
+  { key: "font", yaml: "font", default: "system-ui, sans-serif", coerce: stringField },
+  { key: "fontSize", yaml: "font_size", default: 40, coerce: coerceInt },
+  { key: "color", yaml: "color", default: "#ffffff", coerce: stringField },
+  { key: "neighbourColor", yaml: "neighbour_color", default: "#ffffff", coerce: stringField },
+  { key: "dimOpacity", yaml: "dim_opacity", default: 0.35, coerce: coerceFloat },
+  { key: "motion", yaml: "motion", default: "slide", coerce: stringField },
+  { key: "easing", yaml: "easing", default: "cubic-bezier(.16,1,.3,1)", coerce: stringField },
+  { key: "transitionMs", yaml: "transition_ms", default: 350, coerce: coerceInt },
+  { key: "effect", yaml: "effect", default: "none", coerce: stringField },
+  { key: "fxColor", yaml: "fx_color", default: "#ffd24a", coerce: stringField },
+  { key: "fxIntensity", yaml: "fx_intensity", default: 50, coerce: coerceInt },
+  { key: "fxDurMs", yaml: "fx_dur_ms", default: 1600, coerce: coerceInt },
+  { key: "alignment", yaml: "alignment", default: "center", coerce: stringField },
+  { key: "anchor", yaml: "anchor", default: "bottom", coerce: stringField },
+  { key: "lineCount", yaml: "line_count", default: 3, coerce: coerceInt },
+  { key: "timingOffsetMs", yaml: "timing_offset_ms", default: 0, coerce: coerceInt },
+];
+
+export const DEFAULT_OVERLAY: OverlayConfig = Object.fromEntries(
+  OVERLAY_FIELDS.map((f) => [f.key, f.default]),
+) as unknown as OverlayConfig;
+
+function parseOverlay(raw: Record<string, any>): OverlayConfig {
+  const out: Record<string, unknown> = {};
+  for (const f of OVERLAY_FIELDS) out[f.key] = f.coerce(raw[f.yaml], f.default);
+  return out as unknown as OverlayConfig;
+}
+
+function overlayToRaw(o: OverlayConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of OVERLAY_FIELDS) out[f.yaml] = (o as unknown as Record<string, unknown>)[f.key];
+  return out;
+}
+
 function parseConfig(raw: unknown): Config {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new ConfigError("Config root must be a mapping");
@@ -214,24 +244,7 @@ function parseConfig(raw: unknown): Config {
       outputs: outputsRaw.map((o: unknown) => String(o)),
       snapcast: coerceBool(audio.snapcast, true),
     },
-    overlay: {
-      font: String(overlay.font ?? DEFAULT_OVERLAY.font),
-      fontSize: coerceInt(overlay.font_size, DEFAULT_OVERLAY.fontSize),
-      color: String(overlay.color ?? DEFAULT_OVERLAY.color),
-      neighbourColor: String(overlay.neighbour_color ?? DEFAULT_OVERLAY.neighbourColor),
-      dimOpacity: coerceFloat(overlay.dim_opacity, DEFAULT_OVERLAY.dimOpacity),
-      motion: String(overlay.motion ?? DEFAULT_OVERLAY.motion),
-      easing: String(overlay.easing ?? DEFAULT_OVERLAY.easing),
-      transitionMs: coerceInt(overlay.transition_ms, DEFAULT_OVERLAY.transitionMs),
-      effect: String(overlay.effect ?? DEFAULT_OVERLAY.effect),
-      fxColor: String(overlay.fx_color ?? DEFAULT_OVERLAY.fxColor),
-      fxIntensity: coerceInt(overlay.fx_intensity, DEFAULT_OVERLAY.fxIntensity),
-      fxDurMs: coerceInt(overlay.fx_dur_ms, DEFAULT_OVERLAY.fxDurMs),
-      alignment: String(overlay.alignment ?? DEFAULT_OVERLAY.alignment),
-      anchor: String(overlay.anchor ?? DEFAULT_OVERLAY.anchor),
-      lineCount: coerceInt(overlay.line_count, DEFAULT_OVERLAY.lineCount),
-      timingOffsetMs: coerceInt(overlay.timing_offset_ms, DEFAULT_OVERLAY.timingOffsetMs),
-    },
+    overlay: parseOverlay(overlay),
   };
 }
 
@@ -303,24 +316,7 @@ function configToRaw(c: Config): Record<string, unknown> {
       outputs: c.audio.outputs,
       snapcast: c.audio.snapcast,
     },
-    overlay: {
-      font: c.overlay.font,
-      font_size: c.overlay.fontSize,
-      color: c.overlay.color,
-      neighbour_color: c.overlay.neighbourColor,
-      dim_opacity: c.overlay.dimOpacity,
-      motion: c.overlay.motion,
-      easing: c.overlay.easing,
-      transition_ms: c.overlay.transitionMs,
-      effect: c.overlay.effect,
-      fx_color: c.overlay.fxColor,
-      fx_intensity: c.overlay.fxIntensity,
-      fx_dur_ms: c.overlay.fxDurMs,
-      alignment: c.overlay.alignment,
-      anchor: c.overlay.anchor,
-      line_count: c.overlay.lineCount,
-      timing_offset_ms: c.overlay.timingOffsetMs,
-    },
+    overlay: overlayToRaw(c.overlay),
   };
 }
 
@@ -412,6 +408,9 @@ export function normalizeConfig(c: Config): Config {
 
 function deepMerge(target: Record<string, any>, source: Record<string, any>): void {
   for (const [k, v] of Object.entries(source)) {
+    // JSON.parse gives "__proto__" as a real own key; bracket-assigning it would
+    // pollute Object.prototype for every object in the process.
+    if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
     const t = target[k];
     if (v && typeof v === "object" && !Array.isArray(v) && t && typeof t === "object" && !Array.isArray(t)) {
       deepMerge(t, v);
