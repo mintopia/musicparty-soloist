@@ -110,8 +110,7 @@ onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 }
 .miniPlayer.stale { opacity: .55; }
 .mpProg { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: var(--ind); border-radius: 0 2px 2px 0; transition: width .25s linear; }
-.mpArt { width: 34px; height: 34px; border-radius: 8px; background-size: cover; background-position: center; background-color: #e5e5e0; flex: 0 0 auto; }
-:root[data-theme="dark"] .mpArt { background-color: var(--line); }
+.mpArt { width: 34px; height: 34px; border-radius: 8px; background-size: cover; background-position: center; background-color: var(--line); flex: 0 0 auto; }
 .mpmeta { min-width: 0; max-width: 150px; }
 .mpTitle { font-size: 13px; font-weight: 600; }
 .mpArtist { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
