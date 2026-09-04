@@ -146,9 +146,17 @@ export function generateFilterChainConf(delays: Record<string, number>, tokens: 
     }
   }`;
   });
-  return `context.modules = [
+  // spa-libs + the adapter module are what let the filter-chain node create its
+  // stream ("no adapter factory found" without them). rt is deliberately omitted:
+  // it hard-fails in the container (no dbus/RTKit) and the delay needs no RT sched.
+  return `context.spa-libs = {
+  audio.convert.* = audioconvert/libspa-audioconvert
+  support.*       = support/libspa-support
+}
+context.modules = [
   { name = libpipewire-module-protocol-native }
   { name = libpipewire-module-client-node }
+  { name = libpipewire-module-adapter }
 ${blocks.join("\n")}
 ]
 `;

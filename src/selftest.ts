@@ -717,6 +717,8 @@ assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayToken
   const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
   assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
   assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
+  assert.ok(conf.includes("libpipewire-module-adapter"), "generateFilterChainConf: adapter module (filter node needs it)");
+  assert.ok(conf.includes("audioconvert/libspa-audioconvert"), "generateFilterChainConf: spa-libs for audio.convert");
   assert.ok(conf.includes(`node.name = "${DELAY_PREFIX}alsa-x"`), "generateFilterChainConf: node.name is soloist-delay-<token>");
   assert.ok(conf.includes('"Delay (s)" = 0.250'), "generateFilterChainConf: ms converted to seconds");
 }
