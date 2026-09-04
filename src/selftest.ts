@@ -833,6 +833,52 @@ await test("supervise readiness gate parks", async () => {
 });
 
 
+// Supervisor state machine: soloistStatus() tracks the loop's transient phase. Drive
+// a full cycle — park → acquire → run → exit-10 re-acquire → run → exit-1 backoff →
+// shutdown — and assert it visits each boundary in order. Records every setState so
+// transient phases (starting/running) are captured without racing the poller.
+await test("supervise state machine transitions", async () => {
+  const sdir = mkdtempSync(join(tmpdir(), "sup-state-"));
+  // First build "expires" (exit 10 -> re-acquire), second "crashes" (exit 1 -> backoff);
+  // each runs ~200ms so the running phase is observable before it exits.
+  const expires = join(sdir, "expires.sh");
+  const crashes = join(sdir, "crashes.sh");
+  writeFileSync(expires, `#!/bin/sh\nsleep 0.2\nexit 10\n`, { mode: 0o755 });
+  writeFileSync(crashes, `#!/bin/sh\nsleep 0.2\nexit 1\n`, { mode: 0o755 });
+  const builds = [expires, crashes];
+  let acq = 0;
+  // Not ready (no web creds) so supervise parks in `waiting` until creds land.
+  const stCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "", password: "", sessionSecret: "" } } as unknown as Config;
+  const control = new SoloistControl();
+  const history: string[] = [];
+  const record = control.setState.bind(control);
+  control.setState = (s) => { history.push(s); record(s); };
+  const ac = new AbortController();
+  const waitState = async (s: string) => { for (let i = 0; i < 300 && control.soloistStatus().state !== s; i++) await new Promise((r) => setTimeout(r, 20)); };
+
+  const supP = supervise(stCfg, { signal: ac.signal, control, acquire: async () => builds[Math.min(acq++, builds.length - 1)] });
+  supP.catch(() => {});
+
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(control.soloistStatus().state, "waiting", "parks in waiting before config is ready");
+  stCfg.web.username = "dj";
+  stCfg.web.password = "pw";
+
+  await waitState("backoff");
+  ac.abort();
+  await waitState("stopped");
+  await supP.catch(() => {});
+
+  assert.deepEqual(
+    history,
+    ["waiting", "acquiring", "starting", "running", "expired-reacquiring", "starting", "running", "backoff", "stopped"],
+    "state machine visits each loop boundary in order",
+  );
+  assert.deepEqual(control.soloistStatus(), { state: "stopped" }, "soloistStatus exposes the live terminal state");
+  rmSync(sdir, { recursive: true, force: true });
+});
+
+
 // PipeWire fan-out (ADR-0011, ticket T9).
 const pwDump = JSON.stringify([
   { info: { props: { "media.class": "Audio/Sink", "node.name": "soloist-sink", "node.description": "Soloist" } } },
