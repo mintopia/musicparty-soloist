@@ -40,17 +40,15 @@ const { parseLRC, currentIndex } = engine as {
   currentIndex(lines: { time: number }[], t: number): number;
 };
 
-// Landing-page view-model helpers, same browser-ESM dynamic-import pattern.
-const landing = await import(new URL("./web/app.js", import.meta.url).href);
+// Wire-format decoders (ADR-0014 seam): framework-free, shared by the vanilla overlay
+// and — as lib/wire.ts — the Vue app. Imported headless here, same browser-ESM pattern.
+const landing = await import(new URL("./web/frame.js", import.meta.url).href);
 const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
   fmtTime(ms: number): string;
   readTrack(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string } | null;
   readPlayback(msg: any): { positionMs: number | null; timestampMs: number | null; speed: number | null; playing?: boolean; volume: number | null };
   readQueue(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string }[] | null;
-  hexToHsl(hex: string): [number, number, number];
-  hslToHex(h: number, s: number, l: number): string;
 };
-const { hexToHsl, hslToHex } = landing;
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -783,22 +781,6 @@ assert.equal(fmtTime(194000), "3:14");
 assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
 assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
 
-// HSL colour helpers: pure hex round-trips and known anchors.
-assert.deepEqual(hexToHsl("#ffffff"), [0, 0, 100]);
-assert.deepEqual(hexToHsl("#000000"), [0, 0, 0]);
-assert.deepEqual(hexToHsl("#ff0000"), [0, 100, 50]);
-assert.equal(hslToHex(0, 100, 50), "#ff0000");
-assert.equal(hslToHex(120, 100, 50), "#00ff00");
-assert.equal(hslToHex(240, 100, 50), "#0000ff");
-// Integer-HSL round-trip is near-exact (quantisation ≤ a few 1/255 steps per channel).
-for (const hex of ["#0d9488", "#ffd24a", "#5eead4", "#123456"]) {
-  const [h, s, l] = hexToHsl(hex);
-  const back = hslToHex(h, s, l);
-  for (let i = 1; i < 7; i += 2) {
-    const d = Math.abs(parseInt(hex.slice(i, i + 2), 16) - parseInt(back.slice(i, i + 2), 16));
-    assert.ok(d <= 3, `HSL round-trip ${hex} -> ${back} channel drift ${d}`);
-  }
-}
 // Sample built to the real Soloist Entity schema (decorations.identity/creators/
 // parent/visual_identity/playback).
 const entity = (name: string, artist: string, album: string, durationMs: number, covers: { url: string; size: string }[] = []) => ({
@@ -893,7 +875,7 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   let r = fakeRes();
   assert.equal(call(r, setupReq("GET", "/setup"), scfg), true, "GET /setup handled in setup mode");
   assert.equal(r.statusCode, 200, "GET /setup served in setup mode");
-  assert.match(r.body, /Welcome to Soloist Proxy/, "setup page rendered");
+  assert.match(r.body, /Soloist Proxy — Setup/, "setup page shell served (Vue mounts the form client-side)");
 
   r = fakeRes();
   call(r, setupReq("GET", "/"), scfg);

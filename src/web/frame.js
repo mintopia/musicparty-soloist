@@ -1,7 +1,7 @@
-// Soloist wire-format readers + playback-position anchor math. Single source of
-// truth for the Soloist frame shape (see src/proxy.ts STATE_EVENTS) shared by the
-// Landing Page (playback.js) and the Lyrics Overlay (overlay.js) — a future Soloist
-// format change lands here once instead of in two copy-pasted places.
+// Soloist wire-format readers + playback-position anchor math. The vanilla Lyrics
+// Overlay (overlay.js) imports these directly; the Vue app carries a typed port in
+// src/web-vue/lib/wire.ts. selftest imports this module headless (ADR-0014 seam) —
+// the framework-free source of truth for the Soloist frame shape (proxy.ts STATE_EVENTS).
 
 // A Soloist Entity's decorations -> flat track (Soloist WebSocket API): title =
 // identity.name, artists = creators[].entity.identity.name, album =
@@ -31,6 +31,19 @@ function pickCover(covers) {
 // track_changed and playback_state both nest the current track under `item`.
 export function readTrack(msg) {
   return msg && msg.item ? entityToTrack(msg.item) : null;
+}
+
+// queue_changed.upcoming = [{uid, source, item:Entity}] — the up-next list.
+export function readQueue(msg) {
+  const list = msg && msg.upcoming;
+  if (!Array.isArray(list)) return null;
+  return list.map((e) => entityToTrack(e && e.item) || { uri: "", title: "", artist: "", album: "", durationMs: 0, art: "" });
+}
+
+export function fmtTime(ms) {
+  const s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
 // The position anchor rides playback_state + position_sync as

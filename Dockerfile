@@ -66,9 +66,11 @@ RUN set -eux; \
     rm -rf /tmp/snapserver.deb /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json vite.config.ts ./
 RUN npm ci
 COPY src ./src
+# tsc (server) + vite build (Vue web UI, ADR-0014); prune drops the build toolchain
+# so the runtime image still runs `node dist/main.js` with no toolchain present.
 RUN npm run build && npm prune --omit=dev
 
 # Packaged starter config. Not the live file: docker-compose bind-mounts /config,
