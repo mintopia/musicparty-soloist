@@ -10,7 +10,9 @@ soloist:
   data_dir: "/data"               # persistent session state (Docker volume);
                                   # use "./.soloist-data" when running standalone
   extra_args: []
-  # Docker-only: PipeWire null-sink to play into. Empty in standalone (no audio path).
+  # PipeWire node Soloist outputs to. Docker uses the soloist-sink null-sink (set by
+  # the container). In standalone, set a device node.name here (or pass --pipewire-device)
+  # to pick an output, or leave empty for Soloist's default sink.
   pipewire_device: ""
 
 proxy:
