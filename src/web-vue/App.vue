@@ -3,6 +3,7 @@ import { computed, onMounted } from "vue";
 import { useTheme } from "./composables/useTheme";
 import { useConfig } from "./composables/useConfig";
 import { usePlayback } from "./composables/usePlayback";
+import MiniPlayer from "./components/MiniPlayer.vue";
 
 const { theme, toggle } = useTheme();
 const cfg = useConfig();
@@ -42,8 +43,7 @@ onMounted(() => {
         </RouterLink>
       </nav>
       <div class="topbar-right">
-        <!-- mini-player mounts here in a later ticket -->
-        <div id="mini-player" class="mini-player-mount"></div>
+        <MiniPlayer />
         <button class="btn theme-toggle" :title="theme === 'dark' ? 'Switch to light' : 'Switch to dark'" @click="toggle">
           {{ theme === "dark" ? "☾" : "☀" }}
         </button>
