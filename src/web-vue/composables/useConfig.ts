@@ -87,6 +87,13 @@ async function restartSoloist() {
   await refreshSummary();
 }
 
+// Fetch one allowlisted secret's plaintext for the reveal toggle (server 404s any
+// key outside REVEALABLE). Kept here so all config API calls share the `api` helper.
+async function revealSecret(section: string, key: string): Promise<string> {
+  const r = await api(`/api/secret?section=${encodeURIComponent(section)}&key=${encodeURIComponent(key)}`);
+  return r.value as string;
+}
+
 export function useConfig() {
-  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, refreshSummary, restartSoloist };
+  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, refreshSummary, restartSoloist, revealSecret };
 }
