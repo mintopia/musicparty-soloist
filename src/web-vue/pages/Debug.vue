@@ -3,8 +3,8 @@ import { ref, onMounted } from "vue";
 import { highlightJson } from "../lib/highlight";
 import "highlight.js/styles/github.css";
 
-// Stub Debug view — its only job for T7 is to establish the lazy async chunk that pulls
-// in hljs + the theme CSS (ADR-0018). The real inspector UI lands in T10 (#33). v-html
+// Stub Debug view — its only job is to establish the lazy async chunk that pulls in hljs
+// and the theme CSS (ADR-0018); the full inspector UI arrives in a later change. v-html
 // receives only highlightJson's HTML-escaped output (ADR-0016 XSS boundary).
 const html = ref("");
 

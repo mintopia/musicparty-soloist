@@ -17,7 +17,7 @@ export default defineConfig({
     outDir: r("./dist/web"),
     emptyOutDir: true,
     // Emit .vite/manifest.json so the selftest can assert hljs + its theme CSS land in
-    // the lazy Debug chunk, not any entry bundle (T7 acceptance, ADR-0018).
+    // the lazy Debug chunk, not any entry bundle (ADR-0018).
     manifest: true,
     rollupOptions: {
       input: {

@@ -14,7 +14,7 @@ const routes: RouteRecordRaw[] = [
   { path: "/lyrics", name: "lyrics", component: Lyrics },
   { path: "/settings", name: "settings", component: Settings },
   // Lazy so hljs + its theme CSS split into a Debug-only async chunk (ADR-0018), never
-  // the main bundle. The real inspector UI lands in T10 (#33).
+  // the main bundle.
   { path: "/debug", name: "debug", component: () => import("./pages/Debug.vue") },
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];

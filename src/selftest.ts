@@ -1202,9 +1202,9 @@ await test("setup TOCTOU guard", async () => {
 
 
 await test("highlightJson escapes XSS payloads to inert text", async () => {
-  // The two canonical break-out attempts from the T7 contract: an attribute-handler
-  // injection and a tag that tries to close hljs's own <pre><code> wrapper. Both must
-  // come back with every raw angle bracket from the input HTML-escaped.
+  // The two canonical break-out attempts (ADR-0016): an attribute-handler injection and
+  // a tag that tries to close hljs's own <pre><code> wrapper. Both must come back with
+  // every raw angle bracket from the input HTML-escaped.
   for (const payload of ['<img src=x onerror=alert(1)>', '</code></pre><script>alert(1)</script>']) {
     const out = await highlightJson(JSON.stringify({ v: payload }));
     // hljs wraps tokens in its own <span class="hljs-…"> tags; strip those and any of its
@@ -1219,7 +1219,7 @@ await test("highlightJson escapes XSS payloads to inert text", async () => {
 
 await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle", async () => {
   // manifest: true (vite.config.ts) lets us prove the code-split from the emitted graph
-  // rather than by eyeballing bundle sizes (T7 acceptance, ADR-0018).
+  // rather than by eyeballing bundle sizes (ADR-0018).
   const webDir = new URL("./web/", import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL(".vite/manifest.json", webDir), "utf8")) as Record<
     string,
