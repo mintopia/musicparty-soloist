@@ -18,6 +18,8 @@
   --disp: 'Space Grotesk', system-ui, sans-serif;
   /* elevation */
   --sh: 0 1px 2px rgba(20, 20, 20, .05); --sh2: 0 12px 40px rgba(30, 30, 40, .10);
+  /* docked chrome (topbar / savebar) */
+  --bar: rgba(246, 246, 244, .82); --savebar: rgba(255, 255, 255, .92);
 }
 
 /* Dark theme — warm neutral charcoal (deliberately NOT slate/blue-grey). Only the app
@@ -30,6 +32,7 @@
   --ok: #4ade80; --ok-s: rgba(74, 222, 128, .14); --bad: #f87171; --bad-s: rgba(248, 113, 113, .15);
   --warn: #fbbf24; --warn-s: rgba(251, 191, 36, .14);
   --sh: 0 1px 2px rgba(0, 0, 0, .4); --sh2: 0 12px 40px rgba(0, 0, 0, .5);
+  --bar: rgba(24, 22, 19, .82); --savebar: rgba(24, 22, 19, .92);
 }
 
 /* Global reset + ambient blooms so glass surfaces have something to refract. */
@@ -84,6 +87,8 @@ a:hover { color: var(--ind-h); }
 .navi { font-size: 13px; font-weight: 600; color: var(--dim); padding: 9px 12px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; gap: 9px; }
 .navi.act { background: var(--ind-s); color: var(--ind); }
 
-/* Routed placeholder view (shared shell for the not-yet-ported tabs). */
+/* Shared 720px centered content column (vanilla formCol) — Now/Audio/Webhooks/Settings. */
+.fcol { max-width: 720px; margin: 0 auto; }
+
 .view { padding: 22px; }
 .view h1 { font-family: var(--disp); font-weight: 700; font-size: 22px; letter-spacing: -.015em; margin: 0 0 4px; }

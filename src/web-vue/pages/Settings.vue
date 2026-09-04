@@ -92,7 +92,6 @@ const pill = computed(() => {
 </template>
 
 <style scoped>
-.fcol { max-width: 720px; margin: 0 auto; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; align-items: start; }
 @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
 

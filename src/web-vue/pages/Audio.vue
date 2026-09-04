@@ -52,6 +52,7 @@ function setDelay(name: string, v: string) {
 </script>
 
 <template>
+  <div class="fcol">
   <section class="card view">
     <div class="head">
       <span class="head-title">Audio outputs</span>
@@ -101,6 +102,7 @@ function setDelay(name: string, v: string) {
     <p v-else-if="loaded" class="empty">No PipeWire sinks reported. Is the audio path up?</p>
     <p v-else class="empty">Loading…</p>
   </section>
+  </div>
 </template>
 
 <style scoped>

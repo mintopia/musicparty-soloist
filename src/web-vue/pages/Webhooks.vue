@@ -140,7 +140,7 @@ function statLabel(s: WebhookStat): string {
 </template>
 
 <style scoped>
-.col { display: flex; flex-direction: column; gap: 20px; }
+.col { display: flex; flex-direction: column; gap: 20px; max-width: 720px; margin: 0 auto; }
 .top { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
 .grow { flex: 1; }
 .delay { flex: 0 0 auto; width: 120px; }
