@@ -13,6 +13,18 @@ export const TERM_TIMEOUT = 10.0;
 
 export class Aborted extends Error {}
 
+// The supervisor loop's transient phase, surfaced for the Menu's Soloist status.
+// Mirrors the loop boundaries: waiting-for-config → acquire → start → run → on exit
+// either re-acquire (exit 10) or backoff+restart; `stopped` is terminal (shutdown/crash).
+export type SoloistState =
+  | "waiting"
+  | "acquiring"
+  | "starting"
+  | "running"
+  | "backoff"
+  | "expired-reacquiring"
+  | "stopped";
+
 // Crash-loop backoff arithmetic, pure so it can be table-tested without fake timers.
 // `sleep` is how long to wait before the next restart; `next` is the backoff to carry
 // forward. A run that stayed up past HEALTHY_SECONDS resets to BACKOFF_BASE; otherwise it
@@ -66,9 +78,20 @@ export function buildArgv(cfg: Config): string[] {
 export class SoloistControl {
   private appliedArgv: string | null = null;
   private iter: AbortController | null = null;
+  private state: SoloistState = "waiting";
 
   bindIteration(ac: AbortController): void {
     this.iter = ac;
+  }
+
+  // Supervisor-internal: the loop calls this at each phase boundary. Read-only
+  // consumers (the Menu's Soloist status) go through soloistStatus().
+  setState(state: SoloistState): void {
+    this.state = state;
+  }
+
+  soloistStatus(): { state: SoloistState } {
+    return { state: this.state };
   }
 
   markApplied(cfg: Config): void {
@@ -101,9 +124,10 @@ async function terminate(proc: ChildProcess, timeout = TERM_TIMEOUT): Promise<vo
   }
 }
 
-function runOnce(binary: string, cfg: Config, signal: AbortSignal): Promise<number> {
+function runOnce(binary: string, cfg: Config, signal: AbortSignal, onSpawn?: () => void): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const proc = spawn(binary, buildArgv(cfg), { stdio: "inherit" });
+    if (onSpawn) proc.once("spawn", onSpawn);
     const onAbort = () => {
       log("shutdown requested; terminating soloist (pid %s)", proc.pid);
       terminate(proc).then(() => reject(new Aborted()), reject);
@@ -133,6 +157,12 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     acquire = (force = false) => acquireSoloist(undefined, { force }),
   } = opts;
 
+  // The loop only ever exits by throwing (shutdown Aborted or an unrecoverable
+  // error); either way Soloist is no longer supervised, so the terminal state is
+  // stopped. A restart stays inside the loop and never reaches finally.
+  try {
+  control?.setState("waiting");
+
   // First-run setup / incomplete config: don't spawn until minimally valid. The
   // Setup Page and PUT /api/config mutate cfg in place, so poll it — readiness
   // flips at most once and config edits are human-driven.
@@ -145,11 +175,13 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
   }
 
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
+  control?.setState("acquiring");
   let binary = await acquire();
   let backoff = BACKOFF_BASE;
 
   while (true) {
     if (signal.aborted) throw new Aborted();
+    control?.setState("starting");
 
     // Per-iteration abort: fired by global shutdown OR by control.restart(). A
     // restart aborts just this run and the loop re-spawns; shutdown propagates.
@@ -163,7 +195,7 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     const started = Date.now();
     let code: number;
     try {
-      code = await runOnce(binary, cfg, iter.signal);
+      code = await runOnce(binary, cfg, iter.signal, () => control?.setState("running"));
     } catch (err) {
       signal.removeEventListener("abort", onShutdown);
       if (err instanceof Aborted && !signal.aborted) {
@@ -179,13 +211,18 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     // Exit 0 = Soloist self-quit (our shutdown throws Aborted instead); restart so the container never runs playerless.
     if (code === EXIT_EXPIRED) {
       log("soloist build expired (exit 10); re-acquiring binary");
+      control?.setState("expired-reacquiring");
       binary = await acquire(true);
       backoff = BACKOFF_BASE;
       continue;
     }
     const { sleep: waitS, next } = backoffStep(backoff, ran);
     log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
+    control?.setState("backoff");
     await sleep(waitS * 1000);
     backoff = next;
+  }
+  } finally {
+    control?.setState("stopped");
   }
 }
