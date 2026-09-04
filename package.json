@@ -24,6 +24,9 @@
     "build": "tsc && node -e \"require('fs').cpSync('src/web','dist/web',{recursive:true})\"",
     "start": "node dist/main.js",
     "dev": "npm run build && node dist/main.js",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "typecheck:web": "tsc --noEmit -p src/web-vue/tsconfig.json",
     "test": "npm run build && node dist/selftest.js",
     "prepublishOnly": "npm run build"
   },
@@ -34,6 +37,11 @@
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/ws": "^8.18.1",
-    "typescript": "^7.0.2"
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vue": "^3.5.42",
+    "vue-router": "^4.6.4",
+    "vue-tsc": "^2.2.12"
   }
 }
