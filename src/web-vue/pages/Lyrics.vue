@@ -55,7 +55,8 @@ const ANCHOR_OPTS = [
   { value: "center", title: "Center", icon: anchorIcon(10.5) },
   { value: "bottom", title: "Bottom", icon: anchorIcon(15) },
 ];
-const TABS: [string, string][] = [["layout", "Layout"], ["text", "Text"], ["motion", "Motion & FX"]];
+type OvTab = "layout" | "text" | "motion";
+const TABS: [OvTab, string][] = [["layout", "Layout"], ["text", "Text"], ["motion", "Motion & FX"]];
 
 const PREVIEW_LINES: LyricLine[] = [
   { time: 0, text: "Never gonna give you up" },
@@ -65,7 +66,7 @@ const PREVIEW_LINES: LyricLine[] = [
   { time: 8, text: "Never gonna say goodbye" },
 ];
 
-const ovTab = ref<"layout" | "text" | "motion">("layout");
+const ovTab = ref<OvTab>("layout");
 const overlayUrl = `${location.origin}/overlay`;
 const copyLabel = ref("Copy URL");
 
@@ -97,9 +98,12 @@ function previewFrame(): { lines: LyricLine[]; idx: number } {
   return { lines: PREVIEW_LINES, idx: pos <= span ? pos : span * 2 - pos };
 }
 
+// The vanilla engine takes a loose Record; bridge the typed OverlayCfg once (callers guard).
+const cfgRecord = () => o.value as unknown as Record<string, unknown>;
+
 function remountPreview() {
   if (!previewEl.value || !o.value) return;
-  previewRender = mountPreview(previewEl.value, o.value as unknown as Record<string, unknown>);
+  previewRender = mountPreview(previewEl.value, cfgRecord());
   const { lines, idx } = previewFrame();
   previewRender(lines, idx);
   pvLastIdx = idx; pvLastLines = lines;
@@ -123,7 +127,7 @@ function remountGallery() {
   for (const eff of OV_EFFECTS) {
     const stage = galleryStages[eff];
     if (!stage) continue;
-    const tcfg = { ...(o.value as unknown as Record<string, unknown>), effect: eff, anchor: "center", lineCount: 1, fontSize: 46, motion: "instant" };
+    const tcfg = { ...cfgRecord(), effect: eff, anchor: "center", lineCount: 1, fontSize: 46, motion: "instant" };
     mountPreview(stage, tcfg, { checker: false, refW: 360 })([{ time: 0, text: "Abc" }], 0);
   }
 }
@@ -152,7 +156,7 @@ async function copyUrl() {
 const openUrl = () => window.open(overlayUrl, "_blank");
 
 // Any Overlay Config change re-mounts the preview and the gallery (style-dependent).
-watch(() => JSON.stringify(o.value), () => { remountPreview(); nextTick(remountGallery); });
+watch(o, () => { remountPreview(); nextTick(remountGallery); }, { deep: true });
 // Switching to Motion & FX mounts the gallery once its stages exist.
 watch(ovTab, () => nextTick(remountGallery));
 // Track change re-probes lrclib.
@@ -179,7 +183,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
       </div>
 
       <div class="seg tabs">
-        <button v-for="[k, label] in TABS" :key="k" type="button" :class="{ on: ovTab === k }" @click="ovTab = k as any">{{ label }}</button>
+        <button v-for="[k, label] in TABS" :key="k" type="button" :class="{ on: ovTab === k }" @click="ovTab = k">{{ label }}</button>
       </div>
 
       <template v-if="o">
@@ -322,7 +326,8 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
 .fxstack { display: flex; flex-direction: column; gap: 16px; }
 
 .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.tile { padding: 0; border: 1px solid var(--line2); border-radius: 10px; overflow: hidden; cursor: pointer; background: #14161f; }
+/* Dark tile behind the miniature; mirrors the engine's no-checker stage bg (overlay.js). */
+.tile { --tile-bg: #14161f; padding: 0; border: 1px solid var(--line2); border-radius: 10px; overflow: hidden; cursor: pointer; background: var(--tile-bg); }
 .tile.on { border-color: var(--ind); box-shadow: 0 0 0 2px var(--ind-s); }
 .tile .stage { height: 48px; position: relative; pointer-events: none; }
 .tile .cap { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 4px 0; text-align: center; background: var(--sub); }
