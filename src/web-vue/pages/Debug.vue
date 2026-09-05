@@ -187,11 +187,16 @@ function compact(f: Frame): string {
       <div ref="logEl" class="log" @scroll="onLogScroll">
         <p v-if="!frameRows.length" class="empty">Waiting for frames…</p>
         <div v-for="row in frameRows" :key="row.id" class="frow">
-          <div class="fline" @click="toggleFrame(row.id, row.frame)">
+          <button
+            type="button"
+            class="fline"
+            :aria-expanded="expandedFrames.has(row.id)"
+            @click="toggleFrame(row.id, row.frame)"
+          >
             <span class="ftime">[{{ fmtClock(row.at) }}]</span>
             <span class="ftype">{{ row.type }}</span>
             <span class="fprev">{{ compact(row.frame) }}</span>
-          </div>
+          </button>
           <pre v-if="expandedFrames.has(row.id)" class="hljs json"><code v-html="hlStore[`frame:${row.id}`]"></code></pre>
         </div>
       </div>
@@ -229,13 +234,18 @@ function compact(f: Frame): string {
       <p v-if="!webhookRows.length" class="empty">No deliveries yet.</p>
       <div v-else class="wlist">
         <div v-for="row in webhookRows" :key="row.id" class="wrow">
-          <div class="wline" @click="toggleWebhook(row.id, row.delivery)">
+          <button
+            type="button"
+            class="wline"
+            :aria-expanded="expandedWebhooks.has(row.id)"
+            @click="toggleWebhook(row.id, row.delivery)"
+          >
             <span class="pill" :class="row.status.cls">{{ row.status.label }}</span>
             <span class="wtype">{{ row.delivery.type }}</span>
             <span class="wurl mono">{{ row.delivery.url }}</span>
             <span class="wtime">{{ row.delivery.durationMs }} ms</span>
             <span class="wat">{{ fmtClock(row.delivery.at) }}</span>
-          </div>
+          </button>
           <div v-if="expandedWebhooks.has(row.id)" class="wdetail">
             <p v-if="row.delivery.error" class="werr">{{ row.delivery.error }}</p>
             <div class="wpanel">
@@ -276,8 +286,9 @@ function compact(f: Frame): string {
 .log { max-height: 340px; overflow-y: auto; border: 1px solid var(--line2); border-radius: 12px; background: var(--sub); padding: 8px; }
 .frow { border-bottom: 1px solid var(--line); }
 .frow:last-child { border-bottom: none; }
-.fline { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; cursor: pointer; font-size: 12.5px; }
+.fline { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; cursor: pointer; font-size: 12.5px; width: 100%; text-align: left; background: none; border: none; color: inherit; font-family: inherit; }
 .fline:hover { background: var(--ind-s); border-radius: 6px; }
+.fline:focus-visible { outline: 2px solid var(--ind); outline-offset: -2px; border-radius: 6px; }
 .ftime { color: var(--faint); font-family: var(--disp); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
 .ftype { color: var(--ind); font-weight: 600; flex: 0 0 auto; }
 .fprev { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -297,8 +308,9 @@ function compact(f: Frame): string {
 /* Webhook history. */
 .wlist { display: flex; flex-direction: column; gap: 10px; }
 .wrow { border: 1px solid var(--line); border-radius: 12px; background: var(--sub); overflow: hidden; }
-.wline { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; font-size: 13px; }
+.wline { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; font-size: 13px; width: 100%; text-align: left; background: none; border: none; color: inherit; font-family: inherit; }
 .wline:hover { background: var(--ind-s); }
+.wline:focus-visible { outline: 2px solid var(--ind); outline-offset: -2px; }
 .wtype { font-weight: 600; flex: 0 0 auto; }
 .wurl { color: var(--dim); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wtime { color: var(--faint); flex: 0 0 auto; }
