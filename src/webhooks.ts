@@ -3,7 +3,7 @@
 // history ring buffer.
 
 import type { Config, WebhooksConfig } from "./config.js";
-import type { SoloistHub } from "./proxy.js";
+import type { SoloistHub } from "./hub.js";
 import { makeLog } from "./log.js";
 import type { WebhookDelivery } from "./wire-contract.js";
 
