@@ -8,7 +8,6 @@ import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHashed, maskConfig, saveConfig, verifyPassword, type Config } from "./config.js";
-import { WebhookHistory } from "./webhooks.js";
 import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
 import { getSinkCache, refreshSinkCache, reconcileOutputs, listStandaloneSinks } from "./pipewire.js";
@@ -28,7 +27,7 @@ const WEB_ROOT = resolve(WEB_DIR);
 
 // Client-routed view paths (History API). Each serves the same authed Vue SPA shell
 // (index.html); vue-router reads location.pathname to pick the tab. "/" is Now Playing.
-const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/lyrics", "/settings"]);
+const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/debug", "/lyrics", "/settings"]);
 
 // Secret leaves the Landing Page may reveal on demand (eye toggle). Deliberately not
 // the password (a scrypt hash) or the session secret — only operator-facing plaintext.
@@ -153,15 +152,6 @@ function serveOverlay(res: ServerResponse, cfg: Config): void {
   // replace-pattern token ($$, $&, ...).
   html = html.replace("<!--__OVERLAY_BOOTSTRAP__-->", () => overlayBootstrap(cfg));
   res.writeHead(200, { "content-type": CONTENT_TYPES.html }).end(html);
-}
-
-// Configured webhook destinations (never the secret value) plus recent delivery history.
-export function webhooksView(cfg: Config, history: WebhookHistory): unknown {
-  const wh = cfg.webhooks;
-  return {
-    config: { defaultUrl: wh.defaultUrl, urls: wh.urls, hasSecret: wh.secret !== "" },
-    history: history.entries(),
-  };
 }
 
 // Relay config (never the Authorization value) plus live connection status.
@@ -367,7 +357,6 @@ export function handleWebRequest(
   res: ServerResponse,
   cfg: Config,
   configPath: string,
-  history: WebhookHistory = new WebhookHistory(),
   control?: SoloistControl,
   onConfigChange?: (cfg: Config) => void,
   relayStatus?: RelayStatus,
@@ -399,11 +388,6 @@ export function handleWebRequest(
   // Open (unauthenticated): the overlay embeds the Read-only Token server-side.
   if (path === "/overlay" && method === "GET") {
     serveOverlay(res, cfg);
-    return true;
-  }
-
-  if (path === "/api/webhooks" && method === "GET") {
-    if (apiAuthed(req, res, cfg)) json(res, 200, webhooksView(cfg, history));
     return true;
   }
 
