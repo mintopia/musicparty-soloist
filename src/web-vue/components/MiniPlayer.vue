@@ -11,6 +11,7 @@ import { PhMicrophoneStage, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhSpeake
 const { state, positionMs, isStale, sendCommand } = usePlayback();
 
 const track = computed(() => state.track);
+const connected = computed(() => state.connected);
 const stale = computed(() => isStale());
 const dur = computed(() => track.value?.durationMs ?? 0);
 const progPct = computed(() =>
@@ -73,27 +74,36 @@ onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
       <PhMicrophoneStage :size="14" weight="fill" />
     </div>
     <div class="mpctl">
-      <button class="mpb" title="Previous" aria-label="Previous track" @click="sendCommand('skip_prev')">
+      <button class="mpb" title="Previous" aria-label="Previous track" :disabled="!connected" @click="sendCommand('skip_prev')">
         <PhSkipBack :size="15" weight="fill" />
       </button>
-      <button class="mpb mpplay" title="Play/Pause" :aria-label="state.playing ? 'Pause' : 'Play'" @click="sendCommand(state.playing ? 'pause' : 'play')">
+      <button class="mpb mpplay" title="Play/Pause" :aria-label="state.playing ? 'Pause' : 'Play'" :disabled="!connected" @click="sendCommand(state.playing ? 'pause' : 'play')">
         <PhPause v-if="state.playing" :size="16" weight="fill" />
         <PhPlay v-else :size="16" weight="fill" />
       </button>
-      <button class="mpb" title="Next" aria-label="Next track" @click="sendCommand('skip_next')">
+      <button class="mpb" title="Next" aria-label="Next track" :disabled="!connected" @click="sendCommand('skip_next')">
         <PhSkipForward :size="15" weight="fill" />
       </button>
       <div class="mpvol">
-        <button class="mpb" title="Volume" :aria-label="muted ? 'Unmute' : 'Volume'" @click="toggleVol">
+        <button class="mpb" title="Volume" :aria-label="muted ? 'Unmute' : 'Volume'" :disabled="!connected" @click="toggleVol">
           <PhSpeakerSimpleX v-if="muted" :size="15" weight="fill" />
           <PhSpeakerSimpleHigh v-else :size="15" weight="fill" />
         </button>
         <div v-show="volOpen" class="mpVolPop" :style="volPos">
           <PhSpeakerSimpleHigh :size="15" weight="fill" />
-          <input class="mpVolRange" type="range" min="0" max="100" step="1" :value="localVol" @input="onVolInput" />
+          <input class="mpVolRange" type="range" min="0" max="100" step="1" :value="localVol" :disabled="!connected" @input="onVolInput" />
           <span class="mpVolVal">{{ localVol }}</span>
         </div>
       </div>
+    </div>
+    <!-- Kept mounted (collapsed to sr-only when connected) so the role="status" region
+         announces on the connect→disconnect change; absolute-collapse avoids a stray
+         flex gap while hidden. Amber cue mirrors Landing's .disc strip. -->
+    <div class="mpDisc" :class="{ off: connected }" role="status" aria-live="polite">
+      <template v-if="!connected">
+        <span class="mpDiscDot"></span>
+        <span>Disconnected — reconnecting…</span>
+      </template>
     </div>
     <div class="mpProg" :style="{ width: `${progPct}%` }"></div>
   </div>
@@ -114,6 +124,13 @@ onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 .mpctl { display: flex; align-items: center; gap: 4px; }
 .mpb { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line2); background: var(--card); color: var(--txt); cursor: pointer; }
 .mpb:hover { border-color: var(--ind); color: var(--ind); }
+.mpb:disabled { opacity: .4; cursor: not-allowed; }
+.mpb:disabled:hover { border-color: var(--line2); color: var(--txt); }
+.mpplay:disabled:hover { background: var(--ind); color: #fff; border-color: var(--ind); }
+.mpDisc { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 10px; background: rgba(245, 158, 11, .14); color: #fcd34d; border: 1px solid rgba(245, 158, 11, .28); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.mpDisc.off { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+.mpDiscDot { width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; flex: 0 0 auto; animation: mpDisc-pulse 1.4s ease-in-out infinite; }
+@keyframes mpDisc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 .mpplay { background: var(--ind); color: #fff; border-color: var(--ind); }
 .mpplay:hover { background: var(--ind-h); color: #fff; }
 .mpvol { position: relative; }
