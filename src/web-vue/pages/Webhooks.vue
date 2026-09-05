@@ -82,11 +82,11 @@ function addOverride() {
         <div class="ov-label"><span class="lbl">Per-Event Overrides</span></div>
         <div class="ov">
           <div v-for="key in overrideKeys" :key="key" class="row ov-row">
-            <select class="field sel" :value="key"
+            <select class="field sel" :value="key" aria-label="Event type"
               @change="retype(key, ($event.target as HTMLSelectElement).value)">
               <option v-for="ev in optionsFor(key)" :key="ev" :value="ev">{{ ev }}</option>
             </select>
-            <input class="field grow" v-model="webhooks.urls[key]" placeholder="https://…" />
+            <input class="field grow" v-model="webhooks.urls[key]" aria-label="Override URL" placeholder="https://…" />
             <button type="button" class="btn" title="Remove" aria-label="Remove" @click="removeOverride(key)"><PhX :size="16" weight="fill" /></button>
           </div>
           <button type="button" class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
