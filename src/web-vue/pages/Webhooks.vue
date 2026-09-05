@@ -60,7 +60,7 @@ function addOverride() {
             <input class="field" v-model="webhooks.defaultUrl" placeholder="https://…" />
           </div>
           <div class="delay">
-            <label class="flabel">Min interval (ms)</label>
+            <label class="flabel">Min Interval (ms)</label>
             <input class="field" type="number" v-model="delayMs" />
           </div>
         </div>
@@ -72,7 +72,7 @@ function addOverride() {
           v-model="webhooks.secret"
         />
 
-        <div class="ov-label"><span class="lbl">Per-event overrides</span></div>
+        <div class="ov-label"><span class="lbl">Per-Event Overrides</span></div>
         <div class="ov">
           <div v-for="key in overrideKeys" :key="key" class="row ov-row">
             <select class="field sel" :value="key"
