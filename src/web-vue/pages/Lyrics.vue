@@ -4,7 +4,7 @@ import { useConfig } from "../composables/useConfig";
 import { usePlayback } from "../composables/usePlayback";
 import { mountPreview, currentIndex, fetchSyncedLyrics, type LyricLine } from "../lib/overlay-engine";
 import OvColour from "../components/OvColour.vue";
-import { PhTextAlignLeft, PhTextAlignCenter, PhTextAlignRight, PhAlignTop, PhAlignCenterHorizontal, PhAlignBottom } from "@phosphor-icons/vue";
+import { PhTextAlignLeft, PhTextAlignCenter, PhTextAlignRight, PhAlignTop, PhAlignCenterHorizontal, PhAlignBottom, PhArrowUpRight } from "@phosphor-icons/vue";
 
 // Lyrics tab: the authenticated Overlay Config editor + live preview. Ported from the
 // vanilla overlay-panel.js (ADR-0014). Every edit mutates config.overlay, which the
@@ -287,7 +287,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         <input class="field ro url" readonly :value="overlayUrl" />
         <div class="row btns">
           <button class="btn" @click="copyUrl">{{ copyLabel }}</button>
-          <button class="btn" @click="openUrl">Open ↗</button>
+          <button class="btn" @click="openUrl">Open <PhArrowUpRight :size="16" weight="fill" /></button>
         </div>
       </div>
     </div>

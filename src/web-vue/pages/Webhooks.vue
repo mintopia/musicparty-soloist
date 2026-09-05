@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { PhX } from "@phosphor-icons/vue";
 import { useConfig } from "../composables/useConfig";
 import SecretRow from "../components/SecretRow.vue";
 import SectionCard from "../components/SectionCard.vue";
@@ -80,7 +81,7 @@ function addOverride() {
               <option v-for="ev in optionsFor(key)" :key="ev" :value="ev">{{ ev }}</option>
             </select>
             <input class="field grow" v-model="webhooks.urls[key]" placeholder="https://…" />
-            <button class="btn" title="Remove" @click="removeOverride(key)">×</button>
+            <button class="btn" title="Remove" aria-label="Remove" @click="removeOverride(key)"><PhX :size="16" weight="fill" /></button>
           </div>
           <button class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
           <div v-if="!nextEvent" class="dev-hint">Every event already has an override.</div>
