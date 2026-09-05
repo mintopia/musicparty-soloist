@@ -49,7 +49,7 @@ const pill = computed(() => {
     <div class="grid2">
       <TextField label="Relay URL" placeholder="wss://example.com/relay" v-model="c.relay.url" />
       <SecretRow
-        label="Authorization Header" section="relay" field-key="authorization" revealable
+        label="Authorization Header" section="relay" field-key="authorization" revealable optional
         :is-set="secretSet['relay.authorization']" v-model="c.relay.authorization"
         hint="Sent as the Authorization header when connecting to the relay server. Optional — leave blank if the relay needs no auth."
       />
