@@ -213,7 +213,8 @@ assert.equal(sameOrigin(req({ origin: "http://host:9999", host: "host:8687" })),
 
 
 const buf = (s: string): RawData => Buffer.from(s) as unknown as RawData;
-await test("decodeFrame", async () => {
+await test("wire parsing: decodeFrame + listenParts", async () => {
+// decodeFrame: valid frame decodes; malformed/type-less/non-object/binary are skipped.
 assert.deepEqual(decodeFrame(buf('{"type":"auth_state","logged_in":true}'), false), {
   type: "auth_state",
   message: { type: "auth_state", logged_in: true },
@@ -223,6 +224,13 @@ assert.equal(decodeFrame(buf("{"), false), null, "malformed JSON skipped");
 assert.equal(decodeFrame(buf('{"no":"type"}'), false), null, "type-less frame skipped");
 assert.equal(decodeFrame(buf('"a string"'), false), null, "non-object JSON skipped");
 assert.equal(decodeFrame(buf('{"type":"x"}'), true), null, "binary frame skipped");
+// listenParts: split at the LAST colon (IPv6-safe), error clearly on garbage (not NaN).
+assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
+assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
+assert.deepEqual(listenParts("[::1]:8687"), { host: "::1", port: 8687 }, "IPv6 literal splits at the port colon and sheds its brackets for server.listen");
+assert.throws(() => listenParts("8687"), /invalid proxy.listen/, "no colon: clear error, not NaN");
+assert.throws(() => listenParts("host:notaport"), /invalid proxy.listen/, "non-numeric port: clear error");
+assert.throws(() => listenParts("host:0"), /invalid proxy.listen/, "port 0: clear error");
 });
 
 
@@ -265,34 +273,18 @@ assert.deepEqual(backoffStep(BACKOFF_MAX, 999), { sleep: BACKOFF_BASE, next: BAC
 });
 
 
-// listenParts (item C): split at the LAST colon (IPv6-safe), error clearly on garbage
-// rather than silently producing NaN.
-await test("listenParts host:port split", async () => {
-assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
-assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
-assert.deepEqual(listenParts("[::1]:8687"), { host: "::1", port: 8687 }, "IPv6 literal splits at the port colon and sheds its brackets for server.listen");
-assert.throws(() => listenParts("8687"), /invalid proxy.listen/, "no colon: clear error, not NaN");
-assert.throws(() => listenParts("host:notaport"), /invalid proxy.listen/, "non-numeric port: clear error");
-assert.throws(() => listenParts("host:0"), /invalid proxy.listen/, "port 0: clear error");
-});
-
-
 const frame = (msg: Record<string, unknown>): UpstreamFrame => ({
   type: String(msg.type),
   message: msg,
   raw: JSON.stringify(msg),
 });
 const loggedIn = frame({ type: "auth_state", logged_in: true });
-await test("shouldAutoplay", async () => {
+await test("autoplay: shouldAutoplay gate + AUTOPLAY_FRAMES envelopes", async () => {
 assert.equal(shouldAutoplay({ fired: false }, frame({ type: "auth_state", logged_in: false })), false, "not logged in: no autoplay");
 assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "false->true fires");
 assert.equal(shouldAutoplay({ fired: false }, loggedIn), true, "already-true on connect fires");
 assert.equal(shouldAutoplay({ fired: true }, loggedIn), false, "once-per-connection guard");
 assert.equal(shouldAutoplay({ fired: false }, frame({ type: "playback_state", logged_in: true })), false, "non-auth_state ignored");
-});
-
-
-await test("AUTOPLAY_FRAMES command envelopes", async () => {
 assert.deepEqual(
   AUTOPLAY_FRAMES,
   [{ type: "command", command: "activate" }, { type: "command", command: "play" }],
@@ -311,51 +303,48 @@ assert.equal(resolveWebhookUrl("auth_state", { defaultUrl: "", urls: {}, secret:
 });
 
 
-const fires: number[] = [];
-const spaced: (() => void)[] = [];
-const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
-await test("WebhookQueue throttle spacing", async () => {
-q1.push(() => fires.push(1));
-assert.deepEqual(fires, [1], "first task fires immediately");
-q1.push(() => fires.push(2));
-q1.push(() => fires.push(3));
-assert.deepEqual(fires, [1], "throttle holds queued tasks");
-spaced.shift()!();
-spaced.shift()!();
-assert.deepEqual(fires, [1, 2, 3], "queued tasks drain FIFO");
-});
+// WebhookQueue: throttle spacing + FIFO drain, cap-drop (oldest queued evicted, one onDrop),
+// synchronous drain when delayMs is 0, and handler-error isolation (a throwing task never
+// wedges the drain loop).
+await test("WebhookQueue spacing/FIFO/cap-drop/sync/error-isolation", async () => {
+  // throttle spacing + FIFO
+  const fires: number[] = [];
+  const spaced: (() => void)[] = [];
+  const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
+  q1.push(() => fires.push(1));
+  assert.deepEqual(fires, [1], "first task fires immediately");
+  q1.push(() => fires.push(2));
+  q1.push(() => fires.push(3));
+  assert.deepEqual(fires, [1], "throttle holds queued tasks");
+  spaced.shift()!();
+  spaced.shift()!();
+  assert.deepEqual(fires, [1, 2, 3], "queued tasks drain FIFO");
 
+  // cap: oldest queued dropped, exactly one onDrop, the rest still FIFO
+  const order: string[] = [];
+  const drops: number[] = [];
+  const held: (() => void)[] = [];
+  const qCap = new WebhookQueue(50, { cap: 3, schedule: (fn) => held.push(fn), onDrop: () => drops.push(1) });
+  for (const c of ["A", "B", "C", "D", "E"]) qCap.push(() => order.push(c));
+  assert.equal(qCap.size(), 3, "queue bounded at cap");
+  assert.equal(drops.length, 1, "one drop at cap");
+  while (held.length) held.shift()!();
+  assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest FIFO");
 
-const order: string[] = [];
-const drops: number[] = [];
-const held: (() => void)[] = [];
-const q2 = new WebhookQueue(50, { cap: 3, schedule: (fn) => held.push(fn), onDrop: () => drops.push(1) });
-await test("q2", async () => {
-for (const c of ["A", "B", "C", "D", "E"]) q2.push(() => order.push(c));
-assert.equal(q2.size(), 3, "queue bounded at cap");
-assert.equal(drops.length, 1, "one drop at cap");
-while (held.length) held.shift()!();
-assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest FIFO");
-});
+  // delayMs 0: synchronous drain, no timer scheduled
+  const sync: number[] = [];
+  const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
+  q0.push(() => sync.push(1));
+  q0.push(() => sync.push(2));
+  assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
 
-
-const sync: number[] = [];
-const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
-await test("WebhookQueue no timer when delayMs 0", async () => {
-q0.push(() => sync.push(1));
-q0.push(() => sync.push(2));
-assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
-});
-
-
-// A throwing task must not wedge the drain loop (item E).
-const seen: number[] = [];
-const qThrow = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
-await test("WebhookQueue handler error isolation", async () => {
-qThrow.push(() => { throw new Error("boom"); });
-qThrow.push(() => seen.push(1));
-assert.deepEqual(seen, [1], "drain continues past a task that throws");
-assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
+  // a throwing task must not wedge the drain loop (item E)
+  const seen: number[] = [];
+  const qThrow = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
+  qThrow.push(() => { throw new Error("boom"); });
+  qThrow.push(() => seen.push(1));
+  assert.deepEqual(seen, [1], "drain continues past a task that throws");
+  assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
 });
 
 
@@ -413,66 +402,64 @@ await test("postWebhook redaction (request secret + response allowlist)", async 
 
 // d) Streamed body cap + truncation: an oversized body is capped and marked truncated;
 // a short body records verbatim with no marker.
-await test("postWebhook caps and truncates an oversized streamed body", async () => {
-  const h = new WebhookHistory();
-  const big = "x".repeat(WEBHOOK_RESP_BODY_CAP + 5000);
-  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, big));
-  const d = h.last()!;
-  assert.ok(d.respBody.includes("…[truncated]"), "truncation marker present");
-  const capped = d.respBody.slice(0, WEBHOOK_RESP_BODY_CAP);
+// postWebhook response-body cap boundaries: an oversized body is capped + marked truncated;
+// a short body and a body sized exactly to the cap are recorded verbatim with no marker.
+await test("postWebhook response-body cap boundaries", async () => {
+  const cap = async (body: string) => {
+    const h = new WebhookHistory();
+    await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, body));
+    return h.last()!.respBody;
+  };
+
+  // oversized: capped content + marker, total length is cap + marker length
+  const big = await cap("x".repeat(WEBHOOK_RESP_BODY_CAP + 5000));
+  assert.ok(big.includes("…[truncated]"), "truncation marker present");
+  const capped = big.slice(0, WEBHOOK_RESP_BODY_CAP);
   assert.ok(/^x+$/.test(capped) && capped.length === WEBHOOK_RESP_BODY_CAP, "body content capped at WEBHOOK_RESP_BODY_CAP");
-  assert.equal(d.respBody.length, WEBHOOK_RESP_BODY_CAP + "…[truncated]".length, "total length is cap + marker length");
+  assert.equal(big.length, WEBHOOK_RESP_BODY_CAP + "…[truncated]".length, "total length is cap + marker length");
+
+  // short: verbatim, no marker
+  const short = await cap("short body");
+  assert.equal(short, "short body", "short body recorded verbatim");
+  assert.ok(!short.includes("…[truncated]"), "no truncation marker for a short body");
+
+  // exactly at the cap: verbatim, no marker (off-by-one guard)
+  const exactIn = "x".repeat(WEBHOOK_RESP_BODY_CAP);
+  const exact = await cap(exactIn);
+  assert.equal(exact, exactIn, "body exactly at the cap recorded verbatim");
+  assert.ok(!exact.includes("…[truncated]"), "no marker when body length equals the cap");
 });
 
-await test("postWebhook records a short body verbatim, no marker", async () => {
-  const h = new WebhookHistory();
-  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, "short body"));
-  const d = h.last()!;
-  assert.equal(d.respBody, "short body", "short body recorded verbatim");
-  assert.ok(!d.respBody.includes("…[truncated]"), "no truncation marker for a short body");
-});
-
-await test("postWebhook does not mark a body sized exactly to the cap as truncated", async () => {
-  const h = new WebhookHistory();
-  const exact = "x".repeat(WEBHOOK_RESP_BODY_CAP);
-  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, exact));
-  const d = h.last()!;
-  assert.equal(d.respBody, exact, "body exactly at the cap recorded verbatim");
-  assert.ok(!d.respBody.includes("…[truncated]"), "no marker when body length equals the cap");
-});
-
-// e) onEntry disposer is idempotent: calling it twice must not throw, and must not
-// affect other still-registered listeners.
-await test("WebhookHistory onEntry disposer is idempotent", async () => {
-  const h = new WebhookHistory();
-  let n = 0;
-  let m = 0;
-  const off = h.onEntry(() => n++);
-  h.onEntry(() => m++);
+// WebhookHistory: the onEntry listener lifecycle (fires on record; idempotent disposer that
+// doesn't disturb other listeners) and the ring buffer (capped at WEBHOOK_HISTORY_CAP=10,
+// oldest evicted first, last() the most recent).
+await test("WebhookHistory ring + listener lifecycle", async () => {
   const mkDelivery = (i: number): WebhookDelivery =>
     ({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
 
-  h.record(mkDelivery(0));
+  // listener lifecycle: fire on record, dispose (idempotent), other listener unaffected
+  const hL = new WebhookHistory();
+  let n = 0;
+  let m = 0;
+  const off = hL.onEntry(() => n++);
+  hL.onEntry(() => m++);
+  hL.record(mkDelivery(0));
   assert.equal(n, 1, "listener fires on first record");
   off();
-  h.record(mkDelivery(1));
+  hL.record(mkDelivery(1));
   assert.equal(n, 1, "disposed listener does not fire again");
   assert.doesNotThrow(() => off(), "calling the disposer a second time does not throw");
-  h.record(mkDelivery(2));
+  hL.record(mkDelivery(2));
   assert.equal(n, 1, "still disposed after a second off() call");
   assert.equal(m, 3, "the other, still-registered listener keeps firing after the first is disposed");
-});
 
-// f) Ring eviction at 10: the buffer caps at WEBHOOK_HISTORY_CAP, oldest-first.
-await test("WebhookHistory evicts oldest entries at cap 10", async () => {
-  const h = new WebhookHistory();
-  for (let i = 0; i < 12; i++) {
-    h.record({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
-  }
-  const entries = h.entries();
+  // ring buffer: capped at 10, oldest evicted, last() is most recent
+  const hR = new WebhookHistory();
+  for (let i = 0; i < 12; i++) hR.record(mkDelivery(i));
+  const entries = hR.entries();
   assert.equal(entries.length, 10, "ring buffer capped at 10");
   assert.equal(entries[0].url, "u2", "oldest surviving entry is the 3rd recorded");
-  assert.equal(h.last()!.url, "u11", "last() returns the most recent entry");
+  assert.equal(hR.last()!.url, "u11", "last() returns the most recent entry");
 });
 
 
@@ -863,7 +850,10 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
 
 
 // Client metadata enum, clientList shape, and loggedIn() null-while-down.
-await test("Hub client metadata + status getters", async () => {
+// Hub status getters (resolveAuth enum, clientList/loggedIn/clientCount) and buildProxyStatus
+// (compact webhook summary that never leaks headers/body, ok classification). Both drive a
+// never-connecting hub so upstream is down and loggedIn() is null.
+await test("Hub getters + buildProxyStatus summary", async () => {
   // auth enum is derived, never the raw token
   const RAWTOK = "CONTROL-SECRET-RAW";
   const cfg = authCfg(RAWTOK, "RO-RAW");
@@ -891,27 +881,24 @@ await test("Hub client metadata + status getters", async () => {
   // the raw token never appears in metadata
   assert.ok(!JSON.stringify(list).includes(RAWTOK), "raw token never stored in client metadata");
   hub.stop();
-});
 
-
-// Proxy Status builder: the proxy_status frame carries a compact webhook summary only —
-// the last delivery's at/type/status/ok — never its request/response headers or body (that
-// full detail rides the separate `webhooks` stream). Also covers the ok classification.
-await test("buildProxyStatus emits a compact webhook summary (no headers/body)", async () => {
-  const hub = new SoloistHub("ws://127.0.0.1:1"); // never connects: upstream down, loggedIn null
+  // --- buildProxyStatus: compact webhook summary (no headers/body) + ok classification. The
+  // proxy_status frame carries only the last delivery's at/type/status/ok, never its
+  // request/response headers or body (that detail rides the separate `webhooks` stream). ---
+  const hub2 = new SoloistHub("ws://127.0.0.1:1"); // never connects: upstream down, loggedIn null
   const history = new WebhookHistory();
   const relay = { enabled: true, connected: false, lastConnectAt: null, lastError: "boom" };
   const control = new SoloistControl();
   control.setState("running");
 
   // No deliveries yet: webhook summary is null; soloist reflects control + a down upstream.
-  const empty = buildProxyStatus(hub, relay, history, control);
+  const empty = buildProxyStatus(hub2, relay, history, control);
   assert.equal(empty.webhook, null, "no webhook history -> null summary");
   assert.deepEqual(empty.soloist, { state: "running", upstream: false, loggedIn: null }, "soloist snapshot");
   assert.equal(empty.clients, 0, "no downstream clients");
   assert.equal(empty.relay, relay, "relay status passed straight through");
   // control absent -> state null rather than throwing.
-  assert.equal(buildProxyStatus(hub, relay, history).soloist.state, null, "no control -> state null");
+  assert.equal(buildProxyStatus(hub2, relay, history).soloist.state, null, "no control -> state null");
 
   // A full delivery with secrets in headers + body collapses to the four-field summary.
   const delivery: WebhookDelivery = {
@@ -921,16 +908,16 @@ await test("buildProxyStatus emits a compact webhook summary (no headers/body)",
     respBody: "RESPSECRETBODY", error: null,
   };
   history.record(delivery);
-  const s = buildProxyStatus(hub, relay, history, control);
+  const s = buildProxyStatus(hub2, relay, history, control);
   assert.deepEqual(s.webhook, { at: 1000, type: "now_playing", status: 200, ok: true }, "compact 4-field summary");
   assertNoLeak("proxy_status webhook summary", s, ["REQSECRET", "RESPSECRETBODY", "hook.example", "application/json"]);
 
   // ok is 2xx-with-a-response only: non-2xx and network errors are not ok.
   history.record({ ...delivery, at: 2000, status: 500 });
-  assert.equal(buildProxyStatus(hub, relay, history, control).webhook?.ok, false, "5xx -> not ok");
+  assert.equal(buildProxyStatus(hub2, relay, history, control).webhook?.ok, false, "5xx -> not ok");
   history.record({ ...delivery, at: 3000, status: null, error: "timeout" });
-  assert.deepEqual(buildProxyStatus(hub, relay, history, control).webhook, { at: 3000, type: "now_playing", status: null, ok: false }, "network error -> status null, not ok");
-  hub.stop();
+  assert.deepEqual(buildProxyStatus(hub2, relay, history, control).webhook, { at: 3000, type: "now_playing", status: null, ok: false }, "network error -> status null, not ok");
+  hub2.stop();
 });
 
 
@@ -1558,55 +1545,32 @@ const pwDump = JSON.stringify([
   { info: { props: { "media.class": "Audio/Source", "node.name": "mic" } } },
   { other: true },
 ]);
-await test("parseSinks", async () => {
-assert.deepEqual(
-  parseSinks(pwDump, ["Spotify"]),
-  [{ name: "alsa_output.hw_0", description: "Speakers" }, { name: "bare", description: "bare" }],
-  "parseSinks: Audio/Sink only; soloist-sink + Snapserver capture node excluded; description falls back to name",
-);
-assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
-});
+// pipewire sink listing (ADR-0015) + the sink cache. parseSinks filters to real Audio/Sinks;
+// the Docker fan-out response prepends a synthetic Snapcast toggle; the standalone picker does
+// not (no fan-out, no Snapserver-capture exclusion); the cache starts empty ("never" refreshed).
+await test("pipewire sink listing + cache", async () => {
+  assert.deepEqual(
+    parseSinks(pwDump, ["Spotify"]),
+    [{ name: "alsa_output.hw_0", description: "Speakers" }, { name: "bare", description: "bare" }],
+    "parseSinks: Audio/Sink only; soloist-sink + Snapserver capture node excluded; description falls back to name",
+  );
+  assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
 
+  const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
+  assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
+  assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
 
-const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
-await test("pipewireSinksResponse ordering", async () => {
-assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
-assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
-});
+  const standalone = parseSinks(pwDump);
+  assert.ok(!standalone.some((s) => s.name === SNAPCAST_KEY), "standalone list has no synthetic Snapcast entry");
+  assert.ok(standalone.some((s) => s.name === "Spotify"), "standalone list keeps sinks Docker would exclude as the Snapserver node");
+  assert.ok(standalone.some((s) => s.name === "alsa_output.hw_0"), "standalone list includes real hardware sinks");
 
-
-// Standalone device picker (ADR-0015): listStandaloneSinks returns parseSinks with no
-// exclude — every real Audio/Sink, no synthetic Snapcast entry (there is no fan-out),
-// and no Snapserver-capture exclusion (stream_name is a Docker-only concept).
-await test("standalone sink list omits the Snapcast toggle", async () => {
-const standalone = parseSinks(pwDump);
-assert.ok(!standalone.some((s) => s.name === SNAPCAST_KEY), "standalone list has no synthetic Snapcast entry");
-assert.ok(standalone.some((s) => s.name === "Spotify"), "standalone list keeps sinks Docker would exclude as the Snapserver node");
-assert.ok(standalone.some((s) => s.name === "alsa_output.hw_0"), "standalone list includes real hardware sinks");
-});
-
-
-// Sink cache starts empty with refreshedAt 0 ("never") so /api/pipewire-sinks knows to
-// force a synchronous dump before the background poll has landed one. (refreshSinkCache
-// itself shells out to pw-dump — exercised at runtime, not here.)
-await test("Sink cache starts empty with refreshedAt 0 (\"never\") so /api/pipe...", async () => {
-assert.deepEqual(getSinkCache(), { sinks: [], refreshedAt: 0 }, "getSinkCache: empty until first poll, refreshedAt 0 = never");
+  assert.deepEqual(getSinkCache(), { sinks: [], refreshedAt: 0 }, "getSinkCache: empty until first poll, refreshedAt 0 = never");
 });
 
 
 const dcfg = (snapcast: boolean, outputs: string[], streamName = "Spotify"): Config =>
   ({ audio: { snapcast, outputs }, streamName }) as unknown as Config;
-await test("desiredTargets", async () => {
-assert.deepEqual(desiredTargets(dcfg(true, ["alsa_x"])), ["Spotify", "alsa_x"], "desiredTargets: snapcast->streamName + hardware");
-assert.deepEqual(desiredTargets(dcfg(false, ["alsa_x"])), ["alsa_x"], "desiredTargets: snapcast off drops stream node");
-assert.deepEqual(
-  desiredTargets(dcfg(true, ["snapcast", "soloist-sink", "alsa_x", "alsa_x"])),
-  ["Spotify", "alsa_x"],
-  "desiredTargets: reserved/internal names filtered, deduped",
-);
-});
-
-
 const monitorListing = [
   "soloist-sink:monitor_FL",
   "  |-> old_sink:playback_FL",
@@ -1615,14 +1579,51 @@ const monitorListing = [
   "other-node:capture_FL",
   "  |-> unrelated:playback_FL",
 ].join("\n");
-await test("parseMonitorTargets", async () => {
-assert.deepEqual(parseMonitorTargets(monitorListing), ["old_sink"], "parseMonitorTargets: only soloist-sink monitor links");
-assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []");
+
+// pipewire routing helpers (pure): target selection, monitor-link parsing, per-output delay
+// selection (ADR-0013), delay-token sanitisation + collision safety, and filter-chain conf gen.
+await test("pipewire routing helpers (targets/monitors/delays/tokens/filter-conf)", async () => {
+  // desiredTargets
+  assert.deepEqual(desiredTargets(dcfg(true, ["alsa_x"])), ["Spotify", "alsa_x"], "desiredTargets: snapcast->streamName + hardware");
+  assert.deepEqual(desiredTargets(dcfg(false, ["alsa_x"])), ["alsa_x"], "desiredTargets: snapcast off drops stream node");
+  assert.deepEqual(
+    desiredTargets(dcfg(true, ["snapcast", "soloist-sink", "alsa_x", "alsa_x"])),
+    ["Spotify", "alsa_x"],
+    "desiredTargets: reserved/internal names filtered, deduped",
+  );
+
+  // parseMonitorTargets: only soloist-sink monitor links
+  assert.deepEqual(parseMonitorTargets(monitorListing), ["old_sink"], "parseMonitorTargets: only soloist-sink monitor links");
+  assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []");
+
+  // desiredDelays: only enabled hardware outputs with >0ms delay
+  assert.deepEqual(desiredDelays(dcfg(true, ["alsa_x", "alsa_y"])), {}, "desiredDelays: no outputDelays configured -> {}");
+  const withDelay = { audio: { snapcast: true, outputs: ["alsa_x", "alsa_y", "snapcast"], outputDelays: { alsa_x: 250, alsa_y: 0, ghost: 10 } }, streamName: "Spotify" } as unknown as Config;
+  assert.deepEqual(desiredDelays(withDelay), { alsa_x: 250 }, "desiredDelays: only enabled hardware outputs with >0ms; snapcast/absent excluded");
+
+  // buildDelayTokens: sanitise unsafe chars + collision suffixing
+  const tokens = buildDelayTokens({ "alsa_output.hw:0": 250, "alsa/weird name!": 100 });
+  assert.equal(tokens.get("alsa_output.hw:0"), "alsa-output-hw-0", "buildDelayTokens: sanitizes to safe token");
+  assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayTokens: strips/collapses unsafe chars");
+  const collide = buildDelayTokens({ "a!b": 1, "a?b": 2 });
+  assert.equal(collide.get("a!b"), "a-b", "buildDelayTokens: first owner keeps the base token");
+  assert.equal(collide.get("a?b"), "a-b-2", "buildDelayTokens: collision gets a -2 suffix");
+
+  // generateFilterChainConf: self-contained delay node, autoconnect off, ms -> seconds
+  const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
+  assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
+  assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
+  assert.ok(conf.includes("libpipewire-module-adapter"), "generateFilterChainConf: adapter module (filter node needs it)");
+  assert.ok(conf.includes("audioconvert/libspa-audioconvert"), "generateFilterChainConf: spa-libs for audio.convert");
+  assert.ok(conf.includes("node.autoconnect = false"), "generateFilterChainConf: autoconnect off (no leak to default sink)");
+  assert.ok(conf.includes(`node.name = "${DELAY_PREFIX}alsa-x"`), "generateFilterChainConf: node.name is soloist-delay-<token>");
+  assert.ok(conf.includes('"Delay (s)" = 0.250'), "generateFilterChainConf: ms converted to seconds");
 });
 
 
-// reconcile happy path: link desired (Snapcast + hardware), unlink deselected old_sink.
-await test("reconcile happy path", async () => {
+// reconcileOutputs (no delay): links desired (Snapcast + hardware), unlinks the deselected
+// old_sink, and flags a configured output whose node never appears.
+await test("reconcileOutputs link/unlink/missing", async () => {
   const calls: string[] = [];
   const run: Runner = async (cmd, args) => {
     calls.push([cmd, ...args].join(" "));
@@ -1637,57 +1638,20 @@ await test("reconcile happy path", async () => {
   assert.ok(calls.includes("pw-link soloist-sink:monitor_FL Spotify:playback_FL"), "reconcile: snapcast FL linked");
   assert.ok(calls.includes("pw-link soloist-sink:monitor_FR alsa_x:playback_FR"), "reconcile: hardware FR linked");
   assert.ok(calls.includes("pw-link -d soloist-sink:monitor_FL old_sink:playback_FL"), "reconcile: deselected FL unlinked");
+
+  // a configured output whose node never appears is skipped and flagged missing.
+  const runAbsent: Runner = async (_cmd, args) => (args.includes("-l") ? "" : "");
+  const resAbsent = await reconcileOutputs(dcfg(false, ["ghost"]), { run: runAbsent, retries: 1, intervalMs: 0 });
+  assert.deepEqual(resAbsent.missing, ["ghost"], "reconcile: absent node flagged missing");
+  assert.deepEqual(resAbsent.linked, [], "reconcile: absent node not linked");
 });
 
 
-// reconcile: a configured output whose node never appears is skipped and flagged.
-await test("reconcile skips absent node", async () => {
-  const run: Runner = async (_cmd, args) => (args.includes("-l") ? "" : "");
-  const res = await reconcileOutputs(dcfg(false, ["ghost"]), { run, retries: 1, intervalMs: 0 });
-  assert.deepEqual(res.missing, ["ghost"], "reconcile: absent node flagged missing");
-  assert.deepEqual(res.linked, [], "reconcile: absent node not linked");
-});
-
-
-// Per-output playback delay (ADR-0013, filter-chain).
-await test("Per-output playback delay (ADR-0013, filter-chain)", async () => {
-assert.deepEqual(desiredDelays(dcfg(true, ["alsa_x", "alsa_y"])), {}, "desiredDelays: no outputDelays configured -> {}");
-});
-
-await test("desiredDelays maps output delays", async () => {
-  const withDelay = { audio: { snapcast: true, outputs: ["alsa_x", "alsa_y", "snapcast"], outputDelays: { alsa_x: 250, alsa_y: 0, ghost: 10 } }, streamName: "Spotify" } as unknown as Config;
-  assert.deepEqual(desiredDelays(withDelay), { alsa_x: 250 }, "desiredDelays: only enabled hardware outputs with >0ms; snapcast/absent excluded");
-});
-
-
-const tokens = buildDelayTokens({ "alsa_output.hw:0": 250, "alsa/weird name!": 100 });
-await test("tokens", async () => {
-assert.equal(tokens.get("alsa_output.hw:0"), "alsa-output-hw-0", "buildDelayTokens: sanitizes to safe token");
-assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayTokens: strips/collapses unsafe chars");
-});
-
-await test("buildDelayTokens collision safety", async () => {
-  const collide = buildDelayTokens({ "a!b": 1, "a?b": 2 });
-  assert.equal(collide.get("a!b"), "a-b", "buildDelayTokens: first owner keeps the base token");
-  assert.equal(collide.get("a?b"), "a-b-2", "buildDelayTokens: collision gets a -2 suffix");
-});
-
-
-await test("generateFilterChainConf output", async () => {
-  const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
-  assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
-  assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
-  assert.ok(conf.includes("libpipewire-module-adapter"), "generateFilterChainConf: adapter module (filter node needs it)");
-  assert.ok(conf.includes("audioconvert/libspa-audioconvert"), "generateFilterChainConf: spa-libs for audio.convert");
-  assert.ok(conf.includes("node.autoconnect = false"), "generateFilterChainConf: autoconnect off (no leak to default sink)");
-  assert.ok(conf.includes(`node.name = "${DELAY_PREFIX}alsa-x"`), "generateFilterChainConf: node.name is soloist-delay-<token>");
-  assert.ok(conf.includes('"Delay (s)" = 0.250'), "generateFilterChainConf: ms converted to seconds");
-});
-
-
-// reconcile: a delayed output routes through the filter-chain node, not a direct link,
-// and the shared child is spawned once (not per output) and killed on empty map.
-await test("reconcile delayed output via filter-chain", async () => {
+// reconcileOutputs (delay lifecycle, ADR-0013): a delayed output routes through a filter-chain
+// child spawned once (not per output), reused on an unchanged map, and killed when the delay is
+// removed; with no delays configured the topology is identical to pre-ADR-0013 (ADR-0011) and
+// no child is ever spawned.
+await test("reconcileOutputs delay lifecycle + no-delay parity", async () => {
   const calls: string[] = [];
   const spawnedCmds: string[] = [];
   let killed = 0;
@@ -1711,9 +1675,8 @@ await test("reconcile delayed output via filter-chain", async () => {
   assert.ok(!calls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile+delay: no direct link for a delayed output");
 
   // Unchanged delay map on the next reconcile -> no respawn.
-  const res2 = await reconcileOutputs(delayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
+  await reconcileOutputs(delayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
   assert.equal(spawnedCmds.length, 1, "reconcile+delay: same delay map does not respawn the child");
-  void res2;
 
   // Delay removed -> child killed, no new spawn, direct link used.
   const undelayedCfg = { audio: { snapcast: false, outputs: ["alsa_x"], outputDelays: { alsa_x: 0 } }, streamName: "Spotify" } as unknown as Config;
@@ -1721,22 +1684,19 @@ await test("reconcile delayed output via filter-chain", async () => {
   assert.equal(killed, 1, "reconcile: delay dropped to 0 kills the running filter-chain child");
   assert.equal(spawnedCmds.length, 1, "reconcile: dropping to 0 does not spawn a new child");
   assert.deepEqual(res3.linked, ["alsa_x"], "reconcile: output relinks directly once its delay is gone");
-});
 
-
-// no delay configured at all -> identical topology/behaviour to pre-ADR-0013 (ADR-0011).
-await test("reconcile no-delay topology unchanged", async () => {
-  const calls: string[] = [];
-  const run: Runner = async (cmd, args) => {
-    calls.push([cmd, ...args].join(" "));
+  // No delay configured at all -> identical direct-link topology; must never spawn a child.
+  const noDelayCalls: string[] = [];
+  const noDelayRun: Runner = async (cmd, args) => {
+    noDelayCalls.push([cmd, ...args].join(" "));
     if (args[0] === "-i") return "alsa_x:playback_FL\n";
     if (args.includes("-l")) return "";
     return "";
   };
-  const spawner: Spawner = () => { throw new Error("must not spawn a filter-chain child with no delays configured"); };
-  const res = await reconcileOutputs(dcfg(false, ["alsa_x"]), { run, spawn: spawner, retries: 1, intervalMs: 0 });
-  assert.deepEqual(res.linked, ["alsa_x"], "reconcile no-delay: unchanged direct-link behaviour");
-  assert.ok(calls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile no-delay: direct link, same as ADR-0011");
+  const noSpawn: Spawner = () => { throw new Error("must not spawn a filter-chain child with no delays configured"); };
+  const resND = await reconcileOutputs(dcfg(false, ["alsa_x"]), { run: noDelayRun, spawn: noSpawn, retries: 1, intervalMs: 0 });
+  assert.deepEqual(resND.linked, ["alsa_x"], "reconcile no-delay: unchanged direct-link behaviour");
+  assert.ok(noDelayCalls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile no-delay: direct link, same as ADR-0011");
 });
 
 
