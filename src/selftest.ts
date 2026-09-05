@@ -25,7 +25,7 @@ import { signSession, verifySession, parseCookies, sessionUser, webConfigured, S
 import { relayView, overlayBootstrap, handleWebRequest } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted } from "./supervisor.js";
 import { setPipewireDeviceOverride, setDockerMode, isDockerMode, getPipewireDeviceOverride } from "./runtime.js";
-import { parseMainArgs, applyRuntimeFlags, installShutdownHandlers } from "./main.js";
+import { parseMainArgs, applyRuntimeFlags, installShutdownHandlers, armShutdownWatchdog, SHUTDOWN_TIMEOUT_MS } from "./main.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
@@ -2497,6 +2497,38 @@ await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)
   assert.equal(typeof handlers2.SIGTERM, "function", "SIGTERM handler registered on a second install");
   handlers2.SIGTERM();
   assert.equal(controller2.signal.aborted, true, "invoking the SIGTERM handler aborts its controller");
+});
+
+// Shutdown watchdog (ARCH-L3): graceful teardown awaits server.close(), which can hang on
+// lingering keep-alive connections. armShutdownWatchdog force-exits after a bound so a stuck
+// teardown can never wedge the process. The timer is unref'd so it never keeps a clean
+// shutdown alive on its own.
+await test("shutdown watchdog force-exits a hung teardown (ARCH-L3)", async () => {
+  assert.equal(SHUTDOWN_TIMEOUT_MS, 15_000, "shutdown bound is 15s");
+
+  let firedCb: (() => void) | undefined;
+  let scheduledMs: number | undefined;
+  let unrefCalls = 0;
+  const exitCodes: number[] = [];
+  const logs: string[] = [];
+
+  armShutdownWatchdog(SHUTDOWN_TIMEOUT_MS, {
+    setTimer: (cb, ms) => {
+      firedCb = cb;
+      scheduledMs = ms;
+      return { unref: () => { unrefCalls++; } };
+    },
+    exit: (code) => { exitCodes.push(code); },
+    log: (msg) => { logs.push(msg); },
+  });
+
+  assert.equal(scheduledMs, SHUTDOWN_TIMEOUT_MS, "watchdog schedules at the shutdown bound");
+  assert.equal(unrefCalls, 1, "watchdog timer is unref'd so it never holds the loop open");
+  assert.deepEqual(exitCodes, [], "watchdog does not exit before the timer fires");
+
+  firedCb?.();
+  assert.deepEqual(exitCodes, [1], "watchdog force-exits with code 1 when the timer fires");
+  assert.ok(logs.some((m) => m.includes("forcing exit")), "watchdog logs the forced exit");
 });
 
 // SoloistRelay lifecycle (ADR-0012): the run loop must short-circuit when no url is
