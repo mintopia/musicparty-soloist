@@ -6,7 +6,8 @@ import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
-import { safeStrEqual } from "./util.js";
+import { safeStrEqual, deferred } from "./util.js";
+import { makeLog } from "./log.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
 import { shouldAutoplay, AUTOPLAY_FRAMES, listenParts, buildProxyStatus, makeServer } from "./proxy.js";
 import { decodeFrame, SoloistHub, type UpstreamFrame } from "./hub.js";
@@ -265,6 +266,40 @@ assert.equal(safeStrEqual("abc", "abc"), true, "equal strings match");
 assert.equal(safeStrEqual("abc", "abd"), false, "same-length mismatch rejected");
 assert.equal(safeStrEqual("abc", "abcd"), false, "different lengths rejected without throwing");
 assert.equal(safeStrEqual("", ""), true, "empty equals empty");
+});
+
+// deferred: a promise parked until someone else resolves it — await stays pending until
+// resolve() is called, and the same handle resolves only once.
+await test("deferred external-resolve promise", async () => {
+  const d = deferred();
+  let settled = false;
+  const waiter = d.promise.then(() => { settled = true; });
+  // Not resolved yet: a microtask flush must not settle it.
+  await Promise.resolve();
+  assert.equal(settled, false, "promise stays pending until resolve() is called");
+  d.resolve();
+  await waiter;
+  assert.equal(settled, true, "resolve() wakes the awaiter");
+  assert.doesNotThrow(() => d.resolve(), "a second resolve() is a harmless no-op");
+});
+
+// makeLog: builds a scoped logger that prefixes an ISO timestamp + `soloist.<scope>` before
+// the message and forwards any extra args through to console.log unchanged.
+await test("makeLog scoped, timestamped, forwards args", async () => {
+  const calls: unknown[][] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { calls.push(a); };
+  try {
+    const log = makeLog("relay");
+    const extra = { detail: 1 };
+    log("hello", extra, 42);
+    assert.equal(calls.length, 1, "one console.log per call");
+    const [line, ...rest] = calls[0] as [string, ...unknown[]];
+    assert.match(line, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z soloist\.relay hello$/, "ISO timestamp + soloist.<scope> + message");
+    assert.deepEqual(rest, [extra, 42], "extra args forwarded through unchanged");
+  } finally {
+    console.log = orig;
+  }
 });
 
 
