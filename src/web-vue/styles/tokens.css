@@ -79,10 +79,10 @@ a:hover { color: var(--ind-h); }
 /* Dark mode makes content panels glass: translucent so the teal clouds refract through, with a
    bright hairline top edge. Kept dark enough for text legibility; light mode stays solid. */
 :root[data-theme="dark"] .card {
-  background: rgba(38, 34, 27, .55);
-  backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  border-color: rgba(255, 255, 255, .07);
-  box-shadow: var(--sh), inset 0 1px 0 rgba(255, 255, 255, .05);
+  background: rgba(7, 8, 10, .62);
+  backdrop-filter: blur(22px) saturate(1.5); -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border-color: rgba(255, 255, 255, .11);
+  box-shadow: var(--sh), inset 0 1px 0 rgba(255, 255, 255, .07);
 }
 .btn {
   font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--txt); background: var(--card);
