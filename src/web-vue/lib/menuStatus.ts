@@ -2,17 +2,14 @@
 // precedence (ADR-0017) lives here as pure functions so it is unit-tested headless; the Vue
 // component only feeds reactive inputs in.
 
+import type { RelayStatus } from "../../wire-contract";
+
 export type BadgeLevel = "green" | "amber" | "red";
 
 export interface SoloistStatus {
   state: string | null;
   upstream: boolean;
   loggedIn: boolean | null;
-}
-
-export interface RelayStatus {
-  enabled: boolean;
-  connected: boolean;
 }
 
 // Supervisor states in which the Soloist process is not running or is broken; transient
