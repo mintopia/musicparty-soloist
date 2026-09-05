@@ -113,6 +113,11 @@ export interface OverlayConfig {
   timingOffsetMs: number;
 }
 
+// The running process holds exactly one Config object; live-apply consumers (auth,
+// sessionUser, webhooks, autoplay, overlay, relay) read it by reference. A save MUST
+// mutate this object in place (Object.assign) and MUST NEVER reassign the reference,
+// or those consumers keep reading the stale object. How each field takes effect is
+// declared in APPLY_STRATEGY (ADR-0022).
 export interface Config {
   soloist: SoloistConfig;
   proxy: { listen: string; token: string; readonlyToken: string };
@@ -187,6 +192,89 @@ const OVERLAY_FIELDS: OverlayFieldDef[] = [
 export const DEFAULT_OVERLAY: OverlayConfig = Object.fromEntries(
   OVERLAY_FIELDS.map((f) => [f.key, f.default]),
 ) as unknown as OverlayConfig;
+
+// ── Apply strategy (ADR-0022) ────────────────────────────────────────────────
+// How each config field takes effect after a save. Single source of truth: the
+// `satisfies Record<keyof …>` lines make TypeScript reject any section that adds a
+// field without classifying it, so a new field can no longer silently fail to apply.
+//
+//   live             read live off the shared Config; mutating it in place (never
+//                    reassigning — see the Config contract) is the whole apply step.
+//   callback         needs the post-save onConfigChange callback to push/re-dial:
+//                    overlay broadcast, relay re-connect, PipeWire fan-out reconcile.
+//   restart-soloist  a Soloist spawn arg (buildArgv); applies only when Soloist
+//                    re-spawns. The "restart Soloist" banner (pendingRestart) offers it.
+//   restart-snapcast feeds renderSnapserverConf; applies only when snapserver restarts.
+//                    The "restart Snapcast" banner (snapcastNeedsRestart) offers it.
+//   restart-process  a locked structural field (hand-edit-only, LOCKED_PATHS); needs a
+//                    full process restart. No banner — PUT can never change it live.
+export type ApplyStrategy =
+  | "live"
+  | "callback"
+  | "restart-soloist"
+  | "restart-snapcast"
+  | "restart-process";
+
+export const APPLY_STRATEGY = {
+  soloist: {
+    deviceName: "restart-soloist",
+    apiKey: "restart-soloist",
+    dataDir: "restart-soloist",
+    extraArgs: "restart-soloist",
+    pipewireDevice: "restart-soloist",
+  } satisfies Record<keyof SoloistConfig, ApplyStrategy>,
+  proxy: {
+    listen: "restart-process",
+    token: "live",
+    readonlyToken: "live",
+  } satisfies Record<keyof Config["proxy"], ApplyStrategy>,
+  soloistWs: "restart-soloist",
+  streamName: "restart-snapcast",
+  snapweb: "restart-snapcast",
+  snapcastServerConfig: "restart-snapcast",
+  autoplay: "live",
+  webhooks: {
+    defaultUrl: "live",
+    urls: "live",
+    secret: "live",
+    delayMs: "live",
+  } satisfies Record<keyof WebhooksConfig, ApplyStrategy>,
+  relay: {
+    url: "callback",
+    authorization: "callback",
+  } satisfies Record<keyof RelayConfig, ApplyStrategy>,
+  web: {
+    username: "live",
+    password: "live",
+    sessionSecret: "live",
+  } satisfies Record<keyof WebConfig, ApplyStrategy>,
+  audio: {
+    outputs: "callback",
+    snapcast: "callback",
+    outputDelays: "callback",
+  } satisfies Record<keyof AudioConfig, ApplyStrategy>,
+  // Every overlay field is callback: a save broadcasts overlay_config so open overlays
+  // restyle without a reload (new page loads read the values live). Spelled out rather
+  // than derived so the satisfies check forces a strategy for any field added here too.
+  overlay: {
+    font: "callback",
+    fontSize: "callback",
+    color: "callback",
+    neighbourColor: "callback",
+    dimOpacity: "callback",
+    motion: "callback",
+    easing: "callback",
+    transitionMs: "callback",
+    effect: "callback",
+    fxColor: "callback",
+    fxIntensity: "callback",
+    fxDurMs: "callback",
+    alignment: "callback",
+    anchor: "callback",
+    lineCount: "callback",
+    timingOffsetMs: "callback",
+  } satisfies Record<keyof OverlayConfig, ApplyStrategy>,
+} satisfies Record<keyof Config, ApplyStrategy | Record<string, ApplyStrategy>>;
 
 function parseOverlay(raw: Record<string, any>): OverlayConfig {
   const out: Record<string, unknown> = {};

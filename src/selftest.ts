@@ -15,7 +15,7 @@ import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFE
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, MAX_OUTPUT_DELAY_MS, DEFAULT_OVERLAY, DEFAULT_SNAPSERVER_CONFIG, type Config } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, MAX_OUTPUT_DELAY_MS, DEFAULT_OVERLAY, DEFAULT_SNAPSERVER_CONFIG, APPLY_STRATEGY, type ApplyStrategy, type Config } from "./config.js";
 import { renderSnapserverConf, snapStreamSource, writeSnapserverConf, renderConfToFileFromPath } from "./snapserver.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./supervisor.js";
@@ -1356,6 +1356,41 @@ await test("run mode is explicit, not inferred from --pipewire-device", async ()
   assert.equal(isDockerMode(), false, "reset to standalone");
 });
 
+
+// ADR-0022: APPLY_STRATEGY is the single source of truth for how each config field takes
+// effect. This pins its restart classifications to real behaviour — every restart-soloist
+// field must move buildArgv and nothing else; every restart-snapcast field must move
+// renderSnapserverConf and nothing else; live/callback/restart-process fields must move
+// neither. A field added to buildArgv or the conf renderer without the matching strategy
+// fails here. (Table completeness itself is enforced at compile time by satisfies.)
+await test("APPLY_STRATEGY matches the real restart detectors", async () => {
+  setPipewireDeviceOverride(""); // no Docker pin, so pipewireDevice drives buildArgv directly
+
+  const leaves: { path: string[]; strategy: ApplyStrategy }[] = [];
+  for (const [k, v] of Object.entries(APPLY_STRATEGY)) {
+    if (typeof v === "string") leaves.push({ path: [k], strategy: v as ApplyStrategy });
+    else for (const [k2, v2] of Object.entries(v)) leaves.push({ path: [k, k2], strategy: v2 as ApplyStrategy });
+  }
+
+  const base = defaultConfig();
+  for (const { path, strategy } of leaves) {
+    const mut = structuredClone(base) as Record<string, any>;
+    let o: any = mut;
+    for (let i = 0; i < path.length - 1; i++) o = o[path[i]];
+    const key = path[path.length - 1];
+    const v = o[key];
+    if (typeof v === "string") o[key] = v + "CHANGED";
+    else if (typeof v === "number") o[key] = v + 1;
+    else if (typeof v === "boolean") o[key] = !v;
+    else if (Array.isArray(v)) o[key] = [...v, "x"];
+    else o[key] = { ...v, "x": 1 };
+
+    const argvChanged = JSON.stringify(buildArgv(base)) !== JSON.stringify(buildArgv(mut as unknown as Config));
+    const confChanged = renderSnapserverConf(base) !== renderSnapserverConf(mut as unknown as Config);
+    assert.equal(argvChanged, strategy === "restart-soloist", `${path.join(".")}: buildArgv sensitivity vs strategy ${strategy}`);
+    assert.equal(confChanged, strategy === "restart-snapcast", `${path.join(".")}: snapserver conf sensitivity vs strategy ${strategy}`);
+  }
+});
 
 // SoloistControl: pending derives from live config vs last-spawned args; restart clears it.
 await test("SoloistControl pending vs applied", async () => {
