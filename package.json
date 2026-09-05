@@ -20,14 +20,19 @@
   "publishConfig": {
     "access": "public"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "tsc && vite build && node -e \"require('fs').cpSync('src/web','dist/web',{recursive:true})\"",
+    "build:backend": "tsc && node -e \"require('fs').cpSync('src/web','dist/web',{recursive:true})\"",
     "start": "node dist/main.js",
     "dev": "npm run build && node dist/main.js",
     "dev:web": "vite",
     "build:web": "vite build",
     "typecheck:web": "tsc --noEmit -p src/web-vue/tsconfig.json",
     "test": "npm run build && node dist/selftest.js",
+    "test:backend": "npm run build:backend && SOLOIST_TEST_BACKEND_ONLY=1 node dist/selftest.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
