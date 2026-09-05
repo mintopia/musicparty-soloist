@@ -1741,6 +1741,39 @@ await test("supervise abort during boot-acquire backoff shuts down promptly", as
 });
 
 
+// Integration: a restart during crash-loop backoff wakes the sleep early instead of
+// waiting out the (>=1s) backoff cap. A soloist that crashes immediately parks the loop
+// in `backoff`; restart() must re-spawn promptly, not after the full wait.
+await test("supervise restart wakes crash-loop backoff early", async () => {
+  const sdir = mkdtempSync(join(tmpdir(), "sup-wake-"));
+  const logf = join(sdir, "runs.log");
+  const script = join(sdir, "crash.sh");
+  writeFileSync(script, `#!/bin/sh\necho run >> ${logf}\nexit 1\n`, { mode: 0o755 });
+  const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "u", password: "p", sessionSecret: "" } } as unknown as Config;
+  const control = new SoloistControl();
+  const ac = new AbortController();
+  const runs = () => { try { return readFileSync(logf, "utf8").trim().split("\n").filter(Boolean).length; } catch { return 0; } };
+  const waitFor = async (n: number) => { for (let i = 0; i < 200 && runs() < n; i++) await new Promise((r) => setTimeout(r, 10)); };
+  const waitState = async (s: string) => { for (let i = 0; i < 300 && control.soloistStatus().state !== s; i++) await new Promise((r) => setTimeout(r, 10)); };
+
+  const supP = supervise(cfg, { signal: ac.signal, control, acquire: async () => script });
+  supP.catch(() => {});
+
+  await waitFor(1);
+  await waitState("backoff");
+  const t0 = Date.now();
+  control.restart(cfg);
+  await waitFor(2);
+  const elapsed = Date.now() - t0;
+  assert.equal(runs() >= 2, true, "restart re-spawned soloist during backoff");
+  assert.ok(elapsed < 500, `restart woke the backoff sleep early (${elapsed}ms << 1000ms cap)`);
+
+  ac.abort();
+  await supP.catch(() => {});
+  rmSync(sdir, { recursive: true, force: true });
+});
+
+
 // PipeWire fan-out (ADR-0011, ticket T9).
 const pwDump = JSON.stringify([
   { info: { props: { "media.class": "Audio/Sink", "node.name": "soloist-sink", "node.description": "Soloist" } } },
