@@ -70,6 +70,7 @@ function addOverride() {
         <SecretRow
           class="secret"
           label="Authorization Header"
+          optional
           :is-set="secretSet['webhooks.secret']"
           v-model="webhooks.secret"
           hint="Sent as a Bearer token in the Authorization header on every webhook request. Optional."
