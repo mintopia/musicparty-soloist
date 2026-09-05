@@ -672,7 +672,9 @@ const signed = signSession("admin", SECRET);
 await test("verifySession", async () => {
 assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
 assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
-assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
+// Flip the last MAC char to a guaranteed-different one — a fixed "x" is a no-op when the
+// (timestamped, per-run) MAC already ends in "x", which would leave the token untampered.
+assert.equal(verifySession(signed.slice(0, -1) + (signed.at(-1) === "a" ? "b" : "a"), SECRET), null, "tampered signature rejected");
 });
 
 await test("session tamper rejection", async () => {
@@ -1147,7 +1149,6 @@ await test("integration purity: diagnostics stay on App-Control; genuine frames 
   const running = await makeServer(cfg, cfgPath);
   const upConn = await upReady;
   await relayReady;
-  await new Promise((r) => setTimeout(r, 30)); // let the relay socket reach OPEN
 
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
   // Debug Subscriber (App-Control) + Downstream Client (`/`); closed in finally before
@@ -1170,26 +1171,29 @@ await test("integration purity: diagnostics stay on App-Control; genuine frames 
     await once(down, "open");
     for (let i = 0; i < 100 && running.hub.clientCount() === 0; i++) await new Promise((r) => setTimeout(r, 5));
 
+    const streamsSeen = () => new Set(debugMsgs.map((m) => m.stream));
+    const liveWebhook = () => debugMsgs.some((m) => m.stream === "webhooks" && !Array.isArray(m.data));
+    // The outbound mirror drops frames while the proxy's Relay socket isn't OPEN, so wait for a
+    // proxy_status showing the Relay connected before emitting the frame (bounded, like the rest).
+    const relayUp = () => debugMsgs.some((m) => m.stream === "proxy_status" && (m.data as { relay?: { connected?: boolean } }).relay?.connected === true);
+    for (let i = 0; i < 200 && !relayUp(); i++) await new Promise((r) => setTimeout(r, 10));
+
     // A genuine Soloist frame: broadcast raw to `/` + Relay, mirrored as a `frame` diagnostic, and
     // (track_changed is a state event with a configured URL) fires a webhook delivery.
     const GENUINE = '{"type":"track_changed","item":{"uri":"spotify:x"}}';
     upConn.send(GENUINE);
 
-    const streamsSeen = () => new Set(debugMsgs.map((m) => m.stream));
-    const liveWebhook = () => debugMsgs.some((m) => m.stream === "webhooks" && !Array.isArray(m.data));
     for (let i = 0; i < 300; i++) {
       if (gotDownstream.length && gotRelay.length && DEBUG_STREAMS.every((s) => streamsSeen().has(s)) && liveWebhook()) break;
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    // Genuine frame reaches `/` and the Relay byte-for-byte, and NOTHING else does.
     assert.deepEqual(gotDownstream, [GENUINE], "Downstream `/` client receives only the genuine frame, verbatim");
     assert.deepEqual(gotRelay, [GENUINE], "Relay Server receives only the genuine frame, verbatim");
     for (const raw of [...gotDownstream, ...gotRelay]) {
       assert.ok(!("stream" in JSON.parse(raw)), `no diagnostic envelope leaked to / or Relay: ${raw}`);
     }
 
-    // Every diagnostic stream was produced, and only the Debug Subscriber saw them.
     for (const s of DEBUG_STREAMS) assert.ok(streamsSeen().has(s), `Debug Subscriber received the ${s} diagnostic`);
     assert.ok(hookHit, "the genuine frame fired the webhook");
     assert.ok(liveWebhook(), "a live webhook delivery reached the App-Control socket");
