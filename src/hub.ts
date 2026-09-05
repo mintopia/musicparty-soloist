@@ -5,7 +5,7 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocket, type RawData } from "ws";
-import type { ClientAuth } from "./auth.js";
+import type { ClientMeta } from "./wire-contract.js";
 import { STATE_EVENTS } from "./webhooks.js";
 import { deferred } from "./util.js";
 import { reconnectLoop } from "./reconnect.js";
@@ -23,14 +23,7 @@ export interface UpstreamFrame {
   raw: string;
 }
 
-export interface ClientMeta {
-  id: string;
-  remoteAddr: string;
-  tier: "control" | "readonly";
-  auth: ClientAuth;
-  connectedAt: number;
-  userAgent: string;
-}
+export type { ClientMeta };
 
 export type FrameObserver = (frame: UpstreamFrame) => void;
 

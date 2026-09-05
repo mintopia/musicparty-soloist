@@ -5,12 +5,12 @@ import SectionCard from "../../components/SectionCard.vue";
 import LoadingState from "../../components/LoadingState.vue";
 import TextField from "../../components/TextField.vue";
 import SecretRow from "../../components/SecretRow.vue";
+import type { RelayStatus } from "../../../wire-contract";
 
 const { config, secretSet, loaded } = useConfig();
 const c = config as any;
 
-interface RelayStatus { enabled: boolean; connected: boolean; lastError: string | null }
-const relay = ref<RelayStatus>({ enabled: false, connected: false, lastError: null });
+const relay = ref<RelayStatus>({ enabled: false, connected: false, lastConnectAt: null, lastError: null });
 let timer: number | undefined;
 
 async function refreshRelay() {
