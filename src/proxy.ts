@@ -1,6 +1,7 @@
 // Fronts Soloist's unauthenticated localhost-only control WS with token auth (ADR-0001).
 
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { Config } from "./config.js";
@@ -69,7 +70,7 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
     log("autoplay: logged in, injecting activate then play");
-    for (const frame of AUTOPLAY_FRAMES) hub.inject(frame);
+    for (const autoplayFrame of AUTOPLAY_FRAMES) hub.inject(autoplayFrame);
   });
 }
 
@@ -101,6 +102,133 @@ export function buildProxyStatus(
   };
 }
 
+interface DiagnosticsHandles {
+  publishProxyStatus: () => void;
+  statusTimer: ReturnType<typeof setInterval>;
+  unlistenWebhooks: () => void;
+}
+
+// Diagnostic streams over the App-Control WS: Debug Subscribers only, never
+// hub.broadcastMessage (that is the pure `/` Downstream path) or the Relay (ADR-0016).
+function wireDiagnostics(
+  hub: SoloistHub,
+  relay: SoloistRelay,
+  appControl: AppControl,
+  history: WebhookHistory,
+  control: SoloistControl | undefined,
+): DiagnosticsHandles {
+  const publishProxyStatus = () => appControl.publish("proxy_status", buildProxyStatus(hub, relay.status, history, control));
+  // frame: every upstream Soloist frame mirrored out (output only — clients never feed this).
+  hub.observe((frame) => appControl.publish("frame", frame.message));
+  // webhooks: live full-detail deliveries as they land (initial dump handled on subscribe).
+  const unlistenWebhooks = history.onEntry((d) => appControl.publish("webhooks", d));
+  // On subscribe, seed the new socket with the current snapshot so a diagnostics UI paints
+  // immediately instead of waiting for the next change/heartbeat.
+  appControl.onSubscribe((stream, send) => {
+    if (stream === "proxy_status") send(buildProxyStatus(hub, relay.status, history, control));
+    else if (stream === "clients") send(hub.clientList());
+    else if (stream === "webhooks") send(history.entries());
+  });
+  const statusTimer = setInterval(publishProxyStatus, PROXY_STATUS_INTERVAL_MS);
+  statusTimer.unref?.();
+  return { publishProxyStatus, statusTimer, unlistenWebhooks };
+}
+
+function handleUpgrade(
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  cfg: Config,
+  hub: SoloistHub,
+  appControl: AppControl,
+  wss: WebSocketServer,
+  publishProxyStatus: () => void,
+): void {
+  const path = new URL(req.url ?? "/", "http://localhost").pathname;
+  // App-Control WebSocket: operator-only diagnostics on a session cookie + same-host
+  // origin (no tokens). Registered as a Debug Subscriber, never a Downstream Client.
+  if (path === APP_CONTROL_PATH) {
+    if (!appControlAllowed(req, cfg)) {
+      log.warn("rejected app-control upgrade from %s: no session or cross-origin", req.socket.remoteAddress);
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
+      socket.destroy();
+      return;
+    }
+    appControl.handleUpgrade(req, socket, head);
+    return;
+  }
+  const { tier, auth } = resolveAuth(req, cfg);
+  if (tier === "none") {
+    log.warn("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
+    socket.destroy();
+    return;
+  }
+  // A cookie-authed upgrade must be same-origin, or a malicious page could ride the
+  // ambient session cookie into full control (cross-site WebSocket hijacking). Keyed on
+  // the derived auth kind, not token presence: a bogus token alongside a valid cookie
+  // still resolves to session-cookie and must not slip past this gate.
+  if (auth === "session-cookie" && !sameOrigin(req)) {
+    log.warn("rejected cookie upgrade from %s: cross-origin", req.socket.remoteAddress);
+    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (client) => {
+    hub.register(client, {
+      id: randomUUID(),
+      remoteAddr: req.socket.remoteAddress ?? "",
+      tier,
+      auth: auth as ClientAuth,
+      connectedAt: Date.now(),
+      userAgent: req.headers["user-agent"] ?? "",
+    });
+    // Eager diagnostic push: a Downstream Client join/leave changes the Client Count and
+    // list, so refresh Debug Subscribers now rather than waiting for the heartbeat.
+    publishProxyStatus();
+    appControl.publish("clients", hub.clientList());
+    // ws emits `close` after `error`, so fire once: one disconnect is one diagnostic event.
+    let gone = false;
+    const onGone = () => {
+      if (gone) return;
+      gone = true;
+      hub.unregister(client);
+      publishProxyStatus();
+      appControl.publish("clients", hub.clientList());
+    };
+    client.on("message", (data, isBinary) => hub.forward(client, data, isBinary));
+    client.on("close", onGone);
+    client.on("error", onGone);
+  });
+}
+
+interface TeardownDeps {
+  statusTimer: ReturnType<typeof setInterval>;
+  unlistenWebhooks: () => void;
+  hub: SoloistHub;
+  relay: SoloistRelay;
+  appControl: AppControl;
+  wss: WebSocketServer;
+  server: Server;
+}
+
+// Ordered teardown: stop the proxy_status heartbeat and drop the webhook observer,
+// stop the Hub (ends its reconnect loop and disposes every observer subscription),
+// stop the Relay, then tear down the App-Control tier — clear its re-check interval,
+// terminate every Debug Subscriber socket, and await its WebSocketServer close —
+// before closing the Downstream WSS and HTTP server.
+function buildTeardown(deps: TeardownDeps): () => Promise<void> {
+  return async () => {
+    clearInterval(deps.statusTimer);
+    deps.unlistenWebhooks();
+    deps.hub.stop();
+    deps.relay.stop();
+    await deps.appControl.stop();
+    deps.wss.close();
+    await new Promise<void>((res) => deps.server.close(() => res()));
+  };
+}
+
 export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
@@ -117,85 +245,13 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     relay.apply();
   };
 
-  // Diagnostic streams over the App-Control WS: Debug Subscribers only, never
-  // hub.broadcastMessage (that is the pure `/` Downstream path) or the Relay (ADR-0016).
-  const publishProxyStatus = () => appControl.publish("proxy_status", buildProxyStatus(hub, relay.status, history, control));
-  // frame: every upstream Soloist frame mirrored out (output only — clients never feed this).
-  hub.observe((frame) => appControl.publish("frame", frame.message));
-  // webhooks: live full-detail deliveries as they land (initial dump handled on subscribe).
-  const unlistenWebhooks = history.onEntry((d) => appControl.publish("webhooks", d));
-  // On subscribe, seed the new socket with the current snapshot so a diagnostics UI paints
-  // immediately instead of waiting for the next change/heartbeat.
-  appControl.onSubscribe((stream, send) => {
-    if (stream === "proxy_status") send(buildProxyStatus(hub, relay.status, history, control));
-    else if (stream === "clients") send(hub.clientList());
-    else if (stream === "webhooks") send(history.entries());
-  });
-  const statusTimer = setInterval(publishProxyStatus, PROXY_STATUS_INTERVAL_MS);
-  statusTimer.unref?.();
+  const { publishProxyStatus, statusTimer, unlistenWebhooks } = wireDiagnostics(hub, relay, appControl, history, control);
 
   const server = createServer((req, res) => {
     if (!handleWebRequest(req, res, cfg, configPath, control, onConfigChange, relay.status, (r) => appControl.closeForRequest(r))) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
-  server.on("upgrade", (req, socket, head) => {
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
-    // App-Control WebSocket: operator-only diagnostics on a session cookie + same-host
-    // origin (no tokens). Registered as a Debug Subscriber, never a Downstream Client.
-    if (path === APP_CONTROL_PATH) {
-      if (!appControlAllowed(req, cfg)) {
-        log.warn("rejected app-control upgrade from %s: no session or cross-origin", req.socket.remoteAddress);
-        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
-        socket.destroy();
-        return;
-      }
-      appControl.handleUpgrade(req, socket, head);
-      return;
-    }
-    const { tier, auth } = resolveAuth(req, cfg);
-    if (tier === "none") {
-      log.warn("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
-      socket.destroy();
-      return;
-    }
-    // A cookie-authed upgrade must be same-origin, or a malicious page could ride the
-    // ambient session cookie into full control (cross-site WebSocket hijacking). Keyed on
-    // the derived auth kind, not token presence: a bogus token alongside a valid cookie
-    // still resolves to session-cookie and must not slip past this gate.
-    if (auth === "session-cookie" && !sameOrigin(req)) {
-      log.warn("rejected cookie upgrade from %s: cross-origin", req.socket.remoteAddress);
-      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (client) => {
-      hub.register(client, {
-        id: randomUUID(),
-        remoteAddr: req.socket.remoteAddress ?? "",
-        tier,
-        auth: auth as ClientAuth,
-        connectedAt: Date.now(),
-        userAgent: req.headers["user-agent"] ?? "",
-      });
-      // Eager diagnostic push: a Downstream Client join/leave changes the Client Count and
-      // list, so refresh Debug Subscribers now rather than waiting for the heartbeat.
-      publishProxyStatus();
-      appControl.publish("clients", hub.clientList());
-      // ws emits `close` after `error`, so fire once: one disconnect is one diagnostic event.
-      let gone = false;
-      const onGone = () => {
-        if (gone) return;
-        gone = true;
-        hub.unregister(client);
-        publishProxyStatus();
-        appControl.publish("clients", hub.clientList());
-      };
-      client.on("message", (data, isBinary) => hub.forward(client, data, isBinary));
-      client.on("close", onGone);
-      client.on("error", onGone);
-    });
-  });
+  server.on("upgrade", (req, socket, head) => handleUpgrade(req, socket, head, cfg, hub, appControl, wss, publishProxyStatus));
 
   const hubRun = hub.run();
   hubRun.catch((e) => log.error("hub crashed: %s", (e as Error).message));
@@ -221,20 +277,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
         server,
         hub,
         appControl,
-        close: async () => {
-          // Ordered teardown: stop the proxy_status heartbeat and drop the webhook observer,
-          // stop the Hub (ends its reconnect loop and disposes every observer subscription),
-          // stop the Relay, then tear down the App-Control tier — clear its re-check interval,
-          // terminate every Debug Subscriber socket, and await its WebSocketServer close —
-          // before closing the Downstream WSS and HTTP server.
-          clearInterval(statusTimer);
-          unlistenWebhooks();
-          hub.stop();
-          relay.stop();
-          await appControl.stop();
-          wss.close();
-          await new Promise<void>((res) => server.close(() => res()));
-        },
+        close: buildTeardown({ statusTimer, unlistenWebhooks, hub, relay, appControl, wss, server }),
       });
     });
   });

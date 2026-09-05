@@ -8,6 +8,7 @@ import { WebSocket, type RawData } from "ws";
 import type { ClientAuth } from "./auth.js";
 import { STATE_EVENTS } from "./webhooks.js";
 import { deferred } from "./util.js";
+import { reconnectLoop } from "./reconnect.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("proxy");
@@ -140,12 +141,10 @@ export class SoloistHub {
   }
 
   private broadcast(data: RawData, isBinary: boolean): void {
+    // Skip rather than delete: the proxy's onGone handler already calls unregister() on
+    // socket close/error, so this map is cleaned up there — pruning here too would race it.
     for (const client of this.clients.keys()) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(data, { binary: isBinary });
-      } else {
-        this.clients.delete(client);
-      }
+      if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
     }
   }
 
@@ -183,38 +182,36 @@ export class SoloistHub {
   }
 
   async run(): Promise<void> {
-    let backoff = HUB_BACKOFF_BASE;
-    while (!this.stopped) {
-      const url = this.urlFn();
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const conn = new WebSocket(url);
-          conn.on("open", () => {
-            log("connected to soloist upstream %s", url);
-            this.conn = conn;
-            this.ready.resolve();
-            backoff = HUB_BACKOFF_BASE;
-            try {
-              this.connectFn?.();
-            } catch (err) {
-              log.error("connect observer error: %s", (err as Error).message);
-            }
-          });
-          conn.on("message", (data, isBinary) => this.onUpstream(data, isBinary));
-          conn.on("error", (err) => reject(err));
-          conn.on("close", () => resolve());
-        });
-      } catch (err) {
-        log.error("soloist upstream %s error: %s", url, (err as Error).message);
-      } finally {
+    // Resolved fresh in connect() (not hoisted) so a mid-loop soloist_ws change is picked
+    // up on the very next dial.
+    let currentUrl = "";
+    await reconnectLoop({
+      backoffBase: HUB_BACKOFF_BASE,
+      backoffMax: HUB_BACKOFF_MAX,
+      isStopped: () => this.stopped,
+      getWake: () => this.wake,
+      shouldDial: () => true,
+      connect: () => {
+        currentUrl = this.urlFn();
+        return new WebSocket(currentUrl);
+      },
+      onOpen: (conn) => {
+        log("connected to soloist upstream %s", currentUrl);
+        this.conn = conn;
+        this.ready.resolve();
+        try {
+          this.connectFn?.();
+        } catch (err) {
+          log.error("connect observer error: %s", (err as Error).message);
+        }
+      },
+      onMessage: (data, isBinary) => this.onUpstream(data, isBinary),
+      onError: (err) => log.error("soloist upstream %s error: %s", currentUrl, err.message),
+      onSettled: () => {
         this.conn = null;
         this.ready = deferred();
-      }
-      if (this.stopped) break;
-      log.warn("soloist upstream down; reconnecting in %ss", backoff);
-      // Backoff, but wake early on stop() so shutdown never waits out the cap.
-      await Promise.race([sleep(backoff * 1000), this.wake.promise]);
-      backoff = Math.min(backoff * 2, HUB_BACKOFF_MAX);
-    }
+      },
+      onReconnectWait: (backoff) => log.warn("soloist upstream down; reconnecting in %ss", backoff),
+    });
   }
 }

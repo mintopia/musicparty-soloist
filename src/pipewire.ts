@@ -13,6 +13,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Config } from "./config.js";
+import { MAX_OUTPUT_DELAY_MS } from "./config.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("pipewire");
@@ -133,8 +134,9 @@ export function buildDelayTokens(delays: Record<string, number>): Map<string, st
 // A self-contained filter-chain conf (protocol-native + client-node so it can
 // register as a client against the running daemon, per node one delay filter).
 export function generateFilterChainConf(delays: Record<string, number>, tokens: Map<string, string>): string {
+  const maxDelaySeconds = (MAX_OUTPUT_DELAY_MS / 1000).toFixed(1);
   const blocks = [...tokens.entries()].map(([node, token]) => {
-    const seconds = (Math.min(5000, Math.max(0, delays[node])) / 1000).toFixed(3);
+    const seconds = (Math.min(MAX_OUTPUT_DELAY_MS, Math.max(0, delays[node])) / 1000).toFixed(3);
     return `  { name = libpipewire-module-filter-chain
     args = {
       node.name = "${DELAY_PREFIX}${token}"
@@ -145,8 +147,8 @@ export function generateFilterChainConf(delays: Record<string, number>, tokens: 
       playback.props = { node.autoconnect = false }
       filter.graph = {
         nodes = [
-          { type = builtin label = delay name = dL config = { "max-delay" = 5.0 } control = { "Delay (s)" = ${seconds} } }
-          { type = builtin label = delay name = dR config = { "max-delay" = 5.0 } control = { "Delay (s)" = ${seconds} } }
+          { type = builtin label = delay name = dL config = { "max-delay" = ${maxDelaySeconds} } control = { "Delay (s)" = ${seconds} } }
+          { type = builtin label = delay name = dR config = { "max-delay" = ${maxDelaySeconds} } control = { "Delay (s)" = ${seconds} } }
         ]
         inputs  = [ "dL:In" "dR:In" ]
         outputs = [ "dL:Out" "dR:Out" ]

@@ -29,9 +29,14 @@ const WEB_ROOT = resolve(WEB_DIR);
 // (index.html); vue-router reads location.pathname to pick the tab. "/" is Now Playing.
 const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/debug", "/lyrics", "/settings"]);
 
-// Secret leaves the Landing Page may reveal on demand (eye toggle). Deliberately not
-// the password (a scrypt hash) or the session secret — only operator-facing plaintext.
-const REVEALABLE = new Set(["soloist.apiKey", "proxy.token", "relay.authorization"]);
+// Secrets the Landing Page may reveal on demand (eye toggle), each with a typed
+// accessor keyed by its "section.key". Deliberately not the password (a scrypt hash)
+// or the session secret — only operator-facing plaintext.
+const REVEALABLE = new Map<string, (cfg: Config) => string>([
+  ["soloist.apiKey", (cfg) => cfg.soloist.apiKey],
+  ["proxy.token", (cfg) => cfg.proxy.token],
+  ["relay.authorization", (cfg) => cfg.relay.authorization],
+]);
 
 const CONTENT_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8",
@@ -369,10 +374,9 @@ export function handleWebRequest(
   // the rest of the config API; returns 404 for any path outside REVEALABLE.
   if (path === "/api/secret" && method === "GET") {
     if (!apiAuthed(req, res, cfg)) return true;
-    const key = `${url.searchParams.get("section")}.${url.searchParams.get("key")}`;
-    if (!REVEALABLE.has(key)) return json(res, 404, { error: "not revealable" }), true;
-    const [section, k] = key.split(".");
-    json(res, 200, { value: (cfg as unknown as Record<string, Record<string, string>>)[section][k] ?? "" });
+    const reveal = REVEALABLE.get(`${url.searchParams.get("section")}.${url.searchParams.get("key")}`);
+    if (!reveal) return json(res, 404, { error: "not revealable" }), true;
+    json(res, 200, { value: reveal(cfg) });
     return true;
   }
 
@@ -406,14 +410,12 @@ export function handleWebRequest(
   }
 
   if (path === "/login" && method === "GET") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
     if (sessionUser(req, cfg)) return redirect(res, "/"), true;
     serveAsset(res, "/login.html");
     return true;
   }
 
   if (path === "/login" && method === "POST") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
     void handleLogin(req, res, cfg, configPath);
     return true;
   }
@@ -430,7 +432,6 @@ export function handleWebRequest(
   // Serve the SPA shell for top-level app paths and any Settings detail deep-link
   // (master-detail nests /settings/<section>), so a hard reload or bookmark resolves.
   if ((APP_PATHS.has(path) || path.startsWith("/settings/")) && method === "GET") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
     if (!sessionUser(req, cfg)) return redirect(res, "/login"), true;
     serveAsset(res, "/index.html");
     return true;
