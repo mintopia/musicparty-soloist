@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
-import type { SoloistControl, SoloistState } from "./supervisor.js";
+import type { SoloistControl } from "./supervisor.js";
 import { sameOrigin, resolveAuth, type ClientAuth } from "./auth.js";
 import { AppControl, APP_CONTROL_PATH, appControlAllowed } from "./appcontrol.js";
 import { attachWebhooks, STATE_EVENTS, WebhookHistory, type WebhookDelivery } from "./webhooks.js";
@@ -15,6 +15,9 @@ import { reconcileOutputs, startSinkPolling } from "./pipewire.js";
 import { isDockerMode } from "./runtime.js";
 import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
+import type { ClientMeta, ProxyStatus } from "./wire-contract.js";
+
+export type { ClientMeta, ProxyStatus } from "./wire-contract.js";
 
 const log = makeLog("proxy");
 
@@ -30,15 +33,6 @@ export interface UpstreamFrame {
   type: string;
   message: Record<string, unknown>;
   raw: string;
-}
-
-export interface ClientMeta {
-  id: string;
-  remoteAddr: string;
-  tier: "control" | "readonly";
-  auth: ClientAuth;
-  connectedAt: number;
-  userAgent: string;
 }
 
 export type FrameObserver = (frame: UpstreamFrame) => void;
@@ -276,13 +270,6 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
     log("autoplay: logged in, injecting activate then play");
     for (const frame of AUTOPLAY_FRAMES) hub.inject(frame);
   });
-}
-
-export interface ProxyStatus {
-  soloist: { state: SoloistState | null; upstream: boolean; loggedIn: boolean | null };
-  clients: number;
-  relay: RelayStatus;
-  webhook: { at: number; type: string; status: number | null; ok: boolean } | null;
 }
 
 // A delivery "succeeded" only if it got a response with a 2xx status; a network/timeout

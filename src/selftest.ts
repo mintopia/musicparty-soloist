@@ -12,6 +12,7 @@ import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, 
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
 import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
+import { DEBUG_STREAMS as WIRE_DEBUG_STREAMS, type ProxyStatus } from "./wire-contract.js";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -915,6 +916,21 @@ await test("Hub getters + buildProxyStatus summary", async () => {
   history.record({ ...delivery, at: 3000, status: null, error: "timeout" });
   assert.deepEqual(buildProxyStatus(hub2, relay, history, control).webhook, { at: 3000, type: "now_playing", status: null, ok: false }, "network error -> status null, not ok");
   hub2.stop();
+});
+
+
+// The Proxy↔client wire contract lives once in wire-contract.ts: every module derives
+// ProxyStatus/ClientMeta/WebhookDelivery/DEBUG_STREAMS from that single source, so a server
+// rename or a new stream can't compile clean on both sides while the wire diverges. This
+// locks the const's identity — re-forking it in appcontrol would break the reference — and
+// pins the shape a real buildProxyStatus() hands the client (the `: ProxyStatus` annotation
+// is the compile-time half of the same guarantee).
+await test("wire contract is single-sourced", () => {
+  assert.strictEqual(DEBUG_STREAMS, WIRE_DEBUG_STREAMS, "appcontrol re-exports the shared DEBUG_STREAMS, not a hand-copied fork");
+  const relay = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
+  const status: ProxyStatus = buildProxyStatus(new SoloistHub("ws://127.0.0.1:1"), relay, new WebhookHistory());
+  assert.deepEqual(Object.keys(status).sort(), ["clients", "relay", "soloist", "webhook"], "ProxyStatus carries exactly the four wire fields");
+  assert.deepEqual(Object.keys(status.soloist).sort(), ["loggedIn", "state", "upstream"], "soloist sub-shape matches the client contract");
 });
 
 

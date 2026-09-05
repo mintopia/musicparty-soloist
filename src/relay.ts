@@ -9,18 +9,14 @@ import type { Config } from "./config.js";
 import type { SoloistHub } from "./proxy.js";
 import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
+import type { RelayStatus } from "./wire-contract.js";
 
 const log = makeLog("proxy");
 
 const RELAY_BACKOFF_BASE = 0.5;
 const RELAY_BACKOFF_MAX = 30.0;
 
-export interface RelayStatus {
-  enabled: boolean;         // url configured
-  connected: boolean;
-  lastConnectAt: number | null;
-  lastError: string | null;
-}
+export type { RelayStatus } from "./wire-contract.js";
 
 export class SoloistRelay {
   private conn: WebSocket | null = null;
