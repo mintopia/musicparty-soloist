@@ -8,7 +8,9 @@ const props = defineProps<{
   section?: string;
   fieldKey?: string;
   isSet: boolean;
+  optional?: boolean;
   revealable?: boolean;
+  hint?: string;
 }>();
 
 // Masked secret: `true` = stored, `false` = unset, a string = a new plaintext the
@@ -24,7 +26,7 @@ const revealed = ref(false);
 const revealedValue = ref("");
 const show = ref(false); // whether the new-value input is unmasked
 
-function replace() {
+function edit() {
   model.value = "";
   revealed.value = false;
   show.value = false;
@@ -55,14 +57,15 @@ async function view() {
       <template v-else-if="revealed">
         <input class="bare mono" readonly :value="revealedValue" />
         <button type="button" class="iconbtn" title="Hide" @click="revealed = false"><EyeIcon off /></button>
-        <button type="button" class="linkbtn" @click="replace">Replace</button>
+        <button type="button" class="linkbtn" @click="edit">Replace</button>
       </template>
       <template v-else>
-        <span class="pill" :class="isSet ? 'set' : 'unset'">{{ isSet ? "Set" : "Not set" }}</span>
+        <span class="pill" :class="isSet ? 'set' : optional ? 'neutral' : 'unset'">{{ isSet ? "Set" : "Not set" }}</span>
         <button v-if="revealable && isSet" type="button" class="iconbtn" title="View" @click="view"><EyeIcon /></button>
-        <button type="button" class="linkbtn" @click="replace">Replace</button>
+        <button type="button" class="linkbtn" @click="edit">{{ isSet ? "Replace" : "Set" }}</button>
       </template>
     </div>
+    <div v-if="hint" class="hint">{{ hint }}</div>
   </div>
 </template>
 
@@ -71,6 +74,7 @@ async function view() {
 .box .pill { margin-right: auto; }
 .pill.set { background: var(--ind-s); color: var(--link); }
 .pill.unset { background: var(--warn-s); color: var(--warn); }
+.pill.neutral { background: var(--line); color: var(--dim); }
 .bare {
   flex: 1; min-width: 0; border: none; background: transparent; padding: 0;
   box-shadow: none; font: inherit; color: inherit;
@@ -87,4 +91,5 @@ async function view() {
   padding: 0; cursor: pointer; color: var(--dim);
 }
 .iconbtn:hover { color: var(--txt); }
+.hint { font-size: 11.5px; color: var(--faint); margin-top: 4px; }
 </style>

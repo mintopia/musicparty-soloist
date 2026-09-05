@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { PhX } from "@phosphor-icons/vue";
 import { useConfig } from "../composables/useConfig";
 import SecretRow from "../components/SecretRow.vue";
 import SectionCard from "../components/SectionCard.vue";
+import LoadingState from "../components/LoadingState.vue";
 
 // Soloist state events that fire webhooks (proxy.ts STATE_EVENTS), ordered by usefulness.
 const WEBHOOK_EVENTS = [
@@ -52,7 +54,7 @@ function addOverride() {
 <template>
   <div class="col">
     <SectionCard title="Webhooks" subtitle="Fire an HTTP request to an external service on Soloist state events.">
-      <p v-if="!loaded || !config.webhooks" class="lbl">Loading…</p>
+      <LoadingState v-if="!loaded || !config.webhooks" />
       <template v-else>
         <div class="top">
           <div class="grow">
@@ -60,7 +62,7 @@ function addOverride() {
             <input class="field" v-model="webhooks.defaultUrl" placeholder="https://…" />
           </div>
           <div class="delay">
-            <label class="flabel">Min interval (ms)</label>
+            <label class="flabel">Min Interval (ms)</label>
             <input class="field" type="number" v-model="delayMs" />
           </div>
         </div>
@@ -68,11 +70,13 @@ function addOverride() {
         <SecretRow
           class="secret"
           label="Authorization Header"
+          optional
           :is-set="secretSet['webhooks.secret']"
           v-model="webhooks.secret"
+          hint="Sent as a Bearer token in the Authorization header on every webhook request. Optional."
         />
 
-        <div class="ov-label"><span class="lbl">Per-event overrides</span></div>
+        <div class="ov-label"><span class="lbl">Per-Event Overrides</span></div>
         <div class="ov">
           <div v-for="key in overrideKeys" :key="key" class="row ov-row">
             <select class="field sel" :value="key"
@@ -80,9 +84,10 @@ function addOverride() {
               <option v-for="ev in optionsFor(key)" :key="ev" :value="ev">{{ ev }}</option>
             </select>
             <input class="field grow" v-model="webhooks.urls[key]" placeholder="https://…" />
-            <button class="btn" title="Remove" @click="removeOverride(key)">×</button>
+            <button type="button" class="btn" title="Remove" aria-label="Remove" @click="removeOverride(key)"><PhX :size="16" weight="fill" /></button>
           </div>
-          <button class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
+          <button type="button" class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
+          <div v-if="!nextEvent" class="dev-hint">Every event already has an override.</div>
         </div>
       </template>
     </SectionCard>
@@ -100,4 +105,5 @@ function addOverride() {
 .ov { display: flex; flex-direction: column; gap: 10px; max-width: 700px; }
 .ov-row { gap: 10px; }
 .sel { max-width: 210px; flex: 0 0 auto; }
+.dev-hint { font-size: 11.5px; color: var(--faint); margin-top: 4px; }
 </style>

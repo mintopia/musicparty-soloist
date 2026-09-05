@@ -6,6 +6,7 @@ import { join, basename } from "node:path";
 export const DEFAULT_BASE_URL = "https://soloist-builds.spotifycdn.com";
 export const DEFAULT_CACHE_DIR = "./.soloist-cache";
 export const MAX_AGE_DAYS = 60; // vendor builds hard-expire at 90 days; re-download well before then
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000; // covers connect + body; a stalled CDN must not hang startup forever
 
 const ARCH_MAP: Record<string, string> = {
   x64: "x86_64",
@@ -36,6 +37,11 @@ function defaultCacheDir(): string {
   return process.env.SOLOIST_CACHE_DIR || DEFAULT_CACHE_DIR;
 }
 
+function downloadTimeoutMs(): number {
+  const v = Number(process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_DOWNLOAD_TIMEOUT_MS;
+}
+
 export function binaryIsFresh(path: string, maxAgeDays = MAX_AGE_DAYS): boolean {
   try {
     const st = statSync(path);
@@ -62,19 +68,30 @@ export function validateBinary(path: string): boolean {
 // operator-trusted origin (DEFAULT_BASE_URL / SOLOIST_DOWNLOAD_BASE) is the only
 // integrity guarantee before this gets chmod +x'd and executed. Revisit if upstream
 // ever publishes hashes or signatures.
-async function download(url: string, dest: string): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok) throw new AcquisitionError(`download ${url} failed: HTTP ${res.status}`);
-  writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+async function download(url: string, dest: string, signal?: AbortSignal): Promise<void> {
+  // AbortSignal.timeout caps the whole transfer (connect + body); a caller-supplied signal
+  // (the supervisor's shutdown) can cancel it early. Either firing aborts the in-flight fetch
+  // instead of parking on a dead socket.
+  const timeout = AbortSignal.timeout(downloadTimeoutMs());
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  try {
+    const res = await fetch(url, { signal: combined });
+    if (!res.ok) throw new AcquisitionError(`download ${url} failed: HTTP ${res.status}`);
+    writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+  } catch (err) {
+    if (signal?.aborted) throw err; // shutdown: propagate so the caller stops, doesn't retry
+    if (timeout.aborted) throw new AcquisitionError(`download ${url} timed out after ${downloadTimeoutMs()}ms`);
+    throw err;
+  }
 }
 
-async function downloadAndExtract(arch: string, cache: string): Promise<string> {
+async function downloadAndExtract(arch: string, cache: string, signal?: AbortSignal): Promise<string> {
   const url = tarballUrl(arch);
   const binary = join(cache, "soloist");
   const work = mkdtempSync(join(tmpdir(), "soloist-"));
   const tarball = join(work, "soloist.tar.gz");
   try {
-    await download(url, tarball);
+    await download(url, tarball, signal);
     const r = spawnSync("tar", ["-xzf", tarball, "-C", work], { timeout: 60_000 });
     if (r.status !== 0) {
       throw new AcquisitionError(`failed to extract ${url}: ${r.stderr?.toString() ?? "tar error"}`);
@@ -104,10 +121,11 @@ function findFile(dir: string, name: string): string | null {
 
 export interface AcquireOptions {
   force?: boolean;
+  signal?: AbortSignal;
 }
 
 export async function acquireSoloist(cacheDir?: string, opts: AcquireOptions = {}): Promise<string> {
-  const { force = false } = opts;
+  const { force = false, signal } = opts;
   const cache = cacheDir || defaultCacheDir();
   let binary = join(cache, "soloist");
 
@@ -116,7 +134,7 @@ export async function acquireSoloist(cacheDir?: string, opts: AcquireOptions = {
   }
 
   mkdirSync(cache, { recursive: true });
-  binary = await downloadAndExtract(detectArch(), cache);
+  binary = await downloadAndExtract(detectArch(), cache, signal);
   if (!validateBinary(binary)) {
     throw new AcquisitionError(`downloaded binary failed 'soloist --version' at ${binary}`);
   }

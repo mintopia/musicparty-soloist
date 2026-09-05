@@ -11,8 +11,9 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { Config } from "./config.js";
 import { sameOrigin } from "./auth.js";
-import { parseCookies, sessionUser, SESSION_COOKIE } from "./web.js";
+import { parseCookies, sessionUser, SESSION_COOKIE } from "./session.js";
 import { makeLog } from "./log.js";
+import { DEBUG_STREAMS, type DebugStream } from "./wire-contract.js";
 
 const log = makeLog("appcontrol");
 
@@ -24,8 +25,8 @@ export const APP_CONTROL_MAX_PAYLOAD = 4096;
 
 // The fixed set of diagnostic streams a Debug Subscriber may subscribe to. This tier owns
 // the subscription protocol and fan-out; the producers that feed these streams live elsewhere.
-export const DEBUG_STREAMS = ["frame", "clients", "webhooks", "proxy_status"] as const;
-export type DebugStream = (typeof DEBUG_STREAMS)[number];
+export { DEBUG_STREAMS };
+export type { DebugStream };
 const VALID_STREAMS = new Set<string>(DEBUG_STREAMS);
 
 // Post-upgrade auth lifecycle: a socket authed once at handshake must not live forever on
@@ -119,7 +120,7 @@ export class AppControl {
         try {
           hook(stream, (data) => this.deliver(sub, stream, JSON.stringify({ stream, data })));
         } catch (err) {
-          log("subscribe hook threw: %s", (err as Error).message);
+          log.error("subscribe hook threw: %s", (err as Error).message);
         }
       }
     }
@@ -149,7 +150,7 @@ export class AppControl {
     if (sub.ws.readyState !== WebSocket.OPEN) return;
     const buffered = sub.ws.bufferedAmount;
     if (buffered > BUFFER_CLOSE_BYTES) {
-      log("closing slow debug subscriber: %d bytes buffered", buffered);
+      log.warn("closing slow debug subscriber: %d bytes buffered", buffered);
       this.close(sub, 1013, "slow consumer");
       return;
     }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { PhMusicNotesSimple } from "@phosphor-icons/vue";
 import { useConfig } from "./composables/useConfig";
@@ -42,10 +42,12 @@ function isActive(t: { to: string; exact?: boolean }) {
 const snapwebUrl = `http://${location.hostname}:1780`;
 const showSnapweb = computed(() => !standalone.value && snapwebEnabled.value);
 
-// Save bar: hidden when clean/idle; "Saving…" mid-flight; "Unsaved changes" when dirty;
-// "Saved" briefly after a successful save.
+// Save bar: hidden when clean/idle; "Saving…" mid-flight; the failure message when a save
+// errored (checked before dirty, since a failed save leaves edits dirty); "Unsaved changes"
+// when dirty; "Saved" briefly after a successful save.
 const saveLabel = computed(() => {
   if (cfg.status.value === "saving") return "Saving…";
+  if (cfg.status.value === "error") return cfg.error.value || "Save failed — retry";
   if (cfg.dirty.value) return "Unsaved changes";
   if (cfg.status.value === "saved") return "Saved";
   return "";
@@ -57,6 +59,18 @@ onMounted(() => {
   useAppControl().start();
   cfg.load().catch(() => {});
 });
+
+// Discard drops every unsaved edit with no undo, so route it through a native <dialog>
+// confirm. When nothing is dirty there's nothing to lose, so skip the prompt.
+const confirmDlg = ref<HTMLDialogElement | null>(null);
+function askDiscard() {
+  if (!cfg.dirty.value) { cfg.discard(); return; }
+  confirmDlg.value?.showModal();
+}
+function confirmDiscard() {
+  confirmDlg.value?.close();
+  cfg.discard();
+}
 </script>
 
 <template>
@@ -84,12 +98,12 @@ onMounted(() => {
 
     <div v-if="cfg.summary.pendingRestart" class="banner">
       <span>Soloist needs a restart to apply changes.</span>
-      <button class="btn" @click="cfg.restartSoloist()">Restart</button>
+      <button class="btn pri-warn" @click="cfg.restartSoloist()">Restart</button>
     </div>
 
     <div v-if="cfg.summary.pendingSnapcastRestart" class="banner">
       <span>Snapcast needs a restart to apply the server config.</span>
-      <button class="btn" @click="cfg.restartSnapcast()">Restart Snapcast</button>
+      <button class="btn pri-warn" @click="cfg.restartSnapcast()">Restart Snapcast</button>
     </div>
 
     <main class="wrap">
@@ -99,12 +113,23 @@ onMounted(() => {
     <SiteFooter />
 
     <div v-if="showSaveBar" class="savebar">
-      <span class="save-label">{{ saveLabel }}</span>
+      <span class="save-label" :class="{ 'save-error': cfg.status.value === 'error' }" role="status">{{ saveLabel }}</span>
       <span class="save-actions">
-        <button class="btn" :disabled="cfg.status.value === 'saving'" @click="cfg.discard()">Discard</button>
+        <button class="btn" :disabled="cfg.status.value === 'saving'" @click="askDiscard()">Discard</button>
         <button class="btn pri" :disabled="!cfg.dirty.value || cfg.status.value === 'saving'" @click="cfg.save()">Save</button>
       </span>
     </div>
+
+    <dialog ref="confirmDlg" class="confirm" aria-labelledby="confirm-title">
+      <h2 id="confirm-title" class="confirm-title">Discard changes?</h2>
+      <p class="confirm-body">
+        Discard {{ cfg.dirtyCount.value }} unsaved change{{ cfg.dirtyCount.value === 1 ? "" : "s" }}? This can't be undone.
+      </p>
+      <div class="confirm-actions">
+        <button type="button" class="btn" @click="confirmDlg?.close()">Cancel</button>
+        <button type="button" class="btn pri-warn" @click="confirmDiscard()">Discard</button>
+      </div>
+    </dialog>
   </div>
 </template>
 
@@ -161,6 +186,7 @@ onMounted(() => {
   box-shadow: 0 -8px 26px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 .save-label { font-weight: 600; font-size: 13px; color: var(--dim); }
+.save-label.save-error { color: var(--bad); }
 .save-actions { display: flex; gap: 8px; }
 
 @media (max-width: 860px) {
@@ -170,4 +196,15 @@ onMounted(() => {
   .nav { display: none; }
   .wrap { padding: 18px 15px; }
 }
+
+/* First modal in the app. Native <dialog> gives focus-trap, ESC-to-cancel and backdrop for
+   free; tokens match the menu/auth floating-panel treatment (--sh2). */
+.confirm {
+  border: 1px solid var(--line2); border-radius: 16px; background: var(--card); color: var(--txt);
+  box-shadow: var(--sh2); padding: 22px; max-width: 380px; width: calc(100% - 40px);
+}
+.confirm::backdrop { background: rgba(20, 20, 30, .45); }
+.confirm-title { font-family: var(--disp); font-size: 16px; font-weight: 700; margin: 0 0 8px; }
+.confirm-body { font-size: 13px; color: var(--dim); line-height: 1.5; margin: 0 0 18px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

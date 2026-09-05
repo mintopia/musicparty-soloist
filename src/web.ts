@@ -2,7 +2,6 @@
 // Login form -> signed HttpOnly cookie; middleware gates the Landing Page and,
 // in proxy.ts, the control-tier WS upgrade. Fails closed when web creds unset.
 
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,14 +10,14 @@ import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHas
 import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
 import { getSinkCache, refreshSinkCache, reconcileOutputs, listStandaloneSinks } from "./pipewire.js";
-import { isDockerMode } from "./supervisor.js";
+import { isDockerMode } from "./runtime.js";
 import { restartSnapserver, snapcastNeedsRestart } from "./snapserver.js";
 import { safeStrEqual } from "./util.js";
+import { SESSION_COOKIE, signSession, sessionUser, webConfigured } from "./session.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("web");
 
-export const SESSION_COOKIE = "soloist_session";
 const MAX_BODY = 8 * 1024;
 
 // dist/web/, sibling of the compiled dist/web.js — Vite emits the hashed Vue assets
@@ -30,78 +29,20 @@ const WEB_ROOT = resolve(WEB_DIR);
 // (index.html); vue-router reads location.pathname to pick the tab. "/" is Now Playing.
 const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/debug", "/lyrics", "/settings"]);
 
-// Secret leaves the Landing Page may reveal on demand (eye toggle). Deliberately not
-// the password (a scrypt hash) or the session secret — only operator-facing plaintext.
-const REVEALABLE = new Set(["soloist.apiKey", "proxy.token", "relay.authorization"]);
+// Secrets the Landing Page may reveal on demand (eye toggle), each with a typed
+// accessor keyed by its "section.key". Deliberately not the password (a scrypt hash)
+// or the session secret — only operator-facing plaintext.
+const REVEALABLE = new Map<string, (cfg: Config) => string>([
+  ["soloist.apiKey", (cfg) => cfg.soloist.apiKey],
+  ["proxy.token", (cfg) => cfg.proxy.token],
+  ["relay.authorization", (cfg) => cfg.relay.authorization],
+]);
 
 const CONTENT_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8",
   html: "text/html; charset=utf-8",
   js: "text/javascript; charset=utf-8",
 };
-
-// Session cookie carries an issued-at timestamp so a signed cookie can't be replayed
-// forever with no revocation — anything older than this is rejected outright.
-const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-
-// Derives the MAC key from the session secret AND the current password, so rotating the
-// password (e.g. because it leaked) revokes every live session. The password stays in the
-// key, never the visible payload. `pwBinding` defaults to "" for callers that don't bind.
-function sessionKey(secret: string, pwBinding: string): Buffer {
-  return createHmac("sha256", secret).update("pw\0").update(pwBinding).digest();
-}
-
-export function signSession(username: string, secret: string, pwBinding = ""): string {
-  const payload = `${username}|${Date.now()}`;
-  const p = Buffer.from(payload).toString("base64url");
-  const mac = createHmac("sha256", sessionKey(secret, pwBinding)).update(p).digest("base64url");
-  return `${p}.${mac}`;
-}
-
-export function verifySession(token: string, secret: string, pwBinding = ""): string | null {
-  const dot = token.lastIndexOf(".");
-  if (dot < 0) return null;
-  const p = token.slice(0, dot);
-  const expected = createHmac("sha256", sessionKey(secret, pwBinding)).update(p).digest();
-  let got: Buffer;
-  try {
-    got = Buffer.from(token.slice(dot + 1), "base64url");
-  } catch {
-    return null;
-  }
-  if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null;
-  const payload = Buffer.from(p, "base64url").toString();
-  const sep = payload.lastIndexOf("|");
-  if (sep < 0) return null;
-  const issuedAt = Number(payload.slice(sep + 1));
-  if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > SESSION_MAX_AGE_MS) return null;
-  return payload.slice(0, sep);
-}
-
-export function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(";")) {
-    const i = part.indexOf("=");
-    if (i < 0) continue;
-    const k = part.slice(0, i).trim();
-    if (k) out[k] = part.slice(i + 1).trim();
-  }
-  return out;
-}
-
-// Configured username who owns a valid Web Session on this request, else null.
-export function sessionUser(req: IncomingMessage, cfg: Config): string | null {
-  if (!webConfigured(cfg)) return null;
-  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (!token) return null;
-  const user = verifySession(token, cfg.web.sessionSecret, cfg.web.password);
-  return user !== null && safeStrEqual(user, cfg.web.username) ? user : null;
-}
-
-export function webConfigured(cfg: Config): boolean {
-  return cfg.web.username !== "" && cfg.web.password !== "";
-}
 
 // Serve a request-path file from under WEB_ROOT: Vite's hashed /assets/*, the vanilla
 // overlay modules, and the built page shells (index/login/setup.html). The resolved
@@ -203,8 +144,9 @@ function apiAuthed(req: IncomingMessage, res: ServerResponse, cfg: Config): bool
   return true;
 }
 
-// Validate → persist → apply hot fields live by mutating the shared Config in
-// place (tokens, sessionUser, webhooks, autoplay, overlay all read it live).
+// Validate → persist → apply. Hot fields apply by mutating the shared Config in place
+// (never reassigning — see the Config contract); callback fields go through onConfigChange;
+// restart fields surface a banner. Per-field strategy: APPLY_STRATEGY (ADR-0022).
 async function handlePutConfig(
   req: IncomingMessage,
   res: ServerResponse,
@@ -232,14 +174,14 @@ async function handlePutConfig(
     if (err instanceof ConfigError) return json(res, 400, { error: err.message });
     // Handler is floated (void handlePutConfig); a re-throw here would be an
     // unhandled rejection and the client would hang. Log and 500 instead.
-    log("config save failed: %s", (err as Error).message);
+    log.error("config save failed: %s", (err as Error).message);
     return json(res, 500, { error: "failed to save config" });
   }
   Object.assign(cfg, next);
   log("config saved and applied live");
   // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Docker only
   // (ADR-0015); runtime, idempotent, and fire-and-forget so the save isn't held on pw-link.
-  if (isDockerMode()) void reconcileOutputs(cfg).catch((err) => log("reconcile after save failed: %s", (err as Error).message));
+  if (isDockerMode()) void reconcileOutputs(cfg).catch((err) => log.error("reconcile after save failed: %s", (err as Error).message));
   // Push the new Overlay Config to any open overlays so they restyle immediately.
   onConfigChange?.(cfg);
   json(res, 200, maskConfig(cfg));
@@ -259,7 +201,7 @@ async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cf
       json(res, 200, { sinks: await listStandaloneSinks(), refreshedAt: Date.now() });
     }
   } catch (err) {
-    log("pw-dump failed: %s", (err as Error).message);
+    log.error("pw-dump failed: %s", (err as Error).message);
     json(res, 500, { error: "failed to enumerate sinks" });
   }
 }
@@ -268,6 +210,10 @@ async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cf
 // === false before either has saved. One claim per config path — this app targets
 // exactly one, but the latch is keyed so tests covering several don't collide.
 const setupClaimed = new Set<string>();
+
+// Minimum admin-password length (UX-M8). The client mirrors this; the server is the
+// authority since form JS can be bypassed.
+export const MIN_PASSWORD_LENGTH = 8;
 
 // First-run setup: set web creds only, persist, log the operator in. Runs only while
 // web creds are unset (gated in handleWebRequest), so it never overwrites live creds.
@@ -288,7 +234,7 @@ async function handleSetup(
   const username = (form.get("username") ?? "").trim();
   const password = form.get("password") ?? "";
   const confirm = form.get("confirm") ?? "";
-  if (username === "" || password === "" || password !== confirm) {
+  if (username === "" || password.length < MIN_PASSWORD_LENGTH || password !== confirm) {
     redirect(res, "/setup?error=1");
     return;
   }
@@ -308,7 +254,7 @@ async function handleSetup(
   try {
     saveConfig(configPath, next);
   } catch (err) {
-    log("setup save failed: %s", (err as Error).message);
+    log.error("setup save failed: %s", (err as Error).message);
     setupClaimed.delete(configPath); // save failed — allow a retry to claim it
     res.writeHead(500).end("Failed to save setup\n");
     return;
@@ -343,7 +289,7 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
         Object.assign(cfg, next);
         log("rehashed legacy web password to scrypt");
       } catch (err) {
-        log("password rehash failed: %s", (err as Error).message);
+        log.error("password rehash failed: %s", (err as Error).message);
       }
     }
     setSession(res, cfg);
@@ -351,7 +297,7 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
     redirect(res, "/");
     return;
   }
-  log("login failed from %s", req.socket.remoteAddress);
+  log.warn("login failed from %s", req.socket.remoteAddress);
   redirect(res, "/login?error=1");
 }
 
@@ -428,10 +374,9 @@ export function handleWebRequest(
   // the rest of the config API; returns 404 for any path outside REVEALABLE.
   if (path === "/api/secret" && method === "GET") {
     if (!apiAuthed(req, res, cfg)) return true;
-    const key = `${url.searchParams.get("section")}.${url.searchParams.get("key")}`;
-    if (!REVEALABLE.has(key)) return json(res, 404, { error: "not revealable" }), true;
-    const [section, k] = key.split(".");
-    json(res, 200, { value: (cfg as unknown as Record<string, Record<string, string>>)[section][k] ?? "" });
+    const reveal = REVEALABLE.get(`${url.searchParams.get("section")}.${url.searchParams.get("key")}`);
+    if (!reveal) return json(res, 404, { error: "not revealable" }), true;
+    json(res, 200, { value: reveal(cfg) });
     return true;
   }
 
@@ -465,14 +410,12 @@ export function handleWebRequest(
   }
 
   if (path === "/login" && method === "GET") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
     if (sessionUser(req, cfg)) return redirect(res, "/"), true;
     serveAsset(res, "/login.html");
     return true;
   }
 
   if (path === "/login" && method === "POST") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
     void handleLogin(req, res, cfg, configPath);
     return true;
   }
@@ -489,7 +432,6 @@ export function handleWebRequest(
   // Serve the SPA shell for top-level app paths and any Settings detail deep-link
   // (master-detail nests /settings/<section>), so a hard reload or bookmark resolves.
   if ((APP_PATHS.has(path) || path.startsWith("/settings/")) && method === "GET") {
-    if (!webConfigured(cfg)) return failClosed(res), true;
     if (!sessionUser(req, cfg)) return redirect(res, "/login"), true;
     serveAsset(res, "/index.html");
     return true;

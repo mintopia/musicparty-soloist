@@ -113,6 +113,11 @@ export interface OverlayConfig {
   timingOffsetMs: number;
 }
 
+// The running process holds exactly one Config object; live-apply consumers (auth,
+// sessionUser, webhooks, autoplay, overlay, relay) read it by reference. A save MUST
+// mutate this object in place (Object.assign) and MUST NEVER reassign the reference,
+// or those consumers keep reading the stale object. How each field takes effect is
+// declared in APPLY_STRATEGY (ADR-0022).
 export interface Config {
   soloist: SoloistConfig;
   proxy: { listen: string; token: string; readonlyToken: string };
@@ -152,45 +157,138 @@ function stringField(v: unknown, def: string): string {
   return String(v ?? def);
 }
 
-const enumField = (allowed: readonly string[]) => (v: unknown, def: string): string =>
-  allowed.includes(String(v)) ? String(v) : def;
+const enumField =
+  <T extends string>(allowed: readonly T[]) =>
+  (v: unknown, def: T): T =>
+    allowed.includes(String(v) as T) ? (String(v) as T) : def;
 
 // Overlay fields are ~1:1 scalar mappings (camelCase key <-> snake_case yaml key,
 // a default, a coercer) — one table drives DEFAULT_OVERLAY, parseConfig, and
 // configToRaw instead of hand-restating each field three times (mirrors SECRETS below).
-interface OverlayFieldDef {
-  key: keyof OverlayConfig;
+interface OverlayFieldDef<K extends keyof OverlayConfig> {
+  key: K;
   yaml: string;
-  default: unknown;
-  coerce: (raw: unknown, def: any) => any;
+  default: OverlayConfig[K];
+  coerce: (raw: unknown, def: OverlayConfig[K]) => OverlayConfig[K];
 }
 
-const OVERLAY_FIELDS: OverlayFieldDef[] = [
-  { key: "font", yaml: "font", default: "system-ui, sans-serif", coerce: stringField },
-  { key: "fontSize", yaml: "font_size", default: 40, coerce: coerceInt },
-  { key: "color", yaml: "color", default: "#ffffff", coerce: stringField },
-  { key: "neighbourColor", yaml: "neighbour_color", default: "#ffffff", coerce: stringField },
-  { key: "dimOpacity", yaml: "dim_opacity", default: 0.35, coerce: coerceFloat },
-  { key: "motion", yaml: "motion", default: "slide", coerce: enumField(OVERLAY_MOTIONS) },
-  { key: "easing", yaml: "easing", default: "cubic-bezier(.16,1,.3,1)", coerce: stringField },
-  { key: "transitionMs", yaml: "transition_ms", default: 350, coerce: coerceInt },
-  { key: "effect", yaml: "effect", default: "none", coerce: enumField(OVERLAY_EFFECTS) },
-  { key: "fxColor", yaml: "fx_color", default: "#ffd24a", coerce: stringField },
-  { key: "fxIntensity", yaml: "fx_intensity", default: 50, coerce: coerceInt },
-  { key: "fxDurMs", yaml: "fx_dur_ms", default: 1600, coerce: coerceInt },
-  { key: "alignment", yaml: "alignment", default: "center", coerce: enumField(OVERLAY_ALIGNMENTS) },
-  { key: "anchor", yaml: "anchor", default: "bottom", coerce: enumField(OVERLAY_ANCHORS) },
-  { key: "lineCount", yaml: "line_count", default: 3, coerce: coerceInt },
-  { key: "timingOffsetMs", yaml: "timing_offset_ms", default: 0, coerce: coerceInt },
+// Identity helper so each array entry keeps its own K instead of widening to the
+// union of every OverlayConfig key when collected into OVERLAY_FIELDS below.
+const overlayField = <K extends keyof OverlayConfig>(f: OverlayFieldDef<K>): OverlayFieldDef<K> => f;
+
+type AnyOverlayFieldDef = { [K in keyof OverlayConfig]: OverlayFieldDef<K> }[keyof OverlayConfig];
+
+const OVERLAY_FIELDS: AnyOverlayFieldDef[] = [
+  overlayField({ key: "font", yaml: "font", default: "system-ui, sans-serif", coerce: stringField }),
+  overlayField({ key: "fontSize", yaml: "font_size", default: 40, coerce: coerceInt }),
+  overlayField({ key: "color", yaml: "color", default: "#ffffff", coerce: stringField }),
+  overlayField({ key: "neighbourColor", yaml: "neighbour_color", default: "#ffffff", coerce: stringField }),
+  overlayField({ key: "dimOpacity", yaml: "dim_opacity", default: 0.35, coerce: coerceFloat }),
+  overlayField({ key: "motion", yaml: "motion", default: "slide", coerce: enumField(OVERLAY_MOTIONS) }),
+  overlayField({ key: "easing", yaml: "easing", default: "cubic-bezier(.16,1,.3,1)", coerce: stringField }),
+  overlayField({ key: "transitionMs", yaml: "transition_ms", default: 350, coerce: coerceInt }),
+  overlayField({ key: "effect", yaml: "effect", default: "none", coerce: enumField(OVERLAY_EFFECTS) }),
+  overlayField({ key: "fxColor", yaml: "fx_color", default: "#ffd24a", coerce: stringField }),
+  overlayField({ key: "fxIntensity", yaml: "fx_intensity", default: 50, coerce: coerceInt }),
+  overlayField({ key: "fxDurMs", yaml: "fx_dur_ms", default: 1600, coerce: coerceInt }),
+  overlayField({ key: "alignment", yaml: "alignment", default: "center", coerce: enumField(OVERLAY_ALIGNMENTS) }),
+  overlayField({ key: "anchor", yaml: "anchor", default: "bottom", coerce: enumField(OVERLAY_ANCHORS) }),
+  overlayField({ key: "lineCount", yaml: "line_count", default: 3, coerce: coerceInt }),
+  overlayField({ key: "timingOffsetMs", yaml: "timing_offset_ms", default: 0, coerce: coerceInt }),
 ];
 
 export const DEFAULT_OVERLAY: OverlayConfig = Object.fromEntries(
   OVERLAY_FIELDS.map((f) => [f.key, f.default]),
 ) as unknown as OverlayConfig;
 
+// ── Apply strategy (ADR-0022) ────────────────────────────────────────────────
+// How each config field takes effect after a save. Single source of truth: the
+// `satisfies Record<keyof …>` lines make TypeScript reject any section that adds a
+// field without classifying it, so a new field can no longer silently fail to apply.
+//
+//   live             read live off the shared Config; mutating it in place (never
+//                    reassigning — see the Config contract) is the whole apply step.
+//   callback         needs the post-save onConfigChange callback to push/re-dial:
+//                    overlay broadcast, relay re-connect, PipeWire fan-out reconcile.
+//   restart-soloist  a Soloist spawn arg (buildArgv); applies only when Soloist
+//                    re-spawns. The "restart Soloist" banner (pendingRestart) offers it.
+//   restart-snapcast feeds renderSnapserverConf; applies only when snapserver restarts.
+//                    The "restart Snapcast" banner (snapcastNeedsRestart) offers it.
+//   restart-process  a locked structural field (hand-edit-only, LOCKED_PATHS); needs a
+//                    full process restart. No banner — PUT can never change it live.
+export type ApplyStrategy =
+  | "live"
+  | "callback"
+  | "restart-soloist"
+  | "restart-snapcast"
+  | "restart-process";
+
+export const APPLY_STRATEGY = {
+  soloist: {
+    deviceName: "restart-soloist",
+    apiKey: "restart-soloist",
+    dataDir: "restart-soloist",
+    extraArgs: "restart-soloist",
+    pipewireDevice: "restart-soloist",
+  } satisfies Record<keyof SoloistConfig, ApplyStrategy>,
+  proxy: {
+    listen: "restart-process",
+    token: "live",
+    readonlyToken: "live",
+  } satisfies Record<keyof Config["proxy"], ApplyStrategy>,
+  soloistWs: "restart-soloist",
+  streamName: "restart-snapcast",
+  snapweb: "restart-snapcast",
+  snapcastServerConfig: "restart-snapcast",
+  autoplay: "live",
+  webhooks: {
+    defaultUrl: "live",
+    urls: "live",
+    secret: "live",
+    delayMs: "live",
+  } satisfies Record<keyof WebhooksConfig, ApplyStrategy>,
+  relay: {
+    url: "callback",
+    authorization: "callback",
+  } satisfies Record<keyof RelayConfig, ApplyStrategy>,
+  web: {
+    username: "live",
+    password: "live",
+    sessionSecret: "live",
+  } satisfies Record<keyof WebConfig, ApplyStrategy>,
+  audio: {
+    outputs: "callback",
+    snapcast: "callback",
+    outputDelays: "callback",
+  } satisfies Record<keyof AudioConfig, ApplyStrategy>,
+  // Every overlay field is callback: a save broadcasts overlay_config so open overlays
+  // restyle without a reload (new page loads read the values live). Spelled out rather
+  // than derived so the satisfies check forces a strategy for any field added here too.
+  overlay: {
+    font: "callback",
+    fontSize: "callback",
+    color: "callback",
+    neighbourColor: "callback",
+    dimOpacity: "callback",
+    motion: "callback",
+    easing: "callback",
+    transitionMs: "callback",
+    effect: "callback",
+    fxColor: "callback",
+    fxIntensity: "callback",
+    fxDurMs: "callback",
+    alignment: "callback",
+    anchor: "callback",
+    lineCount: "callback",
+    timingOffsetMs: "callback",
+  } satisfies Record<keyof OverlayConfig, ApplyStrategy>,
+} satisfies Record<keyof Config, ApplyStrategy | Record<string, ApplyStrategy>>;
+
 function parseOverlay(raw: Record<string, any>): OverlayConfig {
   const out: Record<string, unknown> = {};
-  for (const f of OVERLAY_FIELDS) out[f.key] = f.coerce(raw[f.yaml], f.default);
+  // TS can't correlate a heterogeneous union's own coerce/default across elements
+  // (see AnyOverlayFieldDef); each element is internally consistent, so this is safe.
+  for (const f of OVERLAY_FIELDS) out[f.key] = (f.coerce as (raw: unknown, def: unknown) => unknown)(raw[f.yaml], f.default);
   return out as unknown as OverlayConfig;
 }
 
@@ -363,6 +461,8 @@ function configToRaw(c: Config): Record<string, unknown> {
 // ponytail: merge only sets keys, never removes them — a key deleted from the
 // config object stays in the file. Fine for full-config writes; revisit if the
 // config API needs to drop keys (e.g. removing a webhooks.urls entry).
+// The YAML-Document merge (vs deepMerge below for plain objects); setIn writes into
+// the yaml AST, not a JS object, so it needs no __proto__ guard.
 function mergeInto(doc: Document, obj: Record<string, unknown>, prefix: string[] = []): void {
   for (const [k, v] of Object.entries(obj)) {
     const path = [...prefix, k];
@@ -445,6 +545,8 @@ export function normalizeConfig(c: Config): Config {
   return parseConfig(configToRaw(c));
 }
 
+// The plain-object merge (vs mergeInto above for a YAML Document); needs the
+// __proto__ guard below because bracket-assigning it here writes a real JS object.
 function deepMerge(target: Record<string, any>, source: Record<string, any>): void {
   for (const [k, v] of Object.entries(source)) {
     // JSON.parse gives "__proto__" as a real own key; bracket-assigning it would

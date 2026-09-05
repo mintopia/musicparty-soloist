@@ -3,10 +3,11 @@
 // history ring buffer.
 
 import type { Config, WebhooksConfig } from "./config.js";
-import type { SoloistHub } from "./proxy.js";
+import type { SoloistHub } from "./hub.js";
 import { makeLog } from "./log.js";
+import type { WebhookDelivery } from "./wire-contract.js";
 
-const log = makeLog("proxy");
+const log = makeLog("webhooks");
 
 export const STATE_EVENTS = new Set([
   "auth_state", "playback_state", "track_changed", "playback_changed", "volume_changed",
@@ -67,7 +68,7 @@ export class WebhookQueue {
         task();
       } catch (err) {
         // A throwing task must not wedge the queue with draining stuck true.
-        log("webhook task threw: %s", (err as Error).message);
+        log.error("webhook task threw: %s", (err as Error).message);
       }
       const delay = this.getDelay();
       if (delay > 0) {
@@ -85,17 +86,7 @@ export const WEBHOOK_RESP_HEADER_ALLOWLIST = new Set([
   "content-type", "content-length", "date", "server", "content-encoding", "etag", "cache-control", "age", "vary",
 ]);
 
-export interface WebhookDelivery {
-  at: number; // start of the delivery attempt, not when it was recorded
-  type: string;
-  url: string;
-  status: number | null; // null on network/timeout error (no response)
-  durationMs: number;
-  reqHeaders: Record<string, string>; // authorization redacted to "Bearer ***"
-  respHeaders: Record<string, string>; // allowlisted only, lowercase keys
-  respBody: string; // capped to WEBHOOK_RESP_BODY_CAP bytes, "…[truncated]" if it overflowed
-  error: string | null;
-}
+export type { WebhookDelivery } from "./wire-contract.js";
 
 export class WebhookHistory {
   private buf: WebhookDelivery[] = [];
@@ -113,7 +104,7 @@ export class WebhookHistory {
       try {
         cb(d);
       } catch (err) {
-        log("webhook onEntry cb threw: %s", (err as Error).message);
+        log.error("webhook onEntry cb threw: %s", (err as Error).message);
       }
     }
   }
@@ -193,10 +184,10 @@ export async function postWebhook(
       if (WEBHOOK_RESP_HEADER_ALLOWLIST.has(lk)) respHeaders[lk] = v;
     });
     respBody = await readCappedBody(res, WEBHOOK_RESP_BODY_CAP);
-    if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
+    if (!res.ok) log.warn("webhook %s -> HTTP %d", url, res.status);
   } catch (err) {
     error = (err as Error).message;
-    log("webhook %s failed: %s", url, error);
+    log.error("webhook %s failed: %s", url, error);
   }
   const durationMs = Date.now() - at;
   const redactedReqHeaders = { ...reqHeaders };
@@ -211,7 +202,7 @@ export async function postWebhook(
 export function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookHistory {
   const history = new WebhookHistory();
   const queue = new WebhookQueue(() => cfg.webhooks.delayMs, {
-    onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
+    onDrop: () => log.warn("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
   });
   hub.observe((frame) => {
     const url = resolveWebhookUrl(frame.type, cfg.webhooks);

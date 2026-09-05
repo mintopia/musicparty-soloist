@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
+import LoadingState from "../../components/LoadingState.vue";
 import TextField from "../../components/TextField.vue";
 import SecretRow from "../../components/SecretRow.vue";
 import ToggleSwitch from "../../components/ToggleSwitch.vue";
@@ -37,7 +38,7 @@ const deviceOptions = computed(() => {
 </script>
 
 <template>
-  <div v-if="!loaded" class="lbl">Loading…</div>
+  <LoadingState v-if="!loaded" />
   <SectionCard v-else title="Soloist" subtitle="Identity, credentials, and playback behaviour.">
     <div class="grid2">
       <TextField label="Device name" v-model="c.soloist.deviceName" />
@@ -61,6 +62,7 @@ const deviceOptions = computed(() => {
       <SecretRow
         label="WebSocket auth token" section="proxy" field-key="token" revealable
         :is-set="secretSet['proxy.token']" v-model="c.proxy.token"
+        hint="Bearer token external clients use to control Soloist over the WebSocket API. Auto-generated at setup."
       />
     </div>
     <div class="setrow">

@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { usePlayback } from "../composables/usePlayback";
 import { fmtTime } from "../lib/wire";
 import Marquee from "../components/Marquee.vue";
-import { PhShuffle, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhRepeat, PhRepeatOnce, PhSpeakerSimpleHigh } from "@phosphor-icons/vue";
+import { PhShuffle, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhRepeat, PhRepeatOnce, PhSpeakerSimpleHigh, PhVinylRecord } from "@phosphor-icons/vue";
 
 // Now-playing hero + up-next queue, driven live by usePlayback (control WS). Ported from
 // buildNow/renderNowPlaying/renderQueue in src/web/app.js — every control sends the same
@@ -11,6 +11,7 @@ import { PhShuffle, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhRepeat, PhRepe
 const { state, positionMs, isStale, sendCommand } = usePlayback();
 
 const stale = computed(() => isStale());
+const connected = computed(() => state.connected);
 const track = computed(() => state.track);
 const dur = computed(() => track.value?.durationMs ?? 0);
 // positionMs already collapses to the frozen anchor while stale (see usePlayback tick).
@@ -23,12 +24,13 @@ const artStyle = computed(() =>
   track.value?.art ? { backgroundImage: `url("${encodeURI(track.value.art)}")` } : {});
 
 function seek(e: MouseEvent) {
-  if (!dur.value) return;
+  if (!connected.value || !dur.value) return;
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
   const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
   sendCommand("seek", { position_ms: Math.round(dur.value * frac) });
 }
 function setVolume(e: MouseEvent) {
+  if (!connected.value) return;
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
   const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
   sendCommand("set_volume", { volume: Math.round(frac * 100) });
@@ -50,6 +52,14 @@ const repeatTitle = computed(() =>
       <div class="bloom bloom-a"></div>
       <div class="bloom bloom-b"></div>
       <div class="hero-inner">
+        <!-- Live region stays mounted so AT announces the text when it appears; inserting
+             the region and its text together is skipped by some screen readers. -->
+        <div class="disc" :class="{ off: connected }" role="status" aria-live="polite">
+          <template v-if="!connected">
+            <span class="disc-dot"></span>
+            <span>Disconnected — reconnecting…</span>
+          </template>
+        </div>
         <div class="row art-row">
           <div class="art" :class="{ stale }" :style="artStyle"></div>
           <div class="meta">
@@ -60,13 +70,13 @@ const repeatTitle = computed(() =>
             <Marquee class="title" :text="track ? track.title || 'Untitled' : 'Nothing playing'" />
             <div class="artist">{{ track ? [track.artist, track.album].filter(Boolean).join(" — ") || "—" : "—" }}</div>
             <div class="row chips">
-              <span v-if="track && track.album" class="hchip">◆ {{ track.album }}</span>
+              <span v-if="track && track.album" class="hchip"><PhVinylRecord :size="16" weight="fill" />{{ track.album }}</span>
             </div>
           </div>
         </div>
 
         <div class="prog-wrap">
-          <div class="bar" :class="{ stale }" @click="seek">
+          <div class="bar" :class="{ stale, disabled: !connected }" :aria-disabled="!connected" @click="seek">
             <div class="fill" :style="{ inset: `0 ${100 - pct}% 0 0` }"></div>
             <div class="handle" :style="{ left: `${pct}%` }"></div>
           </div>
@@ -79,27 +89,27 @@ const repeatTitle = computed(() =>
         <div class="row transport-row">
           <div class="row transport">
             <button class="hbtn" :class="{ act: state.shuffle }" title="Shuffle" aria-label="Shuffle"
-              @click="sendCommand('set_shuffle', { enabled: !state.shuffle })">
+              :disabled="!connected" @click="sendCommand('set_shuffle', { enabled: !state.shuffle })">
               <PhShuffle :size="16" weight="fill" />
             </button>
-            <button class="hbtn" title="Previous" aria-label="Previous track" @click="sendCommand('skip_prev')">
+            <button class="hbtn" title="Previous" aria-label="Previous track" :disabled="!connected" @click="sendCommand('skip_prev')">
               <PhSkipBack :size="17" weight="fill" />
             </button>
-            <button class="hplay" title="Play/Pause" :aria-label="state.playing ? 'Pause' : 'Play'" @click="sendCommand(state.playing ? 'pause' : 'play')">
+            <button class="hplay" title="Play/Pause" :aria-label="state.playing ? 'Pause' : 'Play'" :disabled="!connected" @click="sendCommand(state.playing ? 'pause' : 'play')">
               <PhPause v-if="state.playing" :size="22" weight="fill" />
               <PhPlay v-else :size="22" weight="fill" />
             </button>
-            <button class="hbtn" title="Next" aria-label="Next track" @click="sendCommand('skip_next')">
+            <button class="hbtn" title="Next" aria-label="Next track" :disabled="!connected" @click="sendCommand('skip_next')">
               <PhSkipForward :size="17" weight="fill" />
             </button>
-            <button class="hbtn repeat" :class="{ act: state.repeat !== 'off' }" :title="repeatTitle" :aria-label="repeatTitle" @click="cycleRepeat">
+            <button class="hbtn repeat" :class="{ act: state.repeat !== 'off' }" :title="repeatTitle" :aria-label="repeatTitle" :disabled="!connected" @click="cycleRepeat">
               <PhRepeatOnce v-if="state.repeat === 'track'" :size="16" weight="fill" />
               <PhRepeat v-else :size="16" weight="fill" />
             </button>
           </div>
           <div class="row vol">
             <PhSpeakerSimpleHigh :size="18" weight="fill" />
-            <div class="vol-bar" @click="setVolume">
+            <div class="vol-bar" :class="{ disabled: !connected }" :aria-disabled="!connected" @click="setVolume">
               <div class="fill" :style="{ inset: `0 ${100 - vol}% 0 0` }"></div>
               <div class="handle" :style="{ left: `${vol}%` }"></div>
             </div>
@@ -168,7 +178,7 @@ const repeatTitle = computed(() =>
 }
 .artist { color: var(--h-fg2); font-size: 15px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chips { gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-.hchip { font-size: 12px; font-weight: 600; color: var(--h-fg2); background: rgba(255,255,255,.10); border-radius: 20px; padding: 4px 11px; }
+.hchip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--h-fg2); background: rgba(255,255,255,.10); border-radius: 20px; padding: 4px 11px; }
 
 .prog-wrap { margin-top: 24px; }
 .bar { height: 5px; border-radius: 4px; background: var(--h-track); position: relative; cursor: pointer; }
@@ -197,6 +207,25 @@ const repeatTitle = computed(() =>
 .vol-bar .handle { position: absolute; left: 0; top: -3px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
 
 .stale { opacity: .55; }
+
+/* Disconnected strip: the data socket is down and reconnect backoff is running. Amber tint
+   tuned for the dark hero (the global --warn tokens are light-surface). */
+.disc {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 18px;
+  background: rgba(245, 158, 11, .14); color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, .28); border-radius: 12px;
+  padding: 9px 14px; font-size: 12.5px; font-weight: 600;
+}
+/* Collapsed while connected: kept in the DOM (and a11y tree) but taking no space. */
+.disc.off { margin: 0; padding: 0; border: 0; background: none; height: 0; overflow: hidden; }
+.disc-dot { width: 8px; height: 8px; border-radius: 50%; background: #fbbf24; animation: disc-pulse 1.4s ease-in-out infinite; }
+@keyframes disc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* Transport is dead while the socket is down — controls read as disabled, not merely dim. */
+.hbtn:disabled, .hplay:disabled { opacity: .4; cursor: not-allowed; }
+.hbtn:disabled:hover { background: transparent; color: var(--h-fg2); }
+.hplay:disabled:hover { filter: none; }
+.bar.disabled, .vol-bar.disabled { opacity: .45; cursor: not-allowed; }
 
 .queue {
   border-radius: 20px; overflow: hidden; position: relative;

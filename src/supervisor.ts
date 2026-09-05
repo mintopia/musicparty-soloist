@@ -4,6 +4,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { acquireSoloist } from "./acquire.js";
 import { soloistReady, type Config } from "./config.js";
 import { makeLog } from "./log.js";
+import { getPipewireDeviceOverride } from "./runtime.js";
+import { deferred } from "./util.js";
+import type { SoloistState } from "./wire-contract.js";
 
 export const EXIT_EXPIRED = 10;
 export const BACKOFF_BASE = 1.0;
@@ -16,14 +19,7 @@ export class Aborted extends Error {}
 // The supervisor loop's transient phase, surfaced for the Menu's Soloist status.
 // Mirrors the loop boundaries: waiting-for-config → acquire → start → run → on exit
 // either re-acquire (exit 10) or backoff+restart; `stopped` is terminal (shutdown/crash).
-export type SoloistState =
-  | "waiting"
-  | "acquiring"
-  | "starting"
-  | "running"
-  | "backoff"
-  | "expired-reacquiring"
-  | "stopped";
+export type { SoloistState } from "./wire-contract.js";
 
 // Crash-loop backoff arithmetic, pure so it can be table-tested without fake timers.
 // `sleep` is how long to wait before the next restart; `next` is the backoff to carry
@@ -36,28 +32,6 @@ export function backoffStep(current: number, ranSeconds: number): { sleep: numbe
 
 const log = makeLog("supervisor");
 
-// ponytail: module-global set once at boot. A --pipewire-device flag pins Soloist's
-// output node. In Docker it's the soloist-sink null-sink (the fan-out anchor, ADR-0011);
-// in standalone it's an optional user-supplied device (ADR-0015). Either way it comes
-// from a main.js flag rather than cfg, so it stays out of buildArgv's persisted round-trip
-// — though cfg.soloist.pipewireDevice still wins over it when both are set.
-let pipewireDeviceOverride = "";
-export function setPipewireDeviceOverride(name: string): void {
-  pipewireDeviceOverride = name.trim();
-}
-
-// Docker mode = the managed-audio deployment (ADR-0011/0015): the Proxy owns a Snapcast +
-// hardware-sink fan-out and serves the Audio Route UI. Set explicitly by the container's
-// s6 run script (--docker). Standalone (npx) leaves it false: no Snapcast, no fan-out —
-// Soloist outputs straight to its optional --pipewire-device / soloist.pipewire_device.
-let dockerMode = false;
-export function setDockerMode(on: boolean): void {
-  dockerMode = on;
-}
-export function isDockerMode(): boolean {
-  return dockerMode;
-}
-
 export function buildArgv(cfg: Config): string[] {
   const argv = [
     "-w", cfg.soloistWs,
@@ -66,7 +40,7 @@ export function buildArgv(cfg: Config): string[] {
     "--data-dir", cfg.soloist.dataDir,
   ];
   // An explicit config value wins; otherwise fall back to the Docker pin.
-  const device = cfg.soloist.pipewireDevice || pipewireDeviceOverride;
+  const device = cfg.soloist.pipewireDevice || getPipewireDeviceOverride();
   if (device) argv.push("--pipewire-device", device);
   argv.push(...cfg.soloist.extraArgs);
   return argv;
@@ -79,9 +53,30 @@ export class SoloistControl {
   private appliedArgv: string | null = null;
   private iter: AbortController | null = null;
   private state: SoloistState = "waiting";
+  private wake = deferred();
 
   bindIteration(ac: AbortController): void {
     this.iter = ac;
+  }
+
+  // Crash-loop backoff sleep that returns early when restart() fires or `signal`
+  // aborts, so a queued restart (or shutdown) during the wait isn't held off until
+  // the backoff cap — iter is already spent once the run has exited, so the sleep,
+  // not the iteration abort, is what a restart must interrupt here.
+  async backoffSleep(ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    const onAbort = () => this.signalWake();
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      await Promise.race([sleep(ms), this.wake.promise]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private signalWake(): void {
+    this.wake.resolve();
+    this.wake = deferred();
   }
 
   // Supervisor-internal: the loop calls this at each phase boundary. Read-only
@@ -109,6 +104,7 @@ export class SoloistControl {
   restart(cfg: Config): void {
     this.markApplied(cfg);
     this.iter?.abort();
+    this.signalWake();
   }
 }
 
@@ -154,7 +150,7 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
   const {
     signal = new AbortController().signal,
     control,
-    acquire = (force = false) => acquireSoloist(undefined, { force }),
+    acquire = (force = false) => acquireSoloist(undefined, { force, signal }),
   } = opts;
 
   // The loop only ever exits by throwing (shutdown Aborted or an unrecoverable
@@ -174,8 +170,32 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
 
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
   control?.setState("acquiring");
-  let binary = await acquire();
+
+  // Boot acquire runs before the restart loop, so a transient CDN fault here would otherwise
+  // wedge startup forever. Retry with the same crash-loop backoff; a threaded shutdown aborts
+  // the in-flight fetch (see download) and an abortable backoff sleep, so SIGTERM stays prompt.
   let backoff = BACKOFF_BASE;
+  let binary: string;
+  while (true) {
+    if (signal.aborted) throw new Aborted();
+    try {
+      binary = await acquire();
+      break;
+    } catch (err) {
+      if (signal.aborted) throw new Aborted();
+      const { sleep: waitS, next } = backoffStep(backoff, 0);
+      log.error("soloist acquisition failed (%s); retrying in %ss", (err as Error).message, waitS);
+      control?.setState("backoff");
+      try {
+        await sleep(waitS * 1000, undefined, { signal });
+      } catch {
+        throw new Aborted();
+      }
+      backoff = next;
+      control?.setState("acquiring");
+    }
+  }
+  backoff = BACKOFF_BASE;
 
   while (true) {
     if (signal.aborted) throw new Aborted();
@@ -215,9 +235,10 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
       continue;
     }
     const { sleep: waitS, next } = backoffStep(backoff, ran);
-    log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
+    log.warn("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
     control?.setState("backoff");
-    await sleep(waitS * 1000);
+    if (control) await control.backoffSleep(waitS * 1000, signal);
+    else await sleep(waitS * 1000);
     backoff = next;
   }
   } finally {

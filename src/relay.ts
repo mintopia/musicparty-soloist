@@ -3,24 +3,20 @@
 // the upstream Soloist socket (full control). Reconnects with backoff while a url is
 // configured; re-dials live when url/authorization changes (apply()).
 
-import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
-import type { SoloistHub } from "./proxy.js";
+import type { SoloistHub } from "./hub.js";
 import { deferred } from "./util.js";
+import { reconnectLoop } from "./reconnect.js";
 import { makeLog } from "./log.js";
+import type { RelayStatus } from "./wire-contract.js";
 
-const log = makeLog("proxy");
+const log = makeLog("relay");
 
 const RELAY_BACKOFF_BASE = 0.5;
 const RELAY_BACKOFF_MAX = 30.0;
 
-export interface RelayStatus {
-  enabled: boolean;         // url configured
-  connected: boolean;
-  lastConnectAt: number | null;
-  lastError: string | null;
-}
+export type { RelayStatus } from "./wire-contract.js";
 
 export class SoloistRelay {
   private conn: WebSocket | null = null;
@@ -67,43 +63,45 @@ export class SoloistRelay {
   }
 
   async run(): Promise<void> {
-    let backoff = RELAY_BACKOFF_BASE;
-    while (!this.stopped) {
-      const url = this.cfg.relay.url;
-      this.status.enabled = url !== "";
-      if (!url) {
-        this.status.connected = false;
-        await this.wake.promise; // park until apply()/stop()
-        continue;
-      }
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const headers: Record<string, string> = {};
-          if (this.cfg.relay.authorization) headers.authorization = this.cfg.relay.authorization;
-          const conn = new WebSocket(url, { headers });
-          conn.on("open", () => {
-            log("relay connected to %s", url);
-            this.conn = conn;
-            this.status.connected = true;
-            this.status.lastConnectAt = Date.now();
-            this.status.lastError = null;
-            backoff = RELAY_BACKOFF_BASE;
-          });
-          conn.on("message", (data, isBinary) => this.onMessage(data, isBinary));
-          conn.on("error", (err) => reject(err));
-          conn.on("close", () => resolve());
-        });
-      } catch (err) {
-        this.status.lastError = (err as Error).message;
-        log("relay %s error: %s", url, (err as Error).message);
-      } finally {
+    // Resolved fresh in connect() (not hoisted) so it always reflects the url used to
+    // open the connection this iteration, even if apply() changes it mid-loop.
+    let currentUrl = "";
+    await reconnectLoop({
+      backoffBase: RELAY_BACKOFF_BASE,
+      backoffMax: RELAY_BACKOFF_MAX,
+      isStopped: () => this.stopped,
+      getWake: () => this.wake,
+      shouldDial: () => {
+        const url = this.cfg.relay.url;
+        this.status.enabled = url !== "";
+        if (!url) {
+          this.status.connected = false;
+          return false; // park until apply()/stop()
+        }
+        return true;
+      },
+      connect: () => {
+        currentUrl = this.cfg.relay.url;
+        const headers: Record<string, string> = {};
+        if (this.cfg.relay.authorization) headers.authorization = this.cfg.relay.authorization;
+        return new WebSocket(currentUrl, { headers });
+      },
+      onOpen: (conn) => {
+        log("relay connected to %s", currentUrl);
+        this.conn = conn;
+        this.status.connected = true;
+        this.status.lastConnectAt = Date.now();
+        this.status.lastError = null;
+      },
+      onMessage: (data, isBinary) => this.onMessage(data, isBinary),
+      onError: (err) => {
+        this.status.lastError = err.message;
+        log.error("relay %s error: %s", currentUrl, err.message);
+      },
+      onSettled: () => {
         this.conn = null;
         this.status.connected = false;
-      }
-      if (this.stopped) break;
-      // Backoff, but wake early on apply()/stop().
-      await Promise.race([sleep(backoff * 1000), this.wake.promise]);
-      backoff = Math.min(backoff * 2, RELAY_BACKOFF_MAX);
-    }
+      },
+    });
   }
 }

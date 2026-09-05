@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
+import LoadingState from "../../components/LoadingState.vue";
 import TextField from "../../components/TextField.vue";
 import SecretRow from "../../components/SecretRow.vue";
 
@@ -31,7 +32,7 @@ const pill = computed(() => {
 </script>
 
 <template>
-  <div v-if="!loaded" class="lbl">Loading…</div>
+  <LoadingState v-if="!loaded" />
   <SectionCard
     v-else
     title="WebSocket Relay"
@@ -40,7 +41,7 @@ const pill = computed(() => {
     <div class="relay-head">
       <div class="relay-pill">
         <span class="pill" :class="pill.cls"><span class="dot"></span>{{ pill.text }}</span>
-        <div v-if="relay.enabled && !relay.connected && relay.lastError" class="relay-err">
+        <div v-if="relay.enabled && !relay.connected && relay.lastError" class="relay-err" :title="relay.lastError">
           {{ relay.lastError }}
         </div>
       </div>
@@ -48,8 +49,9 @@ const pill = computed(() => {
     <div class="grid2">
       <TextField label="Relay URL" placeholder="wss://example.com/relay" v-model="c.relay.url" />
       <SecretRow
-        label="Authorization header" section="relay" field-key="authorization" revealable
+        label="Authorization Header" section="relay" field-key="authorization" revealable optional
         :is-set="secretSet['relay.authorization']" v-model="c.relay.authorization"
+        hint="Sent as the Authorization header when connecting to the relay server. Optional — leave blank if the relay needs no auth."
       />
     </div>
   </SectionCard>
@@ -60,7 +62,7 @@ const pill = computed(() => {
 @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
 .relay-head { display: flex; justify-content: flex-end; margin-bottom: 14px; }
 .relay-pill { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.relay-err { font-size: 11.5px; color: var(--faint); max-width: 340px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.relay-err { font-size: 11.5px; color: var(--faint); max-width: 340px; text-align: right; overflow-wrap: break-word; word-break: break-word; }
 .pill.disabled { background: var(--sub); color: var(--dim); }
 .pill.disabled .dot { background: var(--dim); }
 .pill.connected { background: var(--ok-s); color: var(--ok); }

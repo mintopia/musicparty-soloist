@@ -98,6 +98,11 @@ master-detail makes any drift obvious side-by-side).
 - **Banner** (pending restart): `--warn-s` bg, warning border, primary action in `--warn`.
 - **Marquee**: single-line ping-pong scroll for overflowing titles (hero + mini-player), with a
   both-edge fade mask applied **only while overflowing**. Honors `prefers-reduced-motion`.
+- **LoadingState**: centered animated spinner (26px teal `--ind` ring, 0.7s linear rotation;
+  slowed to 1.6s under `prefers-reduced-motion`) plus a "Loading…" label below. Includes
+  `role="status"` + `aria-live="polite"` for a11y. Used for initial load in all detail panes
+  (Settings, Webhooks, Audio, Lyrics) via shared `LoadingState.vue` component (ADR-0023).
+  Replaces ad-hoc loading markup.
 - **Icons**: [Phosphor](https://phosphoricons.com) via `@phosphor-icons/vue` (ADR-0021), sized
   16–19px in chrome/controls. **`weight="fill"` everywhere**, except the brand mark
   (`PhMusicNotesSimple`, `weight="bold"`). Never hand-author inline SVGs or use emoji/Unicode
