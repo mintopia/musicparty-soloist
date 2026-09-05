@@ -17,7 +17,7 @@ import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
 import type { ClientMeta, ProxyStatus } from "./wire-contract.js";
 
-export type { ClientMeta, ProxyStatus };
+export type { ClientMeta, ProxyStatus } from "./wire-contract.js";
 
 const log = makeLog("proxy");
 

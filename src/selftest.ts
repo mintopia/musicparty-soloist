@@ -919,13 +919,13 @@ await test("Hub getters + buildProxyStatus summary", async () => {
 });
 
 
-// The Proxy↔client wire contract lives once in wire-contract.ts (issue #47): every module
-// derives ProxyStatus/ClientMeta/WebhookDelivery/DEBUG_STREAMS from that single source, so a
-// server rename or a new stream can't compile clean on both sides while the wire diverges.
-// This locks the const's identity — re-forking it in appcontrol would break the reference —
-// and pins the shape a real buildProxyStatus() hands the client (the `: ProxyStatus`
-// annotation is the compile-time half of the same guarantee).
-await test("wire contract is single-sourced (issue #47)", () => {
+// The Proxy↔client wire contract lives once in wire-contract.ts: every module derives
+// ProxyStatus/ClientMeta/WebhookDelivery/DEBUG_STREAMS from that single source, so a server
+// rename or a new stream can't compile clean on both sides while the wire diverges. This
+// locks the const's identity — re-forking it in appcontrol would break the reference — and
+// pins the shape a real buildProxyStatus() hands the client (the `: ProxyStatus` annotation
+// is the compile-time half of the same guarantee).
+await test("wire contract is single-sourced", () => {
   assert.strictEqual(DEBUG_STREAMS, WIRE_DEBUG_STREAMS, "appcontrol re-exports the shared DEBUG_STREAMS, not a hand-copied fork");
   const relay = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
   const status: ProxyStatus = buildProxyStatus(new SoloistHub("ws://127.0.0.1:1"), relay, new WebhookHistory());
