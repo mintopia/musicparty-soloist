@@ -1038,6 +1038,17 @@ assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real
 });
 
 
+// Standalone device picker (ADR-0015): listStandaloneSinks returns parseSinks with no
+// exclude — every real Audio/Sink, no synthetic Snapcast entry (there is no fan-out),
+// and no Snapserver-capture exclusion (stream_name is a Docker-only concept).
+await test("standalone sink list omits the Snapcast toggle", async () => {
+const standalone = parseSinks(pwDump);
+assert.ok(!standalone.some((s) => s.name === SNAPCAST_KEY), "standalone list has no synthetic Snapcast entry");
+assert.ok(standalone.some((s) => s.name === "Spotify"), "standalone list keeps sinks Docker would exclude as the Snapserver node");
+assert.ok(standalone.some((s) => s.name === "alsa_output.hw_0"), "standalone list includes real hardware sinks");
+});
+
+
 // Sink cache starts empty with refreshedAt 0 ("never") so /api/pipewire-sinks knows to
 // force a synchronous dump before the background poll has landed one. (refreshSinkCache
 // itself shells out to pw-dump — exercised at runtime, not here.)

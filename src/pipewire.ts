@@ -367,6 +367,14 @@ export async function listPipewireSinks(cfg: Config): Promise<PwSink[]> {
   return pipewireSinksResponse(parseSinks(dump, [cfg.streamName]));
 }
 
+// Real hardware Audio/Sink nodes only — no synthetic Snapcast entry and no
+// Snapserver-capture exclusion (neither exists in standalone). Feeds the Settings
+// "PipeWire output device" picker (ADR-0015): Soloist outputs to one of these direct.
+export async function listStandaloneSinks(): Promise<PwSink[]> {
+  const dump = await defaultRun("pw-dump", []);
+  return parseSinks(dump);
+}
+
 // Server-side sink cache (ADR-0011 UI path): a background timer runs pw-dump on an
 // interval so /api/pipewire-sinks answers from a warm cache — the Audio page is
 // populated on first paint instead of waiting on a per-request pw-dump. `refreshedAt`
