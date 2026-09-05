@@ -97,8 +97,9 @@ const { highlightJson } = (hl ?? {}) as { highlightJson(src: string): Promise<st
 // drive the exact App-Control client the app ships, not a re-implementation.
 const appctl = await loadRawTs("../src/web-vue/composables/useAppControl.ts");
 const useConfigMod = await loadRawTs("../src/web-vue/composables/useConfig.ts");
-const { useConfig: loadUseConfig } = (useConfigMod ?? {}) as {
+const { useConfig: loadUseConfig, beforeUnloadGuard } = (useConfigMod ?? {}) as {
   useConfig(): { config: Record<string, unknown>; trySave(): void; dirty: { value: boolean }; status: { value: string } };
+  beforeUnloadGuard(e: { preventDefault(): void; returnValue: unknown }): void;
 };
 type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
 type AppControlApi = {
@@ -2392,6 +2393,35 @@ await webTest("useConfig.trySave guards the Enter-to-save path", useConfigMod, a
     for (const k of Object.keys(config)) delete config[k];
     Object.assign(config, snapshot);
     status.value = "idle";
+  }
+});
+
+// beforeUnloadGuard warns on tab-close/back-nav/reload only while edits are unsaved
+// (UX-H3): a clean working copy leaves the event untouched (no spurious prompt); a dirty
+// one calls preventDefault and sets returnValue, the two signals a browser needs to prompt.
+await webTest("useConfig.beforeUnloadGuard guards unsaved edits", useConfigMod, async () => {
+  const { config, dirty } = loadUseConfig();
+  const snapshot = JSON.parse(JSON.stringify(config));
+  const mkEvent = () => {
+    let prevented = false;
+    return { prevented: () => prevented, returnValue: undefined as unknown, preventDefault() { prevented = true; } };
+  };
+  try {
+    assert.equal(dirty.value, false, "starts clean");
+    const clean = mkEvent();
+    beforeUnloadGuard(clean as any);
+    assert.equal(clean.prevented(), false, "clean config: no beforeunload prompt");
+    assert.equal(clean.returnValue, undefined, "clean config: returnValue left untouched");
+
+    (config as any).relay = { url: "wss://x" };
+    assert.equal(dirty.value, true, "editing the working copy marks it dirty");
+    const editing = mkEvent();
+    beforeUnloadGuard(editing as any);
+    assert.equal(editing.prevented(), true, "dirty config: preventDefault fires the prompt");
+    assert.equal(editing.returnValue, "", "dirty config: returnValue set for legacy browsers");
+  } finally {
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, snapshot);
   }
 });
 
