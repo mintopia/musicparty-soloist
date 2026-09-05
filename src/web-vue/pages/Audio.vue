@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useConfig } from "../composables/useConfig";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import SectionCard from "../components/SectionCard.vue";
+import LoadingState from "../components/LoadingState.vue";
 import { PhBroadcast, PhSpeakerHifi } from "@phosphor-icons/vue";
 
 // Synthetic sentinel node.name for the Snapcast toggle (mirrors SNAPCAST_KEY in
@@ -110,7 +111,7 @@ function setDelay(name: string, v: string) {
     </div>
 
     <p v-else-if="loaded && sinksLoaded" class="empty">No PipeWire sinks reported. Is the audio path up?</p>
-    <p v-else class="empty">Loading…</p>
+    <LoadingState v-else />
   </SectionCard>
   </div>
 </template>

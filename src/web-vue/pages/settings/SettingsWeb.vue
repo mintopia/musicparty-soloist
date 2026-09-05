@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
+import LoadingState from "../../components/LoadingState.vue";
 import TextField from "../../components/TextField.vue";
 import SecretRow from "../../components/SecretRow.vue";
 
@@ -9,7 +10,7 @@ const c = config as any;
 </script>
 
 <template>
-  <div v-if="!loaded" class="lbl">Loading…</div>
+  <LoadingState v-if="!loaded" />
   <SectionCard v-else title="Web Access" subtitle="Credentials for signing in to this console.">
     <div class="grid2">
       <TextField label="Username" v-model="c.web.username" />

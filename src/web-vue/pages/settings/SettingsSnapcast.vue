@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
+import LoadingState from "../../components/LoadingState.vue";
 import ToggleSwitch from "../../components/ToggleSwitch.vue";
 
 const { config, loaded } = useConfig();
@@ -13,7 +14,7 @@ const snapwebPh = "{{snapweb}}";
 </script>
 
 <template>
-  <div v-if="!loaded" class="lbl">Loading…</div>
+  <LoadingState v-if="!loaded" />
   <SectionCard v-else title="Snapcast" subtitle="Multi-room audio server (Docker). Changes apply after a Snapcast restart.">
     <div class="setrow first">
       <div class="setrow-txt">
