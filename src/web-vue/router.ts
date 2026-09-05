@@ -13,6 +13,9 @@ const routes: RouteRecordRaw[] = [
   { path: "/webhooks", name: "webhooks", component: Webhooks },
   { path: "/lyrics", name: "lyrics", component: Lyrics },
   { path: "/settings", name: "settings", component: Settings },
+  // Lazy so hljs + its theme CSS split into a Debug-only async chunk (ADR-0018), never
+  // the main bundle.
+  { path: "/debug", name: "debug", component: () => import("./pages/Debug.vue") },
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
 

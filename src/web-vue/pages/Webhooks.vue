@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { computed } from "vue";
 import { useConfig } from "../composables/useConfig";
 import SecretRow from "../components/SecretRow.vue";
 
@@ -9,23 +9,7 @@ const WEBHOOK_EVENTS = [
   "context_changed", "device_changed", "playback_state", "auth_state", "position_sync",
 ];
 
-interface WebhookStat { lastStatus: number | null; ok: number; fail: number; lastError: string | null; }
-interface WebhooksView {
-  config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean };
-  stats: Record<string, WebhookStat>;
-}
-
 const { config, secretSet, loaded } = useConfig();
-
-// Delivery stats: a snapshot of the saved server view, fetched once (mirrors the legacy
-// view — reflects saved config, not unsaved edits).
-const wh = ref<WebhooksView | null>(null);
-onMounted(async () => {
-  try {
-    const res = await fetch("/api/webhooks", { credentials: "same-origin" });
-    if (res.ok) wh.value = await res.json();
-  } catch { /* leave delivery card empty */ }
-});
 
 const webhooks = computed(() => config.webhooks as {
   defaultUrl: string; delayMs: number; urls: Record<string, string>; secret: string | boolean;
@@ -61,22 +45,6 @@ function removeOverride(key: string) {
 const nextEvent = computed(() => WEBHOOK_EVENTS.find((e) => !(e in webhooks.value.urls)));
 function addOverride() {
   if (nextEvent.value) webhooks.value.urls[nextEvent.value] = "";
-}
-
-const deliveries = computed(() => {
-  const w = wh.value;
-  if (!w) return [];
-  const out: { name: string; url: string; stat: WebhookStat | undefined }[] = [];
-  if (w.config.defaultUrl) out.push({ name: "default", url: w.config.defaultUrl, stat: w.stats[w.config.defaultUrl] });
-  for (const [k, url] of Object.entries(w.config.urls || {})) out.push({ name: k, url, stat: w.stats[url] });
-  return out;
-});
-
-function statBad(s: WebhookStat): boolean {
-  return s.fail > 0 && (s.lastStatus === null || s.lastStatus >= 400);
-}
-function statLabel(s: WebhookStat): string {
-  return `${s.lastStatus ?? "err"} · ${s.ok}✓${s.fail ? " " + s.fail + "✗" : ""}`;
 }
 </script>
 
@@ -118,24 +86,6 @@ function statLabel(s: WebhookStat): string {
         </div>
       </template>
     </section>
-
-    <section class="card view" v-if="wh">
-      <h1>Delivery</h1>
-      <p v-if="!deliveries.length" class="empty">No webhooks configured.</p>
-      <template v-else>
-        <div v-for="(d, i) in deliveries" :key="d.name">
-          <div v-if="i > 0" class="hr"></div>
-          <div class="row dest">
-            <div class="dest-info">
-              <div class="dest-name">{{ d.name }}</div>
-              <div class="dest-url">{{ d.url }}</div>
-            </div>
-            <span v-if="!d.stat" class="pill none">no deliveries</span>
-            <span v-else class="pill" :class="statBad(d.stat) ? 'bad' : 'ok'">{{ statLabel(d.stat) }}</span>
-          </div>
-        </div>
-      </template>
-    </section>
   </div>
 </template>
 
@@ -150,13 +100,4 @@ function statLabel(s: WebhookStat): string {
 .ov { display: flex; flex-direction: column; gap: 10px; max-width: 700px; }
 .ov-row { gap: 10px; }
 .sel { max-width: 210px; flex: 0 0 auto; }
-.hr { height: 1px; background: var(--line); margin: 12px 0; }
-.dest { justify-content: space-between; }
-.dest-info { min-width: 0; }
-.dest-name { font-size: 14px; font-weight: 600; }
-.dest-url { font-size: 12px; color: var(--faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
-.empty { font-size: 13px; color: var(--faint); }
-.pill.none { background: var(--sub); color: var(--dim); }
-.pill.ok { background: var(--ok-s); color: var(--ok); }
-.pill.bad { background: var(--bad-s); color: var(--bad); }
 </style>

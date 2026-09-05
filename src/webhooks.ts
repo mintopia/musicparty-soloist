@@ -1,5 +1,6 @@
 // Outbound Webhook subsystem: maps Soloist state events to operator URLs, delivers
-// best-effort through a throttled drop-oldest queue, and records delivery stats.
+// best-effort through a throttled drop-oldest queue, and records a global delivery
+// history ring buffer.
 
 import type { Config, WebhooksConfig } from "./config.js";
 import type { SoloistHub } from "./proxy.js";
@@ -77,51 +78,144 @@ export class WebhookQueue {
   }
 }
 
-export interface WebhookStat {
-  lastStatus: number | null;
-  lastAt: number | null;
-  ok: number;
-  fail: number;
-  lastError: string | null;
-}
-export type WebhookStats = Map<string, WebhookStat>;
+export const WEBHOOK_HISTORY_CAP = 10;
+export const WEBHOOK_RESP_BODY_CAP = 8192; // ~8KB byte cap
 
-async function postWebhook(url: string, body: string, secret: string): Promise<{ status: number | null; error: string | null }> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (secret) headers.authorization = `Bearer ${secret}`;
+export const WEBHOOK_RESP_HEADER_ALLOWLIST = new Set([
+  "content-type", "content-length", "date", "server", "content-encoding", "etag", "cache-control", "age", "vary",
+]);
+
+export interface WebhookDelivery {
+  at: number; // start of the delivery attempt, not when it was recorded
+  type: string;
+  url: string;
+  status: number | null; // null on network/timeout error (no response)
+  durationMs: number;
+  reqHeaders: Record<string, string>; // authorization redacted to "Bearer ***"
+  respHeaders: Record<string, string>; // allowlisted only, lowercase keys
+  respBody: string; // capped to WEBHOOK_RESP_BODY_CAP bytes, "…[truncated]" if it overflowed
+  error: string | null;
+}
+
+export class WebhookHistory {
+  private buf: WebhookDelivery[] = [];
+  private cap: number;
+  private listeners = new Set<(d: WebhookDelivery) => void>();
+
+  constructor(cap = WEBHOOK_HISTORY_CAP) {
+    this.cap = cap;
+  }
+
+  record(d: WebhookDelivery): void {
+    this.buf.push(d);
+    if (this.buf.length > this.cap) this.buf.shift();
+    for (const cb of this.listeners) {
+      try {
+        cb(d);
+      } catch (err) {
+        log("webhook onEntry cb threw: %s", (err as Error).message);
+      }
+    }
+  }
+
+  entries(): WebhookDelivery[] {
+    return [...this.buf];
+  }
+
+  last(): WebhookDelivery | null {
+    return this.buf.length ? this.buf[this.buf.length - 1] : null;
+  }
+
+  onEntry(cb: (d: WebhookDelivery) => void): () => void {
+    this.listeners.add(cb);
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      this.listeners.delete(cb);
+    };
+  }
+}
+
+// Reads res.body incrementally so a huge/slow response can't be buffered in full —
+// stops once WEBHOOK_RESP_BODY_CAP bytes have been accumulated.
+async function readCappedBody(res: Response, cap: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
   try {
-    const res = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
-    if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
-    return { status: res.status, error: null };
-  } catch (err) {
-    log("webhook %s failed: %s", url, (err as Error).message);
-    return { status: null, error: (err as Error).message };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(Buffer.from(value));
+        total += value.length;
+        // Read one byte past the cap so a body sized exactly to the cap is not
+        // mistaken for a truncated one.
+        if (total > cap) break;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
   }
+  const buf = Buffer.concat(chunks);
+  let body = buf.subarray(0, cap).toString("utf8");
+  if (buf.length > cap) body += "…[truncated]";
+  return body;
 }
 
-export function recordWebhookStat(stats: WebhookStats, url: string, status: number | null, error: string | null): void {
-  const s = stats.get(url) ?? { lastStatus: null, lastAt: null, ok: 0, fail: 0, lastError: null };
-  s.lastStatus = status;
-  s.lastAt = Date.now();
-  if (error === null && status !== null && status >= 200 && status < 300) {
-    s.ok++;
-  } else {
-    s.fail++;
-    s.lastError = error ?? `HTTP ${status}`;
+export async function postWebhook(
+  history: WebhookHistory,
+  type: string,
+  url: string,
+  body: string,
+  secret: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const reqHeaders: Record<string, string> = { "content-type": "application/json" };
+  if (secret) reqHeaders.authorization = `Bearer ${secret}`;
+  const at = Date.now();
+  let status: number | null = null;
+  let respHeaders: Record<string, string> = {};
+  let respBody = "";
+  let error: string | null = null;
+  try {
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: reqHeaders,
+      body,
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    });
+    status = res.status;
+    res.headers.forEach((v, k) => {
+      const lk = k.toLowerCase();
+      if (WEBHOOK_RESP_HEADER_ALLOWLIST.has(lk)) respHeaders[lk] = v;
+    });
+    respBody = await readCappedBody(res, WEBHOOK_RESP_BODY_CAP);
+    if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
+  } catch (err) {
+    error = (err as Error).message;
+    log("webhook %s failed: %s", url, error);
   }
-  stats.set(url, s);
+  const durationMs = Date.now() - at;
+  const redactedReqHeaders = { ...reqHeaders };
+  for (const k of Object.keys(redactedReqHeaders)) {
+    if (k.toLowerCase() === "authorization") redactedReqHeaders[k] = "Bearer ***";
+  }
+  history.record({ at, type, url, status, durationMs, reqHeaders: redactedReqHeaders, respHeaders, respBody, error });
 }
 
 // Reads cfg.webhooks live (urls, secret, delay) so PUT /api/config edits apply
 // without a restart.
-export function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookStats {
-  const stats: WebhookStats = new Map();
+export function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookHistory {
+  const history = new WebhookHistory();
   const queue = new WebhookQueue(() => cfg.webhooks.delayMs, {
     onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
   });
   hub.observe((frame) => {
     const url = resolveWebhookUrl(frame.type, cfg.webhooks);
-    if (url) queue.push(() => void postWebhook(url, frame.raw, cfg.webhooks.secret).then((r) => recordWebhookStat(stats, url, r.status, r.error)));
+    if (url) queue.push(() => void postWebhook(history, frame.type, url, frame.raw, cfg.webhooks.secret));
   });
-  return stats;
+  return history;
 }

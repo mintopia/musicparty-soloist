@@ -5,16 +5,18 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, sameOrigin } from "./auth.js";
+import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual } from "./util.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
-import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
-import { resolveWebhookUrl, WebhookQueue, recordWebhookStat, type WebhookStats } from "./webhooks.js";
+import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, buildProxyStatus, makeServer, type UpstreamFrame } from "./proxy.js";
+import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
+import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
+import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
-import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./supervisor.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
@@ -52,6 +54,87 @@ const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
   readPlayback(msg: any): { positionMs: number | null; timestampMs: number | null; speed: number | null; playing?: boolean; volume: number | null };
   readQueue(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string }[] | null;
 };
+
+// Escape-safe JSON highlighter (ADR-0016). Unlike the ./web/*.js imports above (prebuilt
+// browser JS copied into dist/), this reaches into the raw Vue-app .ts source, which
+// tsc excludes from dist/ — Node's on-the-fly type-stripping runs it at runtime. That way
+// the selftest exercises the exact helper the Debug chunk ships, not a re-implementation.
+// Computed specifier so tsc leaves the import as `any` rather than trying to resolve it.
+const hl = await import(new URL("../src/web-vue/lib/highlight.ts", import.meta.url).href);
+const { highlightJson } = hl as { highlightJson(src: string): Promise<string> };
+
+// useAppControl composable (T8): same raw-.ts, computed-specifier import as highlight.ts —
+// exercised headlessly here (Vue reactivity is DOM-free) against a fake socket, so the tests
+// drive the exact App-Control client the app ships, not a re-implementation.
+const appctl = await import(new URL("../src/web-vue/composables/useAppControl.ts", import.meta.url).href);
+type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
+type AppControlApi = {
+  status: { value: any };
+  connected: { value: boolean };
+  stale: { value: boolean };
+  subscribe(streams: string[]): AppControlSub;
+  start(): void;
+  stop(): void;
+};
+const { createAppControl } = appctl as {
+  createAppControl(opts?: {
+    url?: string;
+    socketFactory?: (url: string) => any;
+    staleMs?: number;
+    frameRing?: number;
+    webhookRing?: number;
+    backoffBaseMs?: number;
+    backoffMaxMs?: number;
+  }): AppControlApi;
+};
+
+// Menu status derivation: pure worst-of badge logic, imported raw-.ts like the modules
+// above so the precedence table (ADR-0017) is verified headless.
+const menuStatusMod = await import(new URL("../src/web-vue/lib/menuStatus.ts", import.meta.url).href);
+const { badgeLevel: mBadge, soloistLevel: mSoloist, relayLevel: mRelay, webhookLevel: mWebhook, worstBadge: mWorst, soloistText: mText } = menuStatusMod as {
+  badgeLevel(i: any): string;
+  soloistLevel(s: any, appLive: boolean, dataConnected: boolean): string;
+  relayLevel(r: any, appLive: boolean): string;
+  webhookLevel(ok: boolean | null, appLive: boolean): string;
+  worstBadge(levels: string[]): string;
+  soloistText(s: any, appLive: boolean, dataConnected: boolean): string;
+};
+
+// A minimal WebSocket stand-in the composable can drive: tests trigger open/close/message
+// by hand and read back what was sent. close() fires onclose to mirror the browser.
+interface FakeSocket {
+  url: string;
+  readyState: number;
+  sent: string[];
+  onopen: ((ev?: unknown) => void) | null;
+  onclose: ((ev?: unknown) => void) | null;
+  onerror: ((ev?: unknown) => void) | null;
+  onmessage: ((ev: { data: unknown }) => void) | null;
+  send(d: string): void;
+  close(): void;
+  open(): void;
+  deliver(stream: string, data: unknown): void;
+  raw(data: unknown): void;
+  error(): void;
+}
+function fakeSocketFactory() {
+  const sockets: FakeSocket[] = [];
+  const factory = (url: string): FakeSocket => {
+    const s: FakeSocket = {
+      url, readyState: 0, sent: [], onopen: null, onclose: null, onerror: null, onmessage: null,
+      send(d) { this.sent.push(d); },
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.(); },
+      open() { this.readyState = 1; this.onopen?.(); },
+      deliver(stream, data) { this.onmessage?.({ data: JSON.stringify({ stream, data }) }); },
+      raw(data) { this.onmessage?.({ data }); },
+      error() { this.onerror?.(); },
+    };
+    sockets.push(s);
+    return s;
+  };
+  return { factory, sockets };
+}
+const emptyRelay = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
 
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
@@ -115,6 +198,13 @@ assert.equal(sameOrigin(req({ origin: "http://evil.example", host: "host:8687" }
 assert.equal(sameOrigin(req({ host: "host:8687" })), false, "missing Origin rejected (browsers always send it)");
 assert.equal(sameOrigin(req({ origin: "http://host:8687" })), false, "missing Host rejected");
 assert.equal(sameOrigin(req({ origin: "::not a url::", host: "host:8687" })), false, "unparseable Origin rejected");
+// Normalized: hostname case-folded, and default ports (none/80/443) treated as equal — so
+// a TLS-terminated https Origin still matches the plain Host we were reached on (host-only,
+// no scheme compare). A different explicit port still fails.
+assert.equal(sameOrigin(req({ origin: "http://HOST:8687", host: "host:8687" })), true, "hostname case-insensitive");
+assert.equal(sameOrigin(req({ origin: "https://host", host: "host:443" })), true, "default ports equivalent (https origin / :443 host)");
+assert.equal(sameOrigin(req({ origin: "https://host:8687", host: "host:8687" })), true, "scheme mismatch is not a rejection (host-only)");
+assert.equal(sameOrigin(req({ origin: "http://host:9999", host: "host:8687" })), false, "explicit port mismatch rejected");
 });
 
 
@@ -260,39 +350,134 @@ assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
 });
 
 
-// Webhook delivery stats: ok/fail counters, lastStatus/lastError per destination.
-const wstats: WebhookStats = new Map();
-await test("wstats", async () => {
-recordWebhookStat(wstats, "http://a", 200, null);
-recordWebhookStat(wstats, "http://a", 204, null);
-assert.deepEqual(wstats.get("http://a")!.ok, 2, "2xx increments ok");
-assert.equal(wstats.get("http://a")!.fail, 0, "2xx does not fail");
-assert.equal(wstats.get("http://a")!.lastStatus, 204, "lastStatus tracks last delivery");
-recordWebhookStat(wstats, "http://a", 500, null);
-assert.equal(wstats.get("http://a")!.fail, 1, "5xx increments fail");
-assert.equal(wstats.get("http://a")!.lastError, "HTTP 500", "non-2xx status recorded as lastError");
-recordWebhookStat(wstats, "http://a", null, "timeout");
-assert.equal(wstats.get("http://a")!.fail, 2, "network error increments fail");
-assert.equal(wstats.get("http://a")!.lastError, "timeout", "network error message recorded");
-assert.equal(wstats.get("http://a")!.lastStatus, null, "network error clears lastStatus");
-assert.ok(wstats.get("http://a")!.lastAt! > 0, "lastAt timestamp set");
+// WebhookHistory ring buffer + postWebhook capture, redaction, and body cap.
+function fakeFetch(status: number, headers: Record<string, string>, body: string): typeof fetch {
+  return (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
+}
+
+// a) Capture shape: a successful delivery records type/url/status/timing/body.
+await test("postWebhook records delivery capture shape", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "sek", fakeFetch(200, { "content-type": "application/json" }, "ok"));
+  const d = h.last();
+  assert.ok(d, "delivery recorded");
+  assert.equal(d!.type, "track_changed", "type recorded");
+  assert.equal(d!.url, "http://t", "url recorded");
+  assert.equal(d!.status, 200, "status recorded");
+  assert.equal(d!.error, null, "no error on success");
+  assert.equal(d!.respBody, "ok", "response body recorded");
+  assert.equal(typeof d!.at, "number", "at is a number");
+  assert.ok(d!.at > 0, "at is a real timestamp");
+  assert.ok(d!.durationMs >= 0, "durationMs recorded");
 });
 
-
-// webhooksView: reports config + stats, never the secret value.
-const viewCfg = { webhooks: { defaultUrl: "http://def", urls: { track_changed: "http://tc" }, secret: "topsecret", delayMs: 0 } } as unknown as Config;
-const view = webhooksView(viewCfg, wstats) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; stats: Record<string, unknown> };
-await test("webhooksView hides secret", async () => {
-assert.equal(view.config.hasSecret, true, "secret presence exposed as boolean");
-assertNoLeak("webhooksView", view, ["topsecret"]);
-assert.deepEqual(view.config.urls, { track_changed: "http://tc" }, "type->url overrides reported");
-assert.equal(view.config.defaultUrl, "http://def", "default url reported");
-assert.ok(view.stats["http://a"], "live stats map included");
+// b) Request redaction: the Authorization header is masked in the recorded delivery,
+// and the raw secret never appears anywhere in it.
+await test("postWebhook redacts the request secret", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "supersecret", fakeFetch(200, { "content-type": "application/json" }, "ok"));
+  const d = h.last()!;
+  assert.equal(d.reqHeaders.authorization, "Bearer ***", "authorization header redacted");
+  assert.equal(d.reqHeaders["content-type"], "application/json", "content-type header preserved");
+  assertNoLeak("postWebhook delivery", d, ["supersecret"]);
 });
 
-const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new Map()) as { config: { hasSecret: boolean } };
-await test("webhooksView empty secret", async () => {
-assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
+// c) Response header allowlist: only allowlisted response headers survive; anything
+// else (e.g. vendor/API-key headers) is dropped, never recorded.
+await test("postWebhook allowlists response headers", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {
+    "content-type": "application/json",
+    "date": "Fri, 04 Sep 2026 00:00:00 GMT",
+    "x-api-key": "leak",
+    "x-vendor-sig": "sig",
+  }, "ok"));
+  const d = h.last()!;
+  assert.ok(d.respHeaders["content-type"], "allowlisted content-type kept");
+  assert.ok(d.respHeaders["date"], "allowlisted date kept");
+  assert.ok(!("x-api-key" in d.respHeaders), "non-allowlisted x-api-key dropped");
+  assert.ok(!("x-vendor-sig" in d.respHeaders), "non-allowlisted x-vendor-sig dropped");
+  assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak", "sig"]);
+});
+
+// Response-header allowlist also drops Set-Cookie (a session-fixation vector) and x-api-key:
+// neither reaches the recorded delivery a Debug Subscriber later sees (ADR-0016).
+await test("postWebhook drops set-cookie and x-api-key response headers", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {
+    "content-type": "application/json",
+    "set-cookie": "sid=leak; HttpOnly",
+    "x-api-key": "leak",
+  }, "ok"));
+  const d = h.last()!;
+  assert.ok(d.respHeaders["content-type"], "allowlisted content-type kept");
+  assert.ok(!("set-cookie" in d.respHeaders), "non-allowlisted set-cookie dropped");
+  assert.ok(!("x-api-key" in d.respHeaders), "non-allowlisted x-api-key dropped");
+  assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak"]);
+});
+
+// d) Streamed body cap + truncation: an oversized body is capped and marked truncated;
+// a short body records verbatim with no marker.
+await test("postWebhook caps and truncates an oversized streamed body", async () => {
+  const h = new WebhookHistory();
+  const big = "x".repeat(WEBHOOK_RESP_BODY_CAP + 5000);
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, big));
+  const d = h.last()!;
+  assert.ok(d.respBody.includes("…[truncated]"), "truncation marker present");
+  const capped = d.respBody.slice(0, WEBHOOK_RESP_BODY_CAP);
+  assert.ok(/^x+$/.test(capped) && capped.length === WEBHOOK_RESP_BODY_CAP, "body content capped at WEBHOOK_RESP_BODY_CAP");
+  assert.equal(d.respBody.length, WEBHOOK_RESP_BODY_CAP + "…[truncated]".length, "total length is cap + marker length");
+});
+
+await test("postWebhook records a short body verbatim, no marker", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, "short body"));
+  const d = h.last()!;
+  assert.equal(d.respBody, "short body", "short body recorded verbatim");
+  assert.ok(!d.respBody.includes("…[truncated]"), "no truncation marker for a short body");
+});
+
+await test("postWebhook does not mark a body sized exactly to the cap as truncated", async () => {
+  const h = new WebhookHistory();
+  const exact = "x".repeat(WEBHOOK_RESP_BODY_CAP);
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {}, exact));
+  const d = h.last()!;
+  assert.equal(d.respBody, exact, "body exactly at the cap recorded verbatim");
+  assert.ok(!d.respBody.includes("…[truncated]"), "no marker when body length equals the cap");
+});
+
+// e) onEntry disposer is idempotent: calling it twice must not throw, and must not
+// affect other still-registered listeners.
+await test("WebhookHistory onEntry disposer is idempotent", async () => {
+  const h = new WebhookHistory();
+  let n = 0;
+  let m = 0;
+  const off = h.onEntry(() => n++);
+  h.onEntry(() => m++);
+  const mkDelivery = (i: number): WebhookDelivery =>
+    ({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
+
+  h.record(mkDelivery(0));
+  assert.equal(n, 1, "listener fires on first record");
+  off();
+  h.record(mkDelivery(1));
+  assert.equal(n, 1, "disposed listener does not fire again");
+  assert.doesNotThrow(() => off(), "calling the disposer a second time does not throw");
+  h.record(mkDelivery(2));
+  assert.equal(n, 1, "still disposed after a second off() call");
+  assert.equal(m, 3, "the other, still-registered listener keeps firing after the first is disposed");
+});
+
+// f) Ring eviction at 10: the buffer caps at WEBHOOK_HISTORY_CAP, oldest-first.
+await test("WebhookHistory evicts oldest entries at cap 10", async () => {
+  const h = new WebhookHistory();
+  for (let i = 0; i < 12; i++) {
+    h.record({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
+  }
+  const entries = h.entries();
+  assert.equal(entries.length, 10, "ring buffer capped at 10");
+  assert.equal(entries[0].url, "u2", "oldest surviving entry is the 3rd recorded");
+  assert.equal(h.last()!.url, "u11", "last() returns the most recent entry");
 });
 
 
@@ -560,7 +745,9 @@ const signed = signSession("admin", SECRET);
 await test("verifySession", async () => {
 assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
 assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
-assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
+// Flip the last MAC char to a guaranteed-different one — a fixed "x" is a no-op when the
+// (timestamped, per-run) MAC already ends in "x", which would leave the token untampered.
+assert.equal(verifySession(signed.slice(0, -1) + (signed.at(-1) === "a" ? "b" : "a"), SECRET), null, "tampered signature rejected");
 });
 
 await test("session tamper rejection", async () => {
@@ -625,6 +812,9 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
 });
 
 
+const meta = (over: Partial<import("./proxy.js").ClientMeta> = {}): import("./proxy.js").ClientMeta =>
+  ({ id: "id", remoteAddr: "127.0.0.1", tier: "control", auth: "auth-token", connectedAt: 0, userAgent: "ua", ...over });
+
 // Hub read-only drop + state replay, against a real in-process upstream.
 await test("Hub read-only drop + state replay, against a real in-process upstream", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -643,13 +833,13 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
   const fake = () => ({ readyState: WebSocket.OPEN, sent: [] as unknown[], send(d: unknown) { this.sent.push(d); } });
 
   const ro = fake();
-  hub.register(ro as unknown as WebSocket, { readOnly: true });
+  hub.register(ro as unknown as WebSocket, meta({ tier: "readonly", auth: "readonly-token" }));
   assert.deepEqual(ro.sent, ['{"type":"playback_state","playing":true}'], "read-only client gets state replay on connect");
   await hub.forward(ro as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
   assert.deepEqual(gotUpstream, [], "read-only client frames dropped, never forwarded upstream");
 
   const ctrl = fake();
-  hub.register(ctrl as unknown as WebSocket, {});
+  hub.register(ctrl as unknown as WebSocket, meta());
   assert.deepEqual(ctrl.sent, ['{"type":"playback_state","playing":true}'], "control client gets state replay on connect");
   await hub.forward(ctrl as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
   await new Promise((r) => setTimeout(r, 30));
@@ -657,6 +847,482 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
 
   hub.stop();
   upstream.close();
+});
+
+
+// Client metadata enum, clientList shape, and loggedIn() null-while-down.
+await test("Hub client metadata + status getters", async () => {
+  // auth enum is derived, never the raw token
+  const RAWTOK = "CONTROL-SECRET-RAW";
+  const cfg = authCfg(RAWTOK, "RO-RAW");
+  assert.deepEqual(resolveAuth(req({ authorization: `Bearer ${RAWTOK}` }, "/"), cfg), { tier: "control", auth: "auth-token" }, "control token -> auth-token enum");
+  assert.deepEqual(resolveAuth(req({ authorization: `Bearer RO-RAW` }, "/"), cfg), { tier: "readonly", auth: "readonly-token" }, "readonly token -> readonly-token enum");
+  assert.deepEqual(resolveAuth(req({}, "/"), cfg), { tier: "none", auth: null }, "no creds -> none/null");
+  // session cookie -> session-cookie enum
+  const wc = authCfg(RAWTOK, "RO-RAW", { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  assert.deepEqual(resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }, "/"), wc), { tier: "control", auth: "session-cookie" }, "cookie -> session-cookie enum");
+  // A bogus token alongside a valid cookie still resolves to session-cookie, so the
+  // upgrade handler's same-origin gate (keyed on auth) is not bypassed by a junk token.
+  assert.deepEqual(resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }, "/?token=garbage"), wc), { tier: "control", auth: "session-cookie" }, "bogus token + cookie -> session-cookie (CSWSH gate stays armed)");
+
+  // clientList() shape + loggedIn() null while upstream down (never connected)
+  const hub = new SoloistHub("ws://127.0.0.1:1"); // never connects
+  assert.equal(hub.upstreamConnected, false, "upstream not connected");
+  assert.equal(hub.loggedIn(), null, "loggedIn() is null while upstream is down");
+  assert.equal(hub.clientCount(), 0, "no clients yet");
+  const fakeWs = { readyState: WebSocket.OPEN, send() {} };
+  hub.register(fakeWs as unknown as WebSocket, meta({ id: "c1", remoteAddr: "10.0.0.5", tier: "readonly", auth: "readonly-token", connectedAt: 123, userAgent: "TestUA" }));
+  assert.equal(hub.clientCount(), 1, "one client registered");
+  const list = hub.clientList();
+  assert.equal(list.length, 1, "clientList has one entry");
+  assert.deepEqual(list[0], { id: "c1", remoteAddr: "10.0.0.5", tier: "readonly", auth: "readonly-token", connectedAt: 123, userAgent: "TestUA" }, "clientList entry is the full ClientMeta");
+  // the raw token never appears in metadata
+  assert.ok(!JSON.stringify(list).includes(RAWTOK), "raw token never stored in client metadata");
+  hub.stop();
+});
+
+
+// Proxy Status builder: the proxy_status frame carries a compact webhook summary only —
+// the last delivery's at/type/status/ok — never its request/response headers or body (that
+// full detail rides the separate `webhooks` stream). Also covers the ok classification.
+await test("buildProxyStatus emits a compact webhook summary (no headers/body)", async () => {
+  const hub = new SoloistHub("ws://127.0.0.1:1"); // never connects: upstream down, loggedIn null
+  const history = new WebhookHistory();
+  const relay = { enabled: true, connected: false, lastConnectAt: null, lastError: "boom" };
+  const control = new SoloistControl();
+  control.setState("running");
+
+  // No deliveries yet: webhook summary is null; soloist reflects control + a down upstream.
+  const empty = buildProxyStatus(hub, relay, history, control);
+  assert.equal(empty.webhook, null, "no webhook history -> null summary");
+  assert.deepEqual(empty.soloist, { state: "running", upstream: false, loggedIn: null }, "soloist snapshot");
+  assert.equal(empty.clients, 0, "no downstream clients");
+  assert.equal(empty.relay, relay, "relay status passed straight through");
+  // control absent -> state null rather than throwing.
+  assert.equal(buildProxyStatus(hub, relay, history).soloist.state, null, "no control -> state null");
+
+  // A full delivery with secrets in headers + body collapses to the four-field summary.
+  const delivery: WebhookDelivery = {
+    at: 1000, type: "now_playing", url: "http://hook.example/deliver", status: 200, durationMs: 5,
+    reqHeaders: { authorization: "Bearer ***", "x-token": "REQSECRET" },
+    respHeaders: { "content-type": "application/json" },
+    respBody: "RESPSECRETBODY", error: null,
+  };
+  history.record(delivery);
+  const s = buildProxyStatus(hub, relay, history, control);
+  assert.deepEqual(s.webhook, { at: 1000, type: "now_playing", status: 200, ok: true }, "compact 4-field summary");
+  assertNoLeak("proxy_status webhook summary", s, ["REQSECRET", "RESPSECRETBODY", "hook.example", "application/json"]);
+
+  // ok is 2xx-with-a-response only: non-2xx and network errors are not ok.
+  history.record({ ...delivery, at: 2000, status: 500 });
+  assert.equal(buildProxyStatus(hub, relay, history, control).webhook?.ok, false, "5xx -> not ok");
+  history.record({ ...delivery, at: 3000, status: null, error: "timeout" });
+  assert.deepEqual(buildProxyStatus(hub, relay, history, control).webhook, { at: 3000, type: "now_playing", status: null, ok: false }, "network error -> status null, not ok");
+  hub.stop();
+});
+
+
+// App-Control onSubscribe: a producer hook fires once per newly-subscribed stream and seeds
+// just that socket; a repeated subscribe re-fires nothing; a hook throw is isolated.
+await test("AppControl onSubscribe seeds a new subscriber once", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  ac.onSubscribe((stream, send) => {
+    if (stream === "frame") throw new Error("boom"); // isolated: must not stop clients being seeded
+    send({ snapshot: stream });
+  });
+
+  const ls: Record<string, ((...a: any[]) => void)[]> = {};
+  const ws = {
+    readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [] as string[],
+    on(ev: string, fn: (...a: any[]) => void) { (ls[ev] ??= []).push(fn); return this; },
+    emit(ev: string, ...a: any[]) { (ls[ev] ?? []).forEach((f) => f(...a)); },
+    send(d: string) { this.sent.push(d); }, close() {},
+  };
+  ac.register(ws as unknown as WebSocket, cookie);
+
+  // Subscribing to two streams seeds each once; the throwing `frame` hook is swallowed.
+  ws.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "clients"] })), false);
+  assert.deepEqual(ws.sent, [JSON.stringify({ stream: "clients", data: { snapshot: "clients" } })], "clients seeded once; frame hook throw isolated");
+
+  // Re-subscribing to an already-subscribed stream re-seeds nothing (idempotent).
+  ws.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
+  assert.equal(ws.sent.length, 1, "repeat subscribe re-fires no snapshot");
+  ac.stop();
+});
+
+
+// App-Control upgrade gate: a Debug Subscriber upgrade needs a valid Web Session cookie AND
+// a same-host Origin. Tokens are not accepted; a host mismatch or missing/malformed Origin is
+// rejected; a scheme-only mismatch is NOT a rejection.
+await test("appControlAllowed session+same-host gate", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  assert.equal(appControlAllowed(req({ cookie, origin: "http://host:8687", host: "host:8687" }), cfg), true, "session cookie + same host accepted");
+  assert.equal(appControlAllowed(req({ cookie, origin: "https://host:8687", host: "host:8687" }), cfg), true, "scheme mismatch is not a rejection");
+  assert.equal(appControlAllowed(req({ authorization: `Bearer ${CT}`, origin: "http://host:8687", host: "host:8687" }), cfg), false, "token-only (no session cookie) rejected");
+  assert.equal(appControlAllowed(req({ cookie, origin: "http://evil.example", host: "host:8687" }), cfg), false, "host mismatch rejected");
+  assert.equal(appControlAllowed(req({ cookie, host: "host:8687" }), cfg), false, "missing Origin rejected");
+  assert.equal(appControlAllowed(req({ cookie, origin: "::bad::", host: "host:8687" }), cfg), false, "malformed Origin rejected");
+});
+
+
+// Debug Subscriber tier: subscribe validation, idempotency, safe handling of bad frames,
+// backpressure gating, logout/pw-rotation close, and exclusion from the Client Count.
+await test("AppControl Debug Subscriber tier", async () => {
+  const webCfg = { username: "admin", password: "pw", sessionSecret: AUTH_SECRET };
+  const cfg = authCfg(CT, RT, webCfg);
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+
+  type FakeWs = {
+    readyState: number; bufferedAmount: number; sent: string[]; closed: { code: number; reason: string } | null;
+    on(ev: string, fn: (...a: any[]) => void): FakeWs; emit(ev: string, ...a: any[]): void;
+    send(d: string): void; close(code: number, reason: string): void;
+  };
+  const fakeWs = (): FakeWs => {
+    const ls: Record<string, ((...a: any[]) => void)[]> = {};
+    return {
+      readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], closed: null,
+      on(ev, fn) { (ls[ev] ??= []).push(fn); return this; },
+      emit(ev, ...a) { (ls[ev] ?? []).forEach((f) => f(...a)); },
+      send(d) { this.sent.push(d); },
+      close(code, reason) { this.closed = { code, reason }; this.readyState = WebSocket.CLOSED; },
+    };
+  };
+
+  const ac = new AppControl(cfg);
+
+  // subscribe validates against the fixed set; unknown streams ignored; idempotent.
+  const a = fakeWs();
+  ac.register(a as unknown as WebSocket, cookie);
+  assert.equal(ac.count(), 1, "one debug subscriber registered");
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "nope", "clients"] })), false);
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame"] })), false); // repeat -> no duplicate
+  ac.publish("frame", { n: 1 });
+  assert.deepEqual(a.sent, [JSON.stringify({ stream: "frame", data: { n: 1 } })], "frame delivered once (idempotent subscribe, no duplicate send)");
+  ac.publish("proxy_status", { up: true });
+  assert.equal(a.sent.length, 1, "not delivered a stream it never subscribed to");
+
+  // malformed / binary / non-subscribe frames are handled safely (no throw, no effect).
+  a.emit("message", buf("not json"), false);
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] })), true); // binary -> ignored
+  a.emit("message", buf(JSON.stringify({ type: "command", command: "play" })), false); // never a control verb here
+  ac.publish("proxy_status", { up: true });
+  assert.equal(a.sent.length, 1, "binary subscribe ignored; malformed/command frames inert");
+
+  // backpressure: past the drop threshold a `frame` update is shed, but other streams flow;
+  // past the hard threshold the socket is closed.
+  a.bufferedAmount = BUFFER_DROP_BYTES + 1;
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
+  ac.publish("frame", { n: 2 });
+  assert.equal(a.sent.length, 1, "frame update dropped under buffer pressure");
+  ac.publish("clients", []);
+  assert.equal(a.sent.length, 2, "non-frame stream still flows under drop threshold");
+  a.bufferedAmount = BUFFER_CLOSE_BYTES + 1;
+  ac.publish("frame", { n: 3 });
+  assert.deepEqual(a.closed, { code: 1013, reason: "slow consumer" }, "hopeless slow consumer closed");
+  assert.equal(ac.count(), 0, "closed subscriber removed");
+
+  // Client Count exclusion: a Debug Subscriber never lands on the Hub.
+  const hub = new SoloistHub("ws://127.0.0.1:1");
+  const b = fakeWs();
+  ac.register(b as unknown as WebSocket, cookie);
+  assert.equal(ac.count(), 1, "debug subscriber counted by AppControl");
+  assert.equal(hub.clientCount(), 0, "debug subscriber excluded from the Client Count");
+  hub.stop();
+
+  // logout closes every socket whose session fingerprint matches this request's cookie.
+  ac.closeForRequest(req({ cookie }));
+  assert.deepEqual(b.closed, { code: 1008, reason: "logged out" }, "logout closed the matching subscriber");
+  assert.equal(ac.count(), 0, "logged-out subscriber removed");
+
+  // periodic re-check closes a socket whose session no longer verifies (password rotation).
+  const c = fakeWs();
+  ac.register(c as unknown as WebSocket, cookie);
+  ac.recheck();
+  assert.equal(c.closed === null, true, "valid session survives re-check");
+  webCfg.password = "rotated"; // rotate the password -> every live session is revoked
+  ac.recheck();
+  assert.equal(c.closed?.code, 1008, "re-check closes a session revoked by password rotation");
+
+  await ac.stop();
+});
+
+
+// A registration with no session cookie is refused outright (defence in depth: the upgrade
+// gate already requires one, but register never trusts a cookieless socket).
+await test("AppControl refuses a cookieless registration", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const ac = new AppControl(cfg);
+  let closed: number | null = null;
+  const ws = { readyState: WebSocket.OPEN, on() { return this; }, close(code: number) { closed = code; } };
+  ac.register(ws as unknown as WebSocket, "");
+  assert.equal(ac.count(), 0, "no subscriber registered without a session cookie");
+  assert.equal(closed, 1008, "cookieless socket closed 1008");
+  assert.equal(sessionFingerprint(""), null, "empty cookie has no fingerprint");
+  assert.equal(DEBUG_STREAMS.includes("frame"), true, "fixed stream set includes frame");
+  await ac.stop();
+});
+
+
+// End-to-end over a real socket: the actual upgrade + subscribe + publish round-trip works,
+// and an oversized frame is closed safely by the server's maxPayload (not just by the fake
+// harness). Exercises the real ws frame parser the unit tests bypass.
+await test("AppControl real-socket round-trip + oversized frame closed safely", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  const server = createServer();
+  server.on("upgrade", (r, socket, head) => {
+    if (appControlAllowed(r, cfg)) ac.handleUpgrade(r, socket, head);
+    else socket.destroy();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+    headers: { cookie, origin: `http://127.0.0.1:${port}` },
+  });
+  await once(client, "open");
+  for (let i = 0; i < 100 && ac.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ac.count(), 1, "real upgrade registered a debug subscriber");
+
+  // subscribe + publish round-trip over the wire
+  client.send(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] }));
+  await new Promise((r) => setTimeout(r, 30)); // let the server process the subscribe
+  const gotMsg = once(client, "message");
+  ac.publish("proxy_status", { ok: true });
+  const [data] = (await gotMsg) as [RawData];
+  assert.deepEqual(JSON.parse(data.toString()), { stream: "proxy_status", data: { ok: true } }, "published frame arrives over the real socket");
+
+  // oversized frame: server enforces maxPayload and closes without crashing
+  const closed = once(client, "close");
+  client.send("x".repeat(APP_CONTROL_MAX_PAYLOAD + 100));
+  const [code] = (await closed) as [number];
+  assert.equal(code, 1009, "oversized frame closed with 1009 (message too big)");
+  for (let i = 0; i < 100 && ac.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ac.count(), 0, "subscriber removed after the oversized-frame close");
+
+  await ac.stop();
+  server.close();
+});
+
+
+// close() lifecycle (unit): stop() clears the re-check interval, terminates every Debug
+// Subscriber socket, and resolves only once the WebSocketServer has finished closing.
+await test("AppControl.stop() clears the interval, terminates subscribers, and awaits server close", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  let closed: { code: number; reason: string } | null = null;
+  const ws = {
+    readyState: WebSocket.OPEN,
+    on() { return this; },
+    close(code: number, reason: string) { closed = { code, reason }; },
+  };
+  ac.register(ws as unknown as WebSocket, cookie); // registering a subscriber arms the re-check interval
+  assert.equal(ac.count(), 1, "subscriber registered");
+  await ac.stop();
+  assert.deepEqual(closed, { code: 1001, reason: "shutting down" }, "subscriber socket terminated on stop");
+  assert.equal(ac.count(), 0, "no subscribers after stop");
+  await ac.stop(); // idempotent: a second stop (interval already cleared, no subscribers) still resolves
+});
+
+
+// close() lifecycle (integration): a live Debug Subscriber socket is torn down, the listener
+// stops accepting connections, and the returned Promise resolves once shutdown completes.
+await test("RunningProxy.close() tears down debug sockets and the App-Control server", async () => {
+  const prevDocker = isDockerMode();
+  setDockerMode(false); // no PipeWire fan-out / sink polling under test
+  const dir = mkdtempSync(join(tmpdir(), "close-"));
+  const cfgPath = join(dir, "config.yaml");
+  // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+  const cfg = defaultConfig();
+  cfg.web.username = "admin";
+  cfg.web.password = "pw";
+  cfg.web.sessionSecret = AUTH_SECRET;
+  cfg.proxy.listen = `127.0.0.1:${port}`;
+  cfg.soloistWs = "127.0.0.1:1"; // upstream is unreachable; the Hub retries until close() stops it
+  const running = await makeServer(cfg, cfgPath);
+  try {
+    const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+    const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+      headers: { cookie, origin: `http://127.0.0.1:${port}` },
+    });
+    await once(client, "open");
+    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 1, "debug subscriber connected before close");
+
+    const clientClosed = once(client, "close");
+    await running.close();
+    await clientClosed; // the subscriber socket was terminated by the teardown
+    assert.equal(running.appControl.count(), 0, "no debug subscribers after close");
+
+    // the listener is gone: a fresh connection is refused
+    const dead = new WebSocket(`ws://127.0.0.1:${port}/`);
+    await assert.rejects(once(dead, "open"), "server no longer accepts connections after close");
+  } finally {
+    setDockerMode(prevDocker);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+// Integration purity (ADR-0016): a Downstream Client on `/`, a Debug Subscriber on /ws/app, and
+// a fake Relay all wired through one real makeServer. A genuine Soloist frame reaches `/` and the
+// Relay byte-for-byte, while every diagnostic (proxy_status, frame, clients, webhooks) stays on the
+// App-Control socket and never leaks to `/` or the Relay.
+await test("integration purity: diagnostics stay on App-Control; genuine frames reach / and Relay verbatim", async () => {
+  const prevDocker = isDockerMode();
+  setDockerMode(false);
+  const dir = mkdtempSync(join(tmpdir(), "purity-"));
+  const cfgPath = join(dir, "config.yaml");
+
+  const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await Promise.all([once(upstream, "listening"), once(relaySrv, "listening")]);
+  const upPort = (upstream.address() as { port: number }).port;
+  const relayPort = (relaySrv.address() as { port: number }).port;
+
+  const gotRelay: string[] = [];
+  // makeServer's Hub/Relay dial these during construction, so capture the connections with
+  // listeners armed up front — an `await once(...)` after makeServer would miss the event.
+  const upReady = new Promise<WebSocket>((res) => upstream.once("connection", res));
+  const relayReady = new Promise<void>((res) => relaySrv.once("connection", () => res()));
+  relaySrv.on("connection", (ws) => ws.on("message", (d: RawData) => gotRelay.push(d.toString())));
+
+  let hookHit = false;
+  const hookSrv = createServer((_req, res) => { hookHit = true; res.writeHead(200, { "content-type": "text/plain" }).end("ok"); });
+  await new Promise<void>((r) => hookSrv.listen(0, "127.0.0.1", () => r()));
+  const hookPort = (hookSrv.address() as { port: number }).port;
+
+  // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+
+  const cfg = defaultConfig();
+  cfg.web.username = "admin";
+  cfg.web.password = "pw";
+  cfg.web.sessionSecret = AUTH_SECRET;
+  cfg.proxy.token = CT;
+  cfg.proxy.listen = `127.0.0.1:${port}`;
+  cfg.soloistWs = `127.0.0.1:${upPort}`;
+  cfg.relay.url = `ws://127.0.0.1:${relayPort}`;
+  cfg.relay.authorization = "";
+  cfg.webhooks.defaultUrl = `http://127.0.0.1:${hookPort}/hook`;
+  cfg.webhooks.delayMs = 0;
+
+  const running = await makeServer(cfg, cfgPath);
+  const upConn = await upReady;
+  await relayReady;
+
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  // Debug Subscriber (App-Control) + Downstream Client (`/`); closed in finally before
+  // running.close(), since server.close() blocks on any still-open inbound socket.
+  const debug = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+    headers: { cookie, origin: `http://127.0.0.1:${port}` },
+  });
+  const down = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { authorization: `Bearer ${CT}` } });
+  try {
+    const debugMsgs: { stream: string; data: unknown }[] = [];
+    debug.on("message", (d: RawData) => debugMsgs.push(JSON.parse(d.toString())));
+    await once(debug, "open");
+    debug.send(JSON.stringify({ type: "subscribe", streams: [...DEBUG_STREAMS] }));
+    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+
+    // Downstream Client on `/` (control tier via token) connected before any frame, so it
+    // receives exactly what is broadcast afterwards (no cached-state replay in play).
+    const gotDownstream: string[] = [];
+    down.on("message", (d: RawData) => gotDownstream.push(d.toString()));
+    await once(down, "open");
+    for (let i = 0; i < 100 && running.hub.clientCount() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+
+    const streamsSeen = () => new Set(debugMsgs.map((m) => m.stream));
+    const liveWebhook = () => debugMsgs.some((m) => m.stream === "webhooks" && !Array.isArray(m.data));
+    // The outbound mirror drops frames while the proxy's Relay socket isn't OPEN, so wait for a
+    // proxy_status showing the Relay connected before emitting the frame (bounded, like the rest).
+    const relayUp = () => debugMsgs.some((m) => m.stream === "proxy_status" && (m.data as { relay?: { connected?: boolean } }).relay?.connected === true);
+    for (let i = 0; i < 200 && !relayUp(); i++) await new Promise((r) => setTimeout(r, 10));
+
+    // A genuine Soloist frame: broadcast raw to `/` + Relay, mirrored as a `frame` diagnostic, and
+    // (track_changed is a state event with a configured URL) fires a webhook delivery.
+    const GENUINE = '{"type":"track_changed","item":{"uri":"spotify:x"}}';
+    upConn.send(GENUINE);
+
+    for (let i = 0; i < 300; i++) {
+      if (gotDownstream.length && gotRelay.length && DEBUG_STREAMS.every((s) => streamsSeen().has(s)) && liveWebhook()) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    assert.deepEqual(gotDownstream, [GENUINE], "Downstream `/` client receives only the genuine frame, verbatim");
+    assert.deepEqual(gotRelay, [GENUINE], "Relay Server receives only the genuine frame, verbatim");
+    for (const raw of [...gotDownstream, ...gotRelay]) {
+      assert.ok(!("stream" in JSON.parse(raw)), `no diagnostic envelope leaked to / or Relay: ${raw}`);
+    }
+
+    for (const s of DEBUG_STREAMS) assert.ok(streamsSeen().has(s), `Debug Subscriber received the ${s} diagnostic`);
+    assert.ok(hookHit, "the genuine frame fired the webhook");
+    assert.ok(liveWebhook(), "a live webhook delivery reached the App-Control socket");
+  } finally {
+    debug.terminate();
+    down.terminate();
+    await running.close();
+    upstream.close();
+    relaySrv.close();
+    hookSrv.close();
+    setDockerMode(prevDocker);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+// Logout revokes the diagnostics channel: a POST /logout closes every App-Control socket opened
+// under that session (ADR-0016).
+await test("integration: POST /logout closes the session's App-Control socket", async () => {
+  const prevDocker = isDockerMode();
+  setDockerMode(false);
+  const dir = mkdtempSync(join(tmpdir(), "logout-"));
+  const cfgPath = join(dir, "config.yaml");
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+
+  const cfg = defaultConfig();
+  cfg.web.username = "admin";
+  cfg.web.password = "pw";
+  cfg.web.sessionSecret = AUTH_SECRET;
+  cfg.proxy.listen = `127.0.0.1:${port}`;
+  cfg.soloistWs = "127.0.0.1:1"; // upstream unreachable; irrelevant to this test
+  const running = await makeServer(cfg, cfgPath);
+  try {
+    const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+    const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+      headers: { cookie, origin: `http://127.0.0.1:${port}` },
+    });
+    await once(client, "open");
+    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 1, "debug subscriber connected");
+
+    const closed = once(client, "close");
+    const res = await fetch(`http://127.0.0.1:${port}/logout`, { method: "POST", headers: { cookie }, redirect: "manual" });
+    assert.equal(res.status, 302, "logout redirects to /login");
+    const [code] = (await closed) as [number];
+    assert.equal(code, 1008, "App-Control socket closed with 1008 (logged out)");
+    for (let i = 0; i < 100 && running.appControl.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 0, "no debug subscribers after logout");
+  } finally {
+    await running.close();
+    setDockerMode(prevDocker);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 
@@ -821,6 +1487,52 @@ await test("supervise readiness gate parks", async () => {
   assert.equal(acquired, true, "supervise spawns once creds land — no restart needed");
   ac.abort();
   await supP.catch(() => {});
+  rmSync(sdir, { recursive: true, force: true });
+});
+
+
+// Supervisor state machine: soloistStatus() tracks the loop's transient phase. Drive
+// a full cycle — park → acquire → run → exit-10 re-acquire → run → exit-1 backoff →
+// shutdown — and assert it visits each boundary in order. Records every setState so
+// transient phases (starting/running) are captured without racing the poller.
+await test("supervise state machine transitions", async () => {
+  const sdir = mkdtempSync(join(tmpdir(), "sup-state-"));
+  // First build "expires" (exit 10 -> re-acquire), second "crashes" (exit 1 -> backoff);
+  // each runs ~200ms so the running phase is observable before it exits.
+  const expires = join(sdir, "expires.sh");
+  const crashes = join(sdir, "crashes.sh");
+  writeFileSync(expires, `#!/bin/sh\nsleep 0.2\nexit 10\n`, { mode: 0o755 });
+  writeFileSync(crashes, `#!/bin/sh\nsleep 0.2\nexit 1\n`, { mode: 0o755 });
+  const builds = [expires, crashes];
+  let acq = 0;
+  // Not ready (no web creds) so supervise parks in `waiting` until creds land.
+  const stCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "", password: "", sessionSecret: "" } } as unknown as Config;
+  const control = new SoloistControl();
+  const history: string[] = [];
+  const record = control.setState.bind(control);
+  control.setState = (s) => { history.push(s); record(s); };
+  const ac = new AbortController();
+  const waitState = async (s: string) => { for (let i = 0; i < 300 && control.soloistStatus().state !== s; i++) await new Promise((r) => setTimeout(r, 20)); };
+
+  const supP = supervise(stCfg, { signal: ac.signal, control, acquire: async () => builds[Math.min(acq++, builds.length - 1)] });
+  supP.catch(() => {});
+
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(control.soloistStatus().state, "waiting", "parks in waiting before config is ready");
+  stCfg.web.username = "dj";
+  stCfg.web.password = "pw";
+
+  await waitState("backoff");
+  ac.abort();
+  await waitState("stopped");
+  await supP.catch(() => {});
+
+  assert.deepEqual(
+    history,
+    ["waiting", "acquiring", "starting", "running", "expired-reacquiring", "starting", "running", "backoff", "stopped"],
+    "state machine visits each loop boundary in order",
+  );
+  assert.deepEqual(control.soloistStatus(), { state: "stopped" }, "soloistStatus exposes the live terminal state");
   rmSync(sdir, { recursive: true, force: true });
 });
 
@@ -1133,7 +1845,7 @@ await test("first-run setup gating", async () => {
   assert.equal(r.statusCode, 302, "root redirects in setup mode");
   assert.equal(r.headers.location, "/setup", "root redirects to /setup");
 
-  for (const p of ["/api/config", "/api/config-summary", "/api/webhooks", "/login"]) {
+  for (const p of ["/api/config", "/api/config-summary", "/api/relay", "/login"]) {
     r = fakeRes();
     call(r, setupReq("GET", p), scfg);
     assert.equal(r.statusCode, 503, `${p} fails closed in setup mode`);
@@ -1203,6 +1915,204 @@ await test("setup TOCTOU guard", async () => {
   rmSync(raceDir, { recursive: true, force: true });
 });
 
+
+await test("highlightJson escapes XSS payloads to inert text", async () => {
+  // The two canonical break-out attempts (ADR-0016): an attribute-handler injection and
+  // a tag that tries to close hljs's own <pre><code> wrapper. Both must come back with
+  // every raw angle bracket from the input HTML-escaped.
+  for (const payload of ['<img src=x onerror=alert(1)>', '</code></pre><script>alert(1)</script>']) {
+    const out = await highlightJson(JSON.stringify({ v: payload }));
+    // hljs wraps tokens in its own <span class="hljs-…"> tags; strip those and any of its
+    // closing </span>, then assert no raw < or > from the input survives.
+    const bare = out.replace(/<span class="hljs-[^"]*">/g, "").replace(/<\/span>/g, "");
+    assert.ok(!bare.includes("<"), `escaped output leaked a raw '<': ${out}`);
+    assert.ok(!bare.includes(">"), `escaped output leaked a raw '>': ${out}`);
+    assert.ok(out.includes("&lt;") && out.includes("&gt;"), "payload angle brackets should render as entities");
+    assert.ok(!out.includes("<img") && !out.includes("<script"), `live tag survived: ${out}`);
+  }
+});
+
+await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle", async () => {
+  // manifest: true (vite.config.ts) lets us prove the code-split from the emitted graph
+  // rather than by eyeballing bundle sizes (ADR-0018).
+  const webDir = new URL("./web/", import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL(".vite/manifest.json", webDir), "utf8")) as Record<
+    string,
+    { file: string; isEntry?: boolean; isDynamicEntry?: boolean; imports?: string[]; dynamicImports?: string[]; css?: string[] }
+  >;
+
+  const debug = manifest["pages/Debug.vue"];
+  assert.ok(debug, "Debug.vue must be its own chunk in the manifest");
+  assert.equal(debug.isDynamicEntry, true, "Debug.vue must be a dynamic (lazy) chunk, not an entry");
+
+  const hljsKeys = Object.keys(manifest).filter((k) => k.includes("highlight.js"));
+  assert.ok(hljsKeys.some((k) => k.endsWith("/core.js")), "hljs core must be a manifest chunk");
+  assert.ok(hljsKeys.some((k) => k.endsWith("/languages/json.js")), "hljs json grammar must be a manifest chunk");
+  for (const k of hljsKeys) assert.equal(manifest[k].isDynamicEntry, true, `${k} must be an async chunk`);
+
+  // Debug pulls hljs core + json only via dynamicImports (the await import() in the helper).
+  for (const k of hljsKeys) assert.ok((debug.dynamicImports ?? []).includes(k), `Debug chunk must dynamic-import ${k}`);
+
+  // No entry bundle may reach hljs through *static* imports (transitive walk).
+  for (const [key, rec] of Object.entries(manifest)) {
+    if (!rec.isEntry) continue;
+    const seen = new Set<string>();
+    const stack = [...(rec.imports ?? [])];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      assert.ok(!cur.includes("highlight.js"), `entry ${key} statically imports hljs via ${cur}`);
+      stack.push(...(manifest[cur]?.imports ?? []));
+    }
+  }
+
+  // The theme CSS rides the Debug chunk and actually carries hljs rules.
+  assert.ok(debug.css?.length, "Debug chunk must ship a CSS asset (the hljs theme)");
+  const themeCss = readFileSync(new URL(debug.css![0], webDir), "utf8");
+  assert.ok(themeCss.includes(".hljs"), "Debug chunk CSS must contain hljs theme rules");
+});
+
+
+// useAppControl: opens /ws/app, always subscribes proxy_status app-wide, tracks status, and
+// never leaves status green while blind — a disconnect surfaces as stale immediately.
+await test("useAppControl subscribes proxy_status app-wide and tracks status/stale", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1 });
+  ac.start();
+  ac.start(); // idempotent: no second socket
+  assert.equal(sockets.length, 1, "start opens exactly one socket");
+  assert.equal(ac.connected.value, false, "not connected before open");
+  assert.equal(ac.stale.value, true, "stale before any status arrives (never green while blind)");
+  sockets[0].open();
+  assert.equal(ac.connected.value, true, "connected on open");
+  assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "subscribe", streams: ["proxy_status"] }, "subscribes proxy_status even with zero consumers");
+
+  const st = { soloist: { state: "running", upstream: true, loggedIn: true }, clients: 2, relay: emptyRelay, webhook: null };
+  sockets[0].deliver("proxy_status", st);
+  assert.deepEqual(ac.status.value, st, "status reflects the latest proxy_status");
+  assert.equal(ac.stale.value, false, "a fresh proxy_status clears stale");
+
+  // malformed / non-string frames are ignored without disturbing state.
+  sockets[0].raw("not json");
+  sockets[0].raw({ not: "a string" });
+  sockets[0].deliver("proxy_status", { junk: true } as any);
+  assert.deepEqual(ac.status.value, { junk: true }, "a well-formed proxy_status still applies; malformed frames were inert");
+
+  sockets[0].close();
+  assert.equal(ac.connected.value, false, "connected=false after the socket closes");
+  assert.equal(ac.stale.value, true, "connected=false surfaces as stale status to consumers");
+  ac.stop();
+});
+
+
+// useAppControl: on reconnect it resubscribes only the still-live streams, buffers persist,
+// and a disposed subscription receives nothing afterwards (no listener leak). Disposer is
+// idempotent.
+await test("useAppControl resubscribes on reconnect; disposed subscriptions leak no listeners", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1 });
+  const a = ac.subscribe(["frame"]);
+  const b = ac.subscribe(["clients"]);
+  sockets[0].open();
+  assert.deepEqual(
+    new Set(JSON.parse(sockets[0].sent.at(-1)!).streams),
+    new Set(["proxy_status", "frame", "clients"]),
+    "opening subscribes the union of consumer streams plus proxy_status",
+  );
+  sockets[0].deliver("frame", { type: "playback_state", n: 1 });
+  sockets[0].deliver("clients", [{ id: "c1" }]);
+  assert.equal(a.frames.length, 1, "consumer A receives its frame");
+  assert.deepEqual(b.clients.map((c: any) => c.id), ["c1"], "consumer B receives the clients snapshot");
+
+  a.dispose();
+  a.dispose(); // idempotent: a second call is a no-op, not a throw
+  sockets[0].close(); // schedules a reconnect (backoffBaseMs 1ms)
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(sockets.length, 2, "reconnect opened a fresh socket");
+  sockets[1].open();
+  assert.deepEqual(
+    new Set(JSON.parse(sockets[1].sent.at(-1)!).streams),
+    new Set(["proxy_status", "clients"]),
+    "reconnect resubscribes only live streams — disposed A's 'frame' is gone",
+  );
+  sockets[1].deliver("frame", { n: 2 });
+  sockets[1].deliver("clients", [{ id: "c1" }, { id: "c2" }]);
+  assert.equal(a.frames.length, 1, "disposed A gets nothing after reconnect (no leaked listener)");
+  assert.deepEqual(b.clients.map((c: any) => c.id), ["c1", "c2"], "B's buffer persists across reconnect and keeps updating");
+  ac.stop();
+});
+
+
+// useAppControl: frame buffer is a ring (oldest evicted at cap); webhooks takes the
+// on-subscribe history dump (an array, replaces) then appends live single deliveries.
+await test("useAppControl frame ring cap and webhooks dump-then-append", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, frameRing: 3, webhookRing: 5 });
+  const s = ac.subscribe(["frame", "webhooks"]);
+  sockets[0].open();
+  for (let i = 0; i < 5; i++) sockets[0].deliver("frame", { n: i });
+  assert.deepEqual(s.frames.map((f: any) => f.n), [2, 3, 4], "frame ring keeps only the last frameRing items, oldest evicted");
+
+  sockets[0].deliver("webhooks", [{ at: 1 }, { at: 2 }]);
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2], "on-subscribe history dump replaces the webhooks buffer");
+  sockets[0].deliver("webhooks", { at: 3 });
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2, 3], "a live delivery appends to the buffer");
+  ac.stop();
+});
+
+
+// useAppControl: a wedged-but-open socket (heartbeat stops) ages status out to stale, so it
+// never lingers green while the connection is technically up.
+await test("useAppControl ages out status when the heartbeat stops", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, staleMs: 20 });
+  ac.start();
+  sockets[0].open();
+  sockets[0].deliver("proxy_status", { soloist: { state: null, upstream: true, loggedIn: null }, clients: 0, relay: emptyRelay, webhook: null });
+  assert.equal(ac.stale.value, false, "fresh status is not stale");
+  assert.equal(ac.connected.value, true, "socket is connected");
+  await new Promise((r) => setTimeout(r, 120)); // several watchdog ticks past staleMs, no new heartbeat
+  assert.equal(ac.stale.value, true, "status ages out to stale after the heartbeat stops");
+  assert.equal(ac.connected.value, true, "the connection itself is still open");
+  ac.stop();
+});
+
+
+await test("menu badge precedence (ADR-0017)", async () => {
+  const okSoloist = { state: "running", upstream: true, loggedIn: true };
+  const base = { appLive: true, dataConnected: true, soloist: okSoloist, relay: { enabled: false, connected: false }, webhookOk: null };
+  assert.equal(mBadge(base), "green", "all healthy is green");
+  assert.equal(mBadge({ ...base, appLive: false }), "red", "app-control stale/disconnected is red");
+  assert.equal(mBadge({ ...base, dataConnected: false }), "red", "data connection down is red");
+  for (const state of ["stopped", "backoff", "expired-reacquiring"]) {
+    assert.equal(mBadge({ ...base, soloist: { state, upstream: false, loggedIn: null } }), "red", `${state} is red`);
+  }
+  assert.equal(mBadge({ ...base, dataConnected: false, relay: { enabled: true, connected: false } }), "red", "red outranks amber");
+  assert.equal(mBadge({ ...base, soloist: { state: "running", upstream: true, loggedIn: false } }), "amber", "waiting for login is amber");
+  assert.equal(mBadge({ ...base, relay: { enabled: true, connected: false } }), "amber", "relay enabled+disconnected is amber");
+  assert.equal(mBadge({ ...base, webhookOk: false }), "amber", "failed webhook is amber");
+  assert.equal(mBadge({ ...base, relay: { enabled: true, connected: true }, webhookOk: true }), "green", "healthy relay + webhook is green");
+});
+
+await test("menu status lines are trustworthy only while app-control is live", async () => {
+  const soloist = { state: "running", upstream: true, loggedIn: true };
+  assert.equal(mSoloist(soloist, false, true), "red", "soloist line is red when app-control is stale");
+  assert.equal(mText(soloist, false, true), "Unknown", "soloist text is Unknown when stale");
+  assert.equal(mRelay({ enabled: true, connected: false }, false), "green", "relay amber is suppressed when stale");
+  assert.equal(mWebhook(false, false), "green", "webhook amber is suppressed when stale");
+  assert.equal(mText(soloist, true, true), "Logged in");
+  assert.equal(mText({ state: "running", upstream: true, loggedIn: false }, true, true), "Waiting for login");
+  assert.equal(mText({ state: "stopped", upstream: false, loggedIn: null }, true, true), "Down");
+  assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
+});
+
+await test("worstBadge picks the highest severity", async () => {
+  assert.equal(mWorst(["green", "green"]), "green");
+  assert.equal(mWorst(["green", "amber", "green"]), "amber");
+  assert.equal(mWorst(["amber", "red", "green"]), "red");
+  assert.equal(mWorst([]), "green", "no lines defaults to green");
+});
 
 console.log(`\nselftest: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
