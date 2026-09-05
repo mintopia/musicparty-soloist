@@ -268,7 +268,7 @@ assert.equal(qThrow.size(), 0, "queue fully drained despite the throw");
 });
 
 
-// WebhookHistory + postWebhook (T3: Webhook Delivery History).
+// WebhookHistory ring buffer + postWebhook capture, redaction, and body cap.
 function fakeFetch(status: number, headers: Record<string, string>, body: string): typeof fetch {
   return (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
 }
