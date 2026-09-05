@@ -12,7 +12,7 @@
   --ind: #0d9488; --ind-h: #0f766e; --ind-s: #e2f5f1; --link: #0f766e;
   /* status */
   --ok: #16a34a; --ok-s: #eafaf0; --bad: #dc2626; --bad-s: #fdeaea;
-  --warn: #b45309; --warn-s: #fdf3e7;
+  --warn: #b45309; --warn-h: #92400e; --warn-s: #fdf3e7;
   /* type */
   --sans: 'Instrument Sans', system-ui, sans-serif;
   --disp: 'Space Grotesk', system-ui, sans-serif;
@@ -31,7 +31,7 @@
   --txt: #eef2f8; --dim: #a8b6c8; --faint: #8695a8;
   --ind: #2dd4bf; --ind-h: #5eead4; --ind-s: rgba(45, 212, 191, .18); --link: #5eead4;
   --ok: #4ade80; --ok-s: rgba(74, 222, 128, .14); --bad: #fb7185; --bad-s: rgba(251, 113, 133, .15);
-  --warn: #fbbf24; --warn-s: rgba(251, 191, 36, .14);
+  --warn: #fbbf24; --warn-h: #f59e0b; --warn-s: rgba(251, 191, 36, .14);
   --sh: 0 1px 2px rgba(0, 0, 0, .5); --sh2: 0 16px 46px rgba(0, 0, 0, .55);
   /* translucent cold glass so the teal/cyan cloud behind glows through the chrome */
   --bar: rgba(18, 25, 36, .58); --savebar: rgba(18, 25, 36, .66);
@@ -96,6 +96,8 @@ a:hover { color: var(--ind-h); }
 .btn:hover { border-color: var(--ind); color: var(--ind); }
 .btn.pri { background: var(--ind); color: #fff; border-color: var(--ind); }
 .btn.pri:hover { background: var(--ind-h); color: #fff; }
+.btn.pri-warn { background: var(--warn); color: #fff; border-color: var(--warn); }
+.btn.pri-warn:hover { background: var(--warn-h); color: #fff; border-color: var(--warn-h); }
 .btn:disabled { opacity: .5; cursor: default; }
 .row { display: flex; align-items: center; gap: 12px; }
 .pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 20px; display: inline-flex; align-items: center; gap: 6px; }
