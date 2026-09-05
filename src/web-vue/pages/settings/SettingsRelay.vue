@@ -40,7 +40,7 @@ const pill = computed(() => {
     <div class="relay-head">
       <div class="relay-pill">
         <span class="pill" :class="pill.cls"><span class="dot"></span>{{ pill.text }}</span>
-        <div v-if="relay.enabled && !relay.connected && relay.lastError" class="relay-err">
+        <div v-if="relay.enabled && !relay.connected && relay.lastError" class="relay-err" :title="relay.lastError">
           {{ relay.lastError }}
         </div>
       </div>
@@ -60,7 +60,7 @@ const pill = computed(() => {
 @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
 .relay-head { display: flex; justify-content: flex-end; margin-bottom: 14px; }
 .relay-pill { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.relay-err { font-size: 11.5px; color: var(--faint); max-width: 340px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.relay-err { font-size: 11.5px; color: var(--faint); max-width: 340px; text-align: right; overflow-wrap: break-word; word-break: break-word; }
 .pill.disabled { background: var(--sub); color: var(--dim); }
 .pill.disabled .dot { background: var(--dim); }
 .pill.connected { background: var(--ok-s); color: var(--ok); }
