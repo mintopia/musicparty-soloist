@@ -48,7 +48,7 @@ const pill = computed(() => {
     <div class="grid2">
       <TextField label="Relay URL" placeholder="wss://example.com/relay" v-model="c.relay.url" />
       <SecretRow
-        label="Authorization header" section="relay" field-key="authorization" revealable
+        label="Authorization Header" section="relay" field-key="authorization" revealable
         :is-set="secretSet['relay.authorization']" v-model="c.relay.authorization"
       />
     </div>
