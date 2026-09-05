@@ -22,8 +22,8 @@ export const APP_CONTROL_PATH = "/ws/app";
 // hostile peer from buffering a large inbound frame. ws closes the socket (1009) itself.
 export const APP_CONTROL_MAX_PAYLOAD = 4096;
 
-// The fixed set of diagnostic streams a Debug Subscriber may subscribe to. Producers for
-// these are wired separately (T5); this tier only validates subscriptions and fans out.
+// The fixed set of diagnostic streams a Debug Subscriber may subscribe to. This tier owns
+// the subscription protocol and fan-out; the producers that feed these streams live elsewhere.
 export const DEBUG_STREAMS = ["frame", "clients", "webhooks", "proxy_status"] as const;
 export type DebugStream = (typeof DEBUG_STREAMS)[number];
 const VALID_STREAMS = new Set<string>(DEBUG_STREAMS);
@@ -70,13 +70,13 @@ export class AppControl {
   // cfg is the live, mutated-in-place Config, so the re-check sees a rotated password.
   constructor(private cfg: Config) {}
 
-  // Caller has already verified appControlAllowed(req, cfg).
+  // Precondition: appControlAllowed(req, cfg) must already hold for this request.
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.register(ws, req.headers.cookie ?? ""));
   }
 
-  // Registers an authed socket as a Debug Subscriber. Public so the selftest can drive it
-  // with a controllable fake socket; the upgrade path calls it via handleUpgrade.
+  // Registers an already-authenticated socket as a Debug Subscriber: fingerprints its session
+  // cookie for logout matching, starts it with no subscriptions, and arms the lifecycle re-check.
   register(ws: WebSocket, cookieHeader: string): void {
     const fingerprint = sessionFingerprint(cookieHeader);
     if (!fingerprint) {

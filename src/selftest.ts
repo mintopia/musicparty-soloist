@@ -810,9 +810,9 @@ await test("Hub client metadata + status getters", async () => {
 });
 
 
-// App-Control upgrade gate (issue #27 acceptance): a Debug Subscriber upgrade needs a
-// valid Web Session cookie AND a same-host Origin. Tokens are not accepted; a host mismatch
-// or missing/malformed Origin is rejected; a scheme-only mismatch is NOT a rejection.
+// App-Control upgrade gate: a Debug Subscriber upgrade needs a valid Web Session cookie AND
+// a same-host Origin. Tokens are not accepted; a host mismatch or missing/malformed Origin is
+// rejected; a scheme-only mismatch is NOT a rejection.
 await test("appControlAllowed session+same-host gate", async () => {
   const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
