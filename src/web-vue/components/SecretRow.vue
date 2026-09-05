@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useConfig } from "../composables/useConfig";
+import EyeIcon from "./EyeIcon.vue";
 
 const props = defineProps<{
   label: string;
@@ -21,14 +22,17 @@ const { revealSecret } = useConfig();
 
 const revealed = ref(false);
 const revealedValue = ref("");
+const show = ref(false); // whether the new-value input is unmasked
 
 function replace() {
   model.value = "";
   revealed.value = false;
+  show.value = false;
 }
 function cancel() {
   model.value = props.isSet;
   revealed.value = false;
+  show.value = false;
 }
 async function view() {
   if (!props.section || !props.fieldKey) return;
@@ -44,17 +48,18 @@ async function view() {
     <label class="flabel">{{ label }}</label>
     <div class="field row box">
       <template v-if="typeof model === 'string'">
-        <input class="bare" type="password" placeholder="New value" v-model="model" />
+        <input class="bare" :class="{ mono: show }" :type="show ? 'text' : 'password'" placeholder="New value" v-model="model" />
+        <button type="button" class="iconbtn" :title="show ? 'Hide' : 'Show'" @click="show = !show"><EyeIcon :off="show" /></button>
         <button type="button" class="linkbtn" @click="cancel">Cancel</button>
       </template>
       <template v-else-if="revealed">
         <input class="bare mono" readonly :value="revealedValue" />
-        <button type="button" class="linkbtn" @click="revealed = false">Hide</button>
+        <button type="button" class="iconbtn" title="Hide" @click="revealed = false"><EyeIcon off /></button>
         <button type="button" class="linkbtn" @click="replace">Replace</button>
       </template>
       <template v-else>
         <span class="pill" :class="isSet ? 'set' : 'unset'">{{ isSet ? "Set" : "Not set" }}</span>
-        <button v-if="revealable && isSet" type="button" class="linkbtn" @click="view">View</button>
+        <button v-if="revealable && isSet" type="button" class="iconbtn" title="View" @click="view"><EyeIcon /></button>
         <button type="button" class="linkbtn" @click="replace">Replace</button>
       </template>
     </div>
@@ -77,4 +82,9 @@ async function view() {
   padding: 0; cursor: pointer; color: var(--ind); font-family: inherit;
 }
 .linkbtn:hover { color: var(--ind-h); }
+.iconbtn {
+  display: inline-flex; align-items: center; margin-left: 12px; border: none; background: none;
+  padding: 0; cursor: pointer; color: var(--dim);
+}
+.iconbtn:hover { color: var(--txt); }
 </style>
