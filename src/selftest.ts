@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { detectArch, AcquisitionError, tarballUrl, binaryIsFresh, MAX_AGE_DAYS } from "./acquire.js";
+import { detectArch, AcquisitionError, tarballUrl, binaryIsFresh, MAX_AGE_DAYS, acquireSoloist } from "./acquire.js";
 import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual, deferred } from "./util.js";
 import { makeLog } from "./log.js";
@@ -1509,8 +1509,8 @@ await test("supervise restart aborts current run", async () => {
   const waitFor = async (n: number) => { for (let i = 0; i < 150 && runs() < n; i++) await new Promise((r) => setTimeout(r, 20)); };
 
   const supP = supervise(supCfg, { signal: ac.signal, control, acquire: async () => script });
-  let supErr: Error | null = null;
-  supP.catch((e) => (supErr = e as Error));
+  let supErr: unknown = null;
+  supP.catch((e) => (supErr = e));
 
   await waitFor(1);
   assert.equal(runs(), 1, "soloist spawned once");
@@ -1577,6 +1577,121 @@ await test("supervise state machine transitions + readiness gate", async () => {
     "state machine visits each loop boundary in order",
   );
   assert.deepEqual(control.soloistStatus(), { state: "stopped" }, "soloistStatus exposes the live terminal state");
+  rmSync(sdir, { recursive: true, force: true });
+});
+
+
+// A bare fetch with no timeout parks the acquirer on a stalled CDN forever. download()
+// now caps the transfer with AbortSignal.timeout; a hung origin rejects with a timeout error
+// (env-overridable so this stays a sub-second test) instead of hanging.
+await test("acquire: a hung download times out instead of wedging", async () => {
+  const server = createServer(() => { /* accept the socket, never send a response */ });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  const cache = mkdtempSync(join(tmpdir(), "acq-timeout-"));
+  const prevBase = process.env.SOLOIST_DOWNLOAD_BASE;
+  const prevTimeout = process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS;
+  process.env.SOLOIST_DOWNLOAD_BASE = `http://127.0.0.1:${port}`;
+  process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS = "150";
+  try {
+    await assert.rejects(
+      acquireSoloist(cache, { force: true }),
+      (e: unknown) => e instanceof AcquisitionError && /timed out/.test((e as Error).message),
+      "a stalled origin rejects with a timeout AcquisitionError rather than hanging",
+    );
+  } finally {
+    if (prevBase === undefined) delete process.env.SOLOIST_DOWNLOAD_BASE; else process.env.SOLOIST_DOWNLOAD_BASE = prevBase;
+    if (prevTimeout === undefined) delete process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS; else process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS = prevTimeout;
+    server.close();
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+
+// The supervisor threads its shutdown signal into acquire so a graceful SIGTERM cancels
+// an in-flight download instead of blocking on it. Abort a hung acquire and assert it rejects.
+await test("acquire: a caller signal aborts an in-flight download", async () => {
+  const server = createServer(() => { /* never responds */ });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  const cache = mkdtempSync(join(tmpdir(), "acq-abort-"));
+  const prevBase = process.env.SOLOIST_DOWNLOAD_BASE;
+  const prevTimeout = process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS;
+  process.env.SOLOIST_DOWNLOAD_BASE = `http://127.0.0.1:${port}`;
+  // A long timeout so a rejection here can only come from the caller signal, not the timer:
+  // if signal threading regressed, the fetch would hang the full 30s instead of aborting at ~50ms.
+  process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS = "30000";
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 50);
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      acquireSoloist(cache, { force: true, signal: ac.signal }),
+      (e: unknown) => !(e instanceof AcquisitionError && /timed out/.test((e as Error).message)),
+      "an aborted download rejects via the caller signal, not the download timeout",
+    );
+    assert.ok(Date.now() - started < 5000, "the caller signal aborts the in-flight fetch promptly, not after the timeout");
+  } finally {
+    if (prevTimeout === undefined) delete process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS; else process.env.SOLOIST_DOWNLOAD_TIMEOUT_MS = prevTimeout;
+    if (prevBase === undefined) delete process.env.SOLOIST_DOWNLOAD_BASE; else process.env.SOLOIST_DOWNLOAD_BASE = prevBase;
+    server.close();
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+
+// The boot acquire runs before the restart loop, so a transient fault there used to
+// wedge startup. It now retries with backoff — one failure then success recovers to `running`
+// without ending the loop.
+await test("supervise retries a transient boot acquire failure instead of wedging", async () => {
+  const sdir = mkdtempSync(join(tmpdir(), "sup-acq-"));
+  const script = join(sdir, "sleep.sh");
+  writeFileSync(script, `#!/bin/sh\nexec sleep 30\n`, { mode: 0o755 });
+  const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "u", password: "p", sessionSecret: "" } } as unknown as Config;
+  const control = new SoloistControl();
+  const ac = new AbortController();
+  let attempts = 0;
+  const acquire = async () => { attempts++; if (attempts < 2) throw new AcquisitionError("transient boot fault"); return script; };
+  const waitState = async (s: string) => { for (let i = 0; i < 300 && control.soloistStatus().state !== s; i++) await new Promise((r) => setTimeout(r, 20)); };
+
+  const supP = supervise(cfg, { signal: ac.signal, control, acquire });
+  let supErr: unknown = null;
+  supP.catch((e) => (supErr = e));
+
+  await waitState("running");
+  assert.equal(control.soloistStatus().state, "running", "supervise recovers to running after a failed boot acquire");
+  assert.equal(attempts, 2, "the failed boot acquire was retried, not fatal");
+  assert.equal(supErr, null, "a transient boot fault does not end the supervise loop");
+
+  ac.abort();
+  await supP.catch(() => {});
+  const finalErr: unknown = supErr;
+  assert.ok(finalErr instanceof Aborted, "shutdown still ends the loop cleanly");
+  rmSync(sdir, { recursive: true, force: true });
+});
+
+
+// Shutdown during the boot-acquire backoff must be prompt — the retry sleep is
+// abortable, so an abort mid-backoff ends the loop with Aborted rather than waiting it out.
+await test("supervise abort during boot-acquire backoff shuts down promptly", async () => {
+  const sdir = mkdtempSync(join(tmpdir(), "sup-acq-abort-"));
+  const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "u", password: "p", sessionSecret: "" } } as unknown as Config;
+  const control = new SoloistControl();
+  const ac = new AbortController();
+  let attempts = 0;
+  const acquire = async () => { attempts++; throw new AcquisitionError("always fails at boot"); };
+  const waitState = async (s: string) => { for (let i = 0; i < 300 && control.soloistStatus().state !== s; i++) await new Promise((r) => setTimeout(r, 20)); };
+
+  const supP = supervise(cfg, { signal: ac.signal, control, acquire });
+  let supErr: unknown = null;
+  supP.catch((e) => (supErr = e));
+
+  await waitState("backoff");
+  ac.abort();
+  await supP.catch(() => {});
+  const finalErr: unknown = supErr;
+  assert.ok(finalErr instanceof Aborted, "abort during acquire backoff ends the loop with Aborted");
+  assert.ok(attempts >= 1, "at least one acquire attempt was made before shutdown");
   rmSync(sdir, { recursive: true, force: true });
 });
 

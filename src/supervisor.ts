@@ -127,7 +127,7 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
   const {
     signal = new AbortController().signal,
     control,
-    acquire = (force = false) => acquireSoloist(undefined, { force }),
+    acquire = (force = false) => acquireSoloist(undefined, { force, signal }),
   } = opts;
 
   // The loop only ever exits by throwing (shutdown Aborted or an unrecoverable
@@ -147,8 +147,32 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
 
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
   control?.setState("acquiring");
-  let binary = await acquire();
+
+  // Boot acquire runs before the restart loop, so a transient CDN fault here would otherwise
+  // wedge startup forever. Retry with the same crash-loop backoff; a threaded shutdown aborts
+  // the in-flight fetch (see download) and an abortable backoff sleep, so SIGTERM stays prompt.
   let backoff = BACKOFF_BASE;
+  let binary: string;
+  while (true) {
+    if (signal.aborted) throw new Aborted();
+    try {
+      binary = await acquire();
+      break;
+    } catch (err) {
+      if (signal.aborted) throw new Aborted();
+      const { sleep: waitS, next } = backoffStep(backoff, 0);
+      log("soloist acquisition failed (%s); retrying in %ss", (err as Error).message, waitS);
+      control?.setState("backoff");
+      try {
+        await sleep(waitS * 1000, undefined, { signal });
+      } catch {
+        throw new Aborted();
+      }
+      backoff = next;
+      control?.setState("acquiring");
+    }
+  }
+  backoff = BACKOFF_BASE;
 
   while (true) {
     if (signal.aborted) throw new Aborted();
