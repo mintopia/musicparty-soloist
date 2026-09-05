@@ -7,7 +7,7 @@ import type { SoloistHub } from "./hub.js";
 import { makeLog } from "./log.js";
 import type { WebhookDelivery } from "./wire-contract.js";
 
-const log = makeLog("proxy");
+const log = makeLog("webhooks");
 
 export const STATE_EVENTS = new Set([
   "auth_state", "playback_state", "track_changed", "playback_changed", "volume_changed",
