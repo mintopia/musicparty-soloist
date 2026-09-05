@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
+import { useConfig } from "./composables/useConfig";
 import Landing from "./pages/Landing.vue";
 import Lyrics from "./pages/Lyrics.vue";
 import Settings from "./pages/Settings.vue";
@@ -35,3 +36,16 @@ const routes: RouteRecordRaw[] = [
 ];
 
 export const router = createRouter({ history: createWebHistory(), routes });
+
+// Docker-only sections (Audio fan-out + Snapcast, ADR-0015) are unreachable in standalone,
+// not just hidden from the nav. Unknown (pre-load) is treated as Docker so a cold deep-link
+// in a container never redirects.
+router.beforeEach(async (to) => {
+  if (to.name === "settings-audio" || to.name === "settings-snapcast") {
+    const { summary, loaded, load } = useConfig();
+    if (!loaded.value) {
+      try { await load(); } catch { /* leave dockerMode unknown -> treated as Docker */ }
+    }
+    if (summary.dockerMode === false) return { name: "settings-soloist" };
+  }
+});

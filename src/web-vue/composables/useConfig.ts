@@ -45,7 +45,13 @@ function deriveSecrets(cfg: Config) {
   }
 }
 
-async function load() {
+let loadPromise: Promise<void> | null = null;
+function load() {
+  if (!loadPromise) loadPromise = doLoad().catch((e) => { loadPromise = null; throw e; });
+  return loadPromise;
+}
+
+async function doLoad() {
   const [cfg, sum] = await Promise.all([api("/api/config"), api("/api/config-summary")]);
   replace(config, cfg);
   saved.value = JSON.stringify(cfg);
