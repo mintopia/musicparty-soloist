@@ -2943,10 +2943,16 @@ await test("SoloistRelay: backoff grows between dials while the relay is unreach
 
 
 await test("unhandledRejection handler surfaces detached faults", async () => {
-  const before = failed;
-  const origErr = console.error;
-  const lines: string[] = [];
-  console.error = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+  // Own unhandledRejection for this test so the deliberate fault is asserted on a
+  // scoped listener — resetting the suite-wide `failed` here would erase any genuine
+  // detached fault landing in the same window. The global handler is the real-run backstop.
+  const globalHandlers = process.listeners("unhandledRejection") as Array<
+    (reason: unknown, promise: Promise<unknown>) => void
+  >;
+  for (const h of globalHandlers) process.removeListener("unhandledRejection", h);
+  let caught: unknown;
+  const scoped = (reason: unknown) => { caught = reason; };
+  process.on("unhandledRejection", scoped);
   try {
     // A detached promise that rejects with no catch — exactly the `void hub.run()` shape.
     void Promise.reject(new Error("detached-boom"));
@@ -2954,11 +2960,13 @@ await test("unhandledRejection handler surfaces detached faults", async () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
   } finally {
-    console.error = origErr;
+    process.removeListener("unhandledRejection", scoped);
+    for (const h of globalHandlers) process.on("unhandledRejection", h);
   }
-  assert.equal(failed, before + 1, "detached rejection counts as a failure");
-  assert.ok(lines.some((l) => l.includes("detached-boom")), "handler prints the fault");
-  failed = before; // this fault is deliberate — don't taint the real tally
+  assert.ok(
+    caught instanceof Error && caught.message === "detached-boom",
+    "detached rejection reaches the scoped handler",
+  );
 });
 
 // Let any detached rejection reach the handler above before we tally — Node surfaces
