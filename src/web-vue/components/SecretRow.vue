@@ -9,6 +9,7 @@ const props = defineProps<{
   fieldKey?: string;
   isSet: boolean;
   revealable?: boolean;
+  hint?: string;
 }>();
 
 // Masked secret: `true` = stored, `false` = unset, a string = a new plaintext the
@@ -63,6 +64,7 @@ async function view() {
         <button type="button" class="linkbtn" @click="replace">Replace</button>
       </template>
     </div>
+    <div v-if="hint" class="hint">{{ hint }}</div>
   </div>
 </template>
 
@@ -87,4 +89,5 @@ async function view() {
   padding: 0; cursor: pointer; color: var(--dim);
 }
 .iconbtn:hover { color: var(--txt); }
+.hint { font-size: 11.5px; color: var(--faint); margin-top: 4px; }
 </style>

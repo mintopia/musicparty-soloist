@@ -61,6 +61,7 @@ const deviceOptions = computed(() => {
       <SecretRow
         label="WebSocket auth token" section="proxy" field-key="token" revealable
         :is-set="secretSet['proxy.token']" v-model="c.proxy.token"
+        hint="Bearer token external clients use to control Soloist over the WebSocket API. Auto-generated at setup."
       />
     </div>
     <div class="setrow">
