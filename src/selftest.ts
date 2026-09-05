@@ -8,7 +8,7 @@ import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual } from "./util.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
-import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
+import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, buildProxyStatus, type UpstreamFrame } from "./proxy.js";
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
 import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
@@ -807,6 +807,77 @@ await test("Hub client metadata + status getters", async () => {
   // the raw token never appears in metadata
   assert.ok(!JSON.stringify(list).includes(RAWTOK), "raw token never stored in client metadata");
   hub.stop();
+});
+
+
+// Proxy Status builder: the proxy_status frame carries a compact webhook summary only —
+// the last delivery's at/type/status/ok — never its request/response headers or body (that
+// full detail rides the separate `webhooks` stream). Also covers the ok classification.
+await test("buildProxyStatus emits a compact webhook summary (no headers/body)", async () => {
+  const hub = new SoloistHub("ws://127.0.0.1:1"); // never connects: upstream down, loggedIn null
+  const history = new WebhookHistory();
+  const relay = { enabled: true, connected: false, lastConnectAt: null, lastError: "boom" };
+  const control = new SoloistControl();
+  control.setState("running");
+
+  // No deliveries yet: webhook summary is null; soloist reflects control + a down upstream.
+  const empty = buildProxyStatus(hub, relay, history, control);
+  assert.equal(empty.webhook, null, "no webhook history -> null summary");
+  assert.deepEqual(empty.soloist, { state: "running", upstream: false, loggedIn: null }, "soloist snapshot");
+  assert.equal(empty.clients, 0, "no downstream clients");
+  assert.equal(empty.relay, relay, "relay status passed straight through");
+  // control absent -> state null rather than throwing.
+  assert.equal(buildProxyStatus(hub, relay, history).soloist.state, null, "no control -> state null");
+
+  // A full delivery with secrets in headers + body collapses to the four-field summary.
+  const delivery: WebhookDelivery = {
+    at: 1000, type: "now_playing", url: "http://hook.example/deliver", status: 200, durationMs: 5,
+    reqHeaders: { authorization: "Bearer ***", "x-token": "REQSECRET" },
+    respHeaders: { "content-type": "application/json" },
+    respBody: "RESPSECRETBODY", error: null,
+  };
+  history.record(delivery);
+  const s = buildProxyStatus(hub, relay, history, control);
+  assert.deepEqual(s.webhook, { at: 1000, type: "now_playing", status: 200, ok: true }, "compact 4-field summary");
+  assertNoLeak("proxy_status webhook summary", s, ["REQSECRET", "RESPSECRETBODY", "hook.example", "application/json"]);
+
+  // ok is 2xx-with-a-response only: non-2xx and network errors are not ok.
+  history.record({ ...delivery, at: 2000, status: 500 });
+  assert.equal(buildProxyStatus(hub, relay, history, control).webhook?.ok, false, "5xx -> not ok");
+  history.record({ ...delivery, at: 3000, status: null, error: "timeout" });
+  assert.deepEqual(buildProxyStatus(hub, relay, history, control).webhook, { at: 3000, type: "now_playing", status: null, ok: false }, "network error -> status null, not ok");
+  hub.stop();
+});
+
+
+// App-Control onSubscribe: a producer hook fires once per newly-subscribed stream and seeds
+// just that socket; a repeated subscribe re-fires nothing; a hook throw is isolated.
+await test("AppControl onSubscribe seeds a new subscriber once", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  ac.onSubscribe((stream, send) => {
+    if (stream === "frame") throw new Error("boom"); // isolated: must not stop clients being seeded
+    send({ snapshot: stream });
+  });
+
+  const ls: Record<string, ((...a: any[]) => void)[]> = {};
+  const ws = {
+    readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [] as string[],
+    on(ev: string, fn: (...a: any[]) => void) { (ls[ev] ??= []).push(fn); return this; },
+    emit(ev: string, ...a: any[]) { (ls[ev] ?? []).forEach((f) => f(...a)); },
+    send(d: string) { this.sent.push(d); }, close() {},
+  };
+  ac.register(ws as unknown as WebSocket, cookie);
+
+  // Subscribing to two streams seeds each once; the throwing `frame` hook is swallowed.
+  ws.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "clients"] })), false);
+  assert.deepEqual(ws.sent, [JSON.stringify({ stream: "clients", data: { snapshot: "clients" } })], "clients seeded once; frame hook throw isolated");
+
+  // Re-subscribing to an already-subscribed stream re-seeds nothing (idempotent).
+  ws.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
+  assert.equal(ws.sent.length, 1, "repeat subscribe re-fires no snapshot");
+  ac.stop();
 });
 
 

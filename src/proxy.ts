@@ -5,10 +5,10 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
-import type { SoloistControl } from "./supervisor.js";
+import type { SoloistControl, SoloistState } from "./supervisor.js";
 import { sameOrigin, resolveAuth, type ClientAuth } from "./auth.js";
 import { AppControl, APP_CONTROL_PATH, appControlAllowed } from "./appcontrol.js";
-import { attachWebhooks, STATE_EVENTS } from "./webhooks.js";
+import { attachWebhooks, STATE_EVENTS, WebhookHistory, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay, type RelayStatus } from "./relay.js";
 import { handleWebRequest } from "./web.js";
 import { reconcileOutputs, startSinkPolling } from "./pipewire.js";
@@ -21,6 +21,10 @@ const log = makeLog("proxy");
 const HUB_BACKOFF_BASE = 0.5;
 const HUB_BACKOFF_MAX = 30.0;
 const HUB_READY_TIMEOUT = 5.0;
+
+// Heartbeat for the proxy_status diagnostic stream. Eager pushes on client churn keep it
+// fresh between beats; this only bounds staleness of the fields that change on their own.
+const PROXY_STATUS_INTERVAL_MS = 3000;
 
 export interface UpstreamFrame {
   type: string;
@@ -271,6 +275,41 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   });
 }
 
+export interface ProxyStatus {
+  soloist: { state: SoloistState | null; upstream: boolean; loggedIn: boolean | null };
+  clients: number;
+  relay: RelayStatus;
+  webhook: { at: number; type: string; status: number | null; ok: boolean } | null;
+}
+
+// A delivery "succeeded" only if it got a response with a 2xx status; a network/timeout
+// error (status null) or any non-2xx counts as not ok.
+function webhookOk(d: WebhookDelivery): boolean {
+  return d.error === null && d.status !== null && d.status >= 200 && d.status < 300;
+}
+
+// Compact Proxy Status snapshot for the `proxy_status` diagnostic stream. The webhook field
+// carries the last delivery's summary only — timestamp, type, HTTP status, ok — never its
+// headers or body; full-detail webhook history rides the separate `webhooks` stream (ADR-0016).
+export function buildProxyStatus(
+  hub: SoloistHub,
+  relay: RelayStatus,
+  history: WebhookHistory,
+  control?: SoloistControl,
+): ProxyStatus {
+  const last = history.last();
+  return {
+    soloist: {
+      state: control?.soloistStatus().state ?? null,
+      upstream: hub.upstreamConnected,
+      loggedIn: hub.loggedIn(),
+    },
+    clients: hub.clientCount(),
+    relay,
+    webhook: last ? { at: last.at, type: last.type, status: last.status, ok: webhookOk(last) } : null,
+  };
+}
+
 export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
@@ -286,6 +325,24 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     hub.broadcastMessage({ type: "overlay_config", overlay: c.overlay });
     relay.apply();
   };
+
+  // Diagnostic streams over the App-Control WS: Debug Subscribers only, never
+  // hub.broadcastMessage (that is the pure `/` Downstream path) or the Relay (ADR-0016).
+  const publishProxyStatus = () => appControl.publish("proxy_status", buildProxyStatus(hub, relay.status, history, control));
+  // frame: every upstream Soloist frame mirrored out (output only — clients never feed this).
+  hub.observe((frame) => appControl.publish("frame", frame.message));
+  // webhooks: live full-detail deliveries as they land (initial dump handled on subscribe).
+  const unlistenWebhooks = history.onEntry((d) => appControl.publish("webhooks", d));
+  // On subscribe, seed the new socket with the current snapshot so a diagnostics UI paints
+  // immediately instead of waiting for the next change/heartbeat.
+  appControl.onSubscribe((stream, send) => {
+    if (stream === "proxy_status") send(buildProxyStatus(hub, relay.status, history, control));
+    else if (stream === "clients") send(hub.clientList());
+    else if (stream === "webhooks") send(history.entries());
+  });
+  const statusTimer = setInterval(publishProxyStatus, PROXY_STATUS_INTERVAL_MS);
+  statusTimer.unref?.();
+
   const server = createServer((req, res) => {
     if (!handleWebRequest(req, res, cfg, configPath, history, control, onConfigChange, relay.status, (r) => appControl.closeForRequest(r))) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
@@ -330,9 +387,22 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
         connectedAt: Date.now(),
         userAgent: req.headers["user-agent"] ?? "",
       });
+      // Eager diagnostic push: a Downstream Client join/leave changes the Client Count and
+      // list, so refresh Debug Subscribers now rather than waiting for the heartbeat.
+      publishProxyStatus();
+      appControl.publish("clients", hub.clientList());
+      // ws emits `close` after `error`, so fire once: one disconnect is one diagnostic event.
+      let gone = false;
+      const onGone = () => {
+        if (gone) return;
+        gone = true;
+        hub.unregister(client);
+        publishProxyStatus();
+        appControl.publish("clients", hub.clientList());
+      };
       client.on("message", (data, isBinary) => hub.forward(client, data, isBinary));
-      client.on("close", () => hub.unregister(client));
-      client.on("error", () => hub.unregister(client));
+      client.on("close", onGone);
+      client.on("error", onGone);
     });
   });
 
@@ -362,6 +432,8 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
         appControl,
         close: () =>
           new Promise<void>((res) => {
+            clearInterval(statusTimer);
+            unlistenWebhooks();
             hub.stop();
             relay.stop();
             appControl.stop();
