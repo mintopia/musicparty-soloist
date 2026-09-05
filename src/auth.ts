@@ -70,7 +70,3 @@ export function resolveAuth(req: IncomingMessage, cfg: Config): { tier: AuthTier
   if (sessionUser(req, cfg)) return { tier: "control", auth: "session-cookie" };
   return { tier: "none", auth: null };
 }
-
-export function checkAuth(req: IncomingMessage, cfg: Config): AuthTier {
-  return resolveAuth(req, cfg).tier;
-}

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl, binaryIsFresh, MAX_AGE_DAYS, acquireSoloist } from "./acquire.js";
-import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
+import { sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual, deferred } from "./util.js";
 import { makeLog } from "./log.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
@@ -253,11 +253,11 @@ await test("checkAuth token/tier resolution", async () => {
     [{}, "/?token=", authCfg(CT, ""), "none", "empty presented never matches empty readonly"],
     [{}, "/?token=", authCfg("", ""), "none", "setup mode: empty proxy.token never grants control"],
   ] as const) {
-    assert.equal(checkAuth(req(hdr, url), cfg), want, msg);
+    assert.equal(resolveAuth(req(hdr, url), cfg).tier, want, msg);
   }
   // Web-session cookie path (different shape) kept explicit.
   assert.equal(
-    checkAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })),
+    resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })).tier,
     "control",
     "valid web session -> control",
   );
