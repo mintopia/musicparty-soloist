@@ -7,6 +7,7 @@ import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
 import type { SoloistControl } from "./supervisor.js";
 import { sameOrigin, resolveAuth, type ClientAuth } from "./auth.js";
+import { AppControl, APP_CONTROL_PATH, appControlAllowed } from "./appcontrol.js";
 import { attachWebhooks, STATE_EVENTS } from "./webhooks.js";
 import { SoloistRelay, type RelayStatus } from "./relay.js";
 import { handleWebRequest } from "./web.js";
@@ -246,6 +247,7 @@ export function listenParts(listen: string): { host: string; port: number } {
 export interface RunningProxy {
   server: Server;
   hub: SoloistHub;
+  appControl: AppControl;
   close(): Promise<void>;
 }
 
@@ -275,6 +277,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   attachAutoplay(hub, cfg);
   const history = attachWebhooks(hub, cfg);
   const relay = new SoloistRelay(hub, cfg);
+  const appControl = new AppControl(cfg);
   const wss = new WebSocketServer({ noServer: true });
 
   // Broadcast the (possibly changed) Overlay Config to open overlays so they restyle
@@ -284,10 +287,23 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     relay.apply();
   };
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg, configPath, history, control, onConfigChange, relay.status)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath, history, control, onConfigChange, relay.status, (r) => appControl.closeForRequest(r))) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
+    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    // App-Control WebSocket: operator-only diagnostics on a session cookie + same-host
+    // origin (no tokens). Registered as a Debug Subscriber, never a Downstream Client.
+    if (path === APP_CONTROL_PATH) {
+      if (!appControlAllowed(req, cfg)) {
+        log("rejected app-control upgrade from %s: no session or cross-origin", req.socket.remoteAddress);
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
+        socket.destroy();
+        return;
+      }
+      appControl.handleUpgrade(req, socket, head);
+      return;
+    }
     const { tier, auth } = resolveAuth(req, cfg);
     if (tier === "none") {
       log("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
@@ -343,10 +359,12 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
       resolve({
         server,
         hub,
+        appControl,
         close: () =>
           new Promise<void>((res) => {
             hub.stop();
             relay.stop();
+            appControl.stop();
             wss.close();
             server.close(() => res());
           }),

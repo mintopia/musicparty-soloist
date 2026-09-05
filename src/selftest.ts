@@ -11,6 +11,8 @@ import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
 import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
+import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
+import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
@@ -123,6 +125,13 @@ assert.equal(sameOrigin(req({ origin: "http://evil.example", host: "host:8687" }
 assert.equal(sameOrigin(req({ host: "host:8687" })), false, "missing Origin rejected (browsers always send it)");
 assert.equal(sameOrigin(req({ origin: "http://host:8687" })), false, "missing Host rejected");
 assert.equal(sameOrigin(req({ origin: "::not a url::", host: "host:8687" })), false, "unparseable Origin rejected");
+// Normalized: hostname case-folded, and default ports (none/80/443) treated as equal — so
+// a TLS-terminated https Origin still matches the plain Host we were reached on (host-only,
+// no scheme compare). A different explicit port still fails.
+assert.equal(sameOrigin(req({ origin: "http://HOST:8687", host: "host:8687" })), true, "hostname case-insensitive");
+assert.equal(sameOrigin(req({ origin: "https://host", host: "host:443" })), true, "default ports equivalent (https origin / :443 host)");
+assert.equal(sameOrigin(req({ origin: "https://host:8687", host: "host:8687" })), true, "scheme mismatch is not a rejection (host-only)");
+assert.equal(sameOrigin(req({ origin: "http://host:9999", host: "host:8687" })), false, "explicit port mismatch rejected");
 });
 
 
@@ -798,6 +807,162 @@ await test("Hub client metadata + status getters", async () => {
   // the raw token never appears in metadata
   assert.ok(!JSON.stringify(list).includes(RAWTOK), "raw token never stored in client metadata");
   hub.stop();
+});
+
+
+// App-Control upgrade gate: a Debug Subscriber upgrade needs a valid Web Session cookie AND
+// a same-host Origin. Tokens are not accepted; a host mismatch or missing/malformed Origin is
+// rejected; a scheme-only mismatch is NOT a rejection.
+await test("appControlAllowed session+same-host gate", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  assert.equal(appControlAllowed(req({ cookie, origin: "http://host:8687", host: "host:8687" }), cfg), true, "session cookie + same host accepted");
+  assert.equal(appControlAllowed(req({ cookie, origin: "https://host:8687", host: "host:8687" }), cfg), true, "scheme mismatch is not a rejection");
+  assert.equal(appControlAllowed(req({ authorization: `Bearer ${CT}`, origin: "http://host:8687", host: "host:8687" }), cfg), false, "token-only (no session cookie) rejected");
+  assert.equal(appControlAllowed(req({ cookie, origin: "http://evil.example", host: "host:8687" }), cfg), false, "host mismatch rejected");
+  assert.equal(appControlAllowed(req({ cookie, host: "host:8687" }), cfg), false, "missing Origin rejected");
+  assert.equal(appControlAllowed(req({ cookie, origin: "::bad::", host: "host:8687" }), cfg), false, "malformed Origin rejected");
+});
+
+
+// Debug Subscriber tier: subscribe validation, idempotency, safe handling of bad frames,
+// backpressure gating, logout/pw-rotation close, and exclusion from the Client Count.
+await test("AppControl Debug Subscriber tier", async () => {
+  const webCfg = { username: "admin", password: "pw", sessionSecret: AUTH_SECRET };
+  const cfg = authCfg(CT, RT, webCfg);
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+
+  type FakeWs = {
+    readyState: number; bufferedAmount: number; sent: string[]; closed: { code: number; reason: string } | null;
+    on(ev: string, fn: (...a: any[]) => void): FakeWs; emit(ev: string, ...a: any[]): void;
+    send(d: string): void; close(code: number, reason: string): void;
+  };
+  const fakeWs = (): FakeWs => {
+    const ls: Record<string, ((...a: any[]) => void)[]> = {};
+    return {
+      readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [], closed: null,
+      on(ev, fn) { (ls[ev] ??= []).push(fn); return this; },
+      emit(ev, ...a) { (ls[ev] ?? []).forEach((f) => f(...a)); },
+      send(d) { this.sent.push(d); },
+      close(code, reason) { this.closed = { code, reason }; this.readyState = WebSocket.CLOSED; },
+    };
+  };
+
+  const ac = new AppControl(cfg);
+
+  // subscribe validates against the fixed set; unknown streams ignored; idempotent.
+  const a = fakeWs();
+  ac.register(a as unknown as WebSocket, cookie);
+  assert.equal(ac.count(), 1, "one debug subscriber registered");
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "nope", "clients"] })), false);
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame"] })), false); // repeat -> no duplicate
+  ac.publish("frame", { n: 1 });
+  assert.deepEqual(a.sent, [JSON.stringify({ stream: "frame", data: { n: 1 } })], "frame delivered once (idempotent subscribe, no duplicate send)");
+  ac.publish("proxy_status", { up: true });
+  assert.equal(a.sent.length, 1, "not delivered a stream it never subscribed to");
+
+  // malformed / binary / non-subscribe frames are handled safely (no throw, no effect).
+  a.emit("message", buf("not json"), false);
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] })), true); // binary -> ignored
+  a.emit("message", buf(JSON.stringify({ type: "command", command: "play" })), false); // never a control verb here
+  ac.publish("proxy_status", { up: true });
+  assert.equal(a.sent.length, 1, "binary subscribe ignored; malformed/command frames inert");
+
+  // backpressure: past the drop threshold a `frame` update is shed, but other streams flow;
+  // past the hard threshold the socket is closed.
+  a.bufferedAmount = BUFFER_DROP_BYTES + 1;
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
+  ac.publish("frame", { n: 2 });
+  assert.equal(a.sent.length, 1, "frame update dropped under buffer pressure");
+  ac.publish("clients", []);
+  assert.equal(a.sent.length, 2, "non-frame stream still flows under drop threshold");
+  a.bufferedAmount = BUFFER_CLOSE_BYTES + 1;
+  ac.publish("frame", { n: 3 });
+  assert.deepEqual(a.closed, { code: 1013, reason: "slow consumer" }, "hopeless slow consumer closed");
+  assert.equal(ac.count(), 0, "closed subscriber removed");
+
+  // Client Count exclusion: a Debug Subscriber never lands on the Hub.
+  const hub = new SoloistHub("ws://127.0.0.1:1");
+  const b = fakeWs();
+  ac.register(b as unknown as WebSocket, cookie);
+  assert.equal(ac.count(), 1, "debug subscriber counted by AppControl");
+  assert.equal(hub.clientCount(), 0, "debug subscriber excluded from the Client Count");
+  hub.stop();
+
+  // logout closes every socket whose session fingerprint matches this request's cookie.
+  ac.closeForRequest(req({ cookie }));
+  assert.deepEqual(b.closed, { code: 1008, reason: "logged out" }, "logout closed the matching subscriber");
+  assert.equal(ac.count(), 0, "logged-out subscriber removed");
+
+  // periodic re-check closes a socket whose session no longer verifies (password rotation).
+  const c = fakeWs();
+  ac.register(c as unknown as WebSocket, cookie);
+  ac.recheck();
+  assert.equal(c.closed === null, true, "valid session survives re-check");
+  webCfg.password = "rotated"; // rotate the password -> every live session is revoked
+  ac.recheck();
+  assert.equal(c.closed?.code, 1008, "re-check closes a session revoked by password rotation");
+
+  ac.stop();
+});
+
+
+// A registration with no session cookie is refused outright (defence in depth: the upgrade
+// gate already requires one, but register never trusts a cookieless socket).
+await test("AppControl refuses a cookieless registration", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const ac = new AppControl(cfg);
+  let closed: number | null = null;
+  const ws = { readyState: WebSocket.OPEN, on() { return this; }, close(code: number) { closed = code; } };
+  ac.register(ws as unknown as WebSocket, "");
+  assert.equal(ac.count(), 0, "no subscriber registered without a session cookie");
+  assert.equal(closed, 1008, "cookieless socket closed 1008");
+  assert.equal(sessionFingerprint(""), null, "empty cookie has no fingerprint");
+  assert.equal(DEBUG_STREAMS.includes("frame"), true, "fixed stream set includes frame");
+  ac.stop();
+});
+
+
+// End-to-end over a real socket: the actual upgrade + subscribe + publish round-trip works,
+// and an oversized frame is closed safely by the server's maxPayload (not just by the fake
+// harness). Exercises the real ws frame parser the unit tests bypass.
+await test("AppControl real-socket round-trip + oversized frame closed safely", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  const server = createServer();
+  server.on("upgrade", (r, socket, head) => {
+    if (appControlAllowed(r, cfg)) ac.handleUpgrade(r, socket, head);
+    else socket.destroy();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+    headers: { cookie, origin: `http://127.0.0.1:${port}` },
+  });
+  await once(client, "open");
+  for (let i = 0; i < 100 && ac.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ac.count(), 1, "real upgrade registered a debug subscriber");
+
+  // subscribe + publish round-trip over the wire
+  client.send(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] }));
+  await new Promise((r) => setTimeout(r, 30)); // let the server process the subscribe
+  const gotMsg = once(client, "message");
+  ac.publish("proxy_status", { ok: true });
+  const [data] = (await gotMsg) as [RawData];
+  assert.deepEqual(JSON.parse(data.toString()), { stream: "proxy_status", data: { ok: true } }, "published frame arrives over the real socket");
+
+  // oversized frame: server enforces maxPayload and closes without crashing
+  const closed = once(client, "close");
+  client.send("x".repeat(APP_CONTROL_MAX_PAYLOAD + 100));
+  const [code] = (await closed) as [number];
+  assert.equal(code, 1009, "oversized frame closed with 1009 (message too big)");
+  for (let i = 0; i < 100 && ac.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ac.count(), 0, "subscriber removed after the oversized-frame close");
+
+  ac.stop();
+  server.close();
 });
 
 

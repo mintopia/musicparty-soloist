@@ -371,6 +371,7 @@ export function handleWebRequest(
   control?: SoloistControl,
   onConfigChange?: (cfg: Config) => void,
   relayStatus?: RelayStatus,
+  onLogout?: (req: IncomingMessage) => void,
 ): boolean {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
@@ -469,6 +470,9 @@ export function handleWebRequest(
   }
 
   if (path === "/logout" && method === "POST") {
+    // Close any live App-Control sockets on this session before the cookie is cleared, so a
+    // logout revokes the diagnostics channel too (ADR-0016).
+    onLogout?.(req);
     res.setHeader("set-cookie", `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
     redirect(res, "/login");
     return true;
