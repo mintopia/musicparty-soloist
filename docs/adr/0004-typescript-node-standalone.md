@@ -38,6 +38,18 @@ deps (`ws`, `yaml`), same built-ins, same behaviour. The trixie/`GLIBC_2.38+`
 rationale above still holds — only the Node major moved. Read "Node 22" in the
 original text as "Node 24".
 
+## Amendment (self-check Node floor + backend fast path)
+
+The self-check (`src/selftest.ts`) imports the Vue app's raw `.ts` (highlight, useAppControl,
+menuStatus) through Node's on-the-fly type-stripping so it exercises the shipped helpers, not
+re-implementations. That stripping is default-on only from Node 22.18 / 24, so `package.json`
+now declares `engines.node >= 24` to match CI and the Docker base. The imports are loaded
+defensively: on a Node without type-stripping the test is skipped, not aborted, so one missing
+runtime feature no longer fails the whole file. `npm test` still runs the full `tsc && vite
+build` (the web-layer tests need the vite manifest); `npm run test:backend` builds with `tsc`
+only and sets `SOLOIST_TEST_BACKEND_ONLY=1` to skip the vite build and the web-layer tests for
+a fast backend-only loop. The server runtime is unaffected — this scopes only the test build.
+
 ## Amendment (web layer excepted)
 
 The "no build step / no toolchain" rationale here is the **server** deliverable's:

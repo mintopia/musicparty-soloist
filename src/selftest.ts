@@ -63,18 +63,36 @@ const { fmtTime, readTrack, readPlayback, readQueue, entityToTrack, applyAnchor,
   nowMs(anchor: { anchorMs: number; anchorAt: number; speed: number }): number;
 };
 
+// Web-app tests reach into the Vue source in ways a plain backend run can't satisfy: raw .ts
+// imported via Node's on-the-fly type-stripping (needs Node >=22.18 / 24), plus the vite-build
+// manifest. `test:backend` sets SOLOIST_TEST_BACKEND_ONLY to skip both for a fast tsc-only run,
+// and loadRawTs skips these tests on a Node that can't load .ts at all instead of aborting the
+// whole file. Any other load error (a real syntax error or a throw in the module) still
+// propagates and fails loudly — only the "no type-stripping" case is swallowed.
+const BACKEND_ONLY = process.env.SOLOIST_TEST_BACKEND_ONLY === "1";
+async function loadRawTs(spec: string): Promise<unknown> {
+  if (BACKEND_ONLY) return null;
+  try {
+    return await import(new URL(spec, import.meta.url).href);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ERR_UNKNOWN_FILE_EXTENSION") throw e;
+    console.error(`SKIP  raw-.ts import ${spec}: type-stripping unavailable on this Node`);
+    return null;
+  }
+}
+
 // Escape-safe JSON highlighter (ADR-0016). Unlike the ./web/*.js imports above (prebuilt
 // browser JS copied into dist/), this reaches into the raw Vue-app .ts source, which
 // tsc excludes from dist/ — Node's on-the-fly type-stripping runs it at runtime. That way
 // the selftest exercises the exact helper the Debug chunk ships, not a re-implementation.
 // Computed specifier so tsc leaves the import as `any` rather than trying to resolve it.
-const hl = await import(new URL("../src/web-vue/lib/highlight.ts", import.meta.url).href);
-const { highlightJson } = hl as { highlightJson(src: string): Promise<string> };
+const hl = await loadRawTs("../src/web-vue/lib/highlight.ts");
+const { highlightJson } = (hl ?? {}) as { highlightJson(src: string): Promise<string> };
 
 // useAppControl composable (T8): same raw-.ts, computed-specifier import as highlight.ts —
 // exercised headlessly here (Vue reactivity is DOM-free) against a fake socket, so the tests
 // drive the exact App-Control client the app ships, not a re-implementation.
-const appctl = await import(new URL("../src/web-vue/composables/useAppControl.ts", import.meta.url).href);
+const appctl = await loadRawTs("../src/web-vue/composables/useAppControl.ts");
 type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
 type AppControlApi = {
   status: { value: any };
@@ -84,7 +102,7 @@ type AppControlApi = {
   start(): void;
   stop(): void;
 };
-const { createAppControl } = appctl as {
+const { createAppControl } = (appctl ?? {}) as {
   createAppControl(opts?: {
     url?: string;
     socketFactory?: (url: string) => any;
@@ -98,8 +116,8 @@ const { createAppControl } = appctl as {
 
 // Menu status derivation: pure worst-of badge logic, imported raw-.ts like the modules
 // above so the precedence table (ADR-0017) is verified headless.
-const menuStatusMod = await import(new URL("../src/web-vue/lib/menuStatus.ts", import.meta.url).href);
-const { badgeLevel: mBadge, soloistLevel: mSoloist, relayLevel: mRelay, webhookLevel: mWebhook, worstBadge: mWorst, soloistText: mText } = menuStatusMod as {
+const menuStatusMod = await loadRawTs("../src/web-vue/lib/menuStatus.ts");
+const { badgeLevel: mBadge, soloistLevel: mSoloist, relayLevel: mRelay, webhookLevel: mWebhook, worstBadge: mWorst, soloistText: mText } = (menuStatusMod ?? {}) as {
   badgeLevel(i: any): string;
   soloistLevel(s: any, appLive: boolean, dataConnected: boolean): string;
   relayLevel(r: any, appLive: boolean): string;
@@ -148,10 +166,18 @@ function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
 
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 async function test(name: string, fn: () => void | Promise<void>) {
   try { await fn(); passed++; }
   catch (e) { failed++; console.error(`FAIL  ${name}\n      ${(e as Error).stack ?? (e as Error).message}`); }
+}
+
+// Runs a test only when its web-layer dependency is present; otherwise records a skip. Keeps a
+// backend-only run (or one on a Node without type-stripping) green instead of failing on deps
+// that are intentionally absent.
+async function webTest(name: string, dep: unknown, fn: () => void | Promise<void>) {
+  if (!dep) { skipped++; console.log(`SKIP  ${name}`); return; }
+  await test(name, fn);
 }
 
 // Asserts none of `secrets` appears in the serialized form of `obj` — the recurring
@@ -799,9 +825,13 @@ await test("session cookie sign/verify/tamper/expiry", async () => {
 
   assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
   assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
-  // Flip the last MAC char to a guaranteed-different one (a fixed 'x' is a no-op if the MAC
-  // already ends in 'x').
-  assert.equal(verifySession(signed.slice(0, -1) + (signed.at(-1) === "a" ? "b" : "a"), SECRET), null, "tampered signature rejected");
+  // Flip the MAC's FIRST char to a different one. The last base64url char of a 32-byte HMAC
+  // carries only 4 significant bits, so flipping it can land on an equivalent encoding that
+  // still verifies (an intermittent failure since the MAC changes every run); the first char
+  // carries a full 6 bits, so a distinct char always yields distinct decoded bytes.
+  const macAt = signed.lastIndexOf(".") + 1;
+  const tampered = signed.slice(0, macAt) + (signed[macAt] === "A" ? "B" : "A") + signed.slice(macAt + 1);
+  assert.equal(verifySession(tampered, SECRET), null, "tampered signature rejected");
   // Forge a payload for a different user reusing the original MAC — signature won't match.
   const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
   assert.equal(verifySession(`${Buffer.from(`root|${Date.now()}`).toString("base64url")}.${originalMac}`, SECRET), null, "tampered payload rejected");
@@ -1966,7 +1996,7 @@ await test("setup TOCTOU guard", async () => {
 });
 
 
-await test("highlightJson escapes XSS payloads to inert text", async () => {
+await webTest("highlightJson escapes XSS payloads to inert text", hl, async () => {
   // The two canonical break-out attempts (ADR-0016): an attribute-handler injection and
   // a tag that tries to close hljs's own <pre><code> wrapper. Both must come back with
   // every raw angle bracket from the input HTML-escaped.
@@ -1982,7 +2012,7 @@ await test("highlightJson escapes XSS payloads to inert text", async () => {
   }
 });
 
-await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle", async () => {
+await webTest("hljs + theme CSS live in the Debug async chunk, not any entry bundle", !BACKEND_ONLY, async () => {
   // manifest: true (vite.config.ts) lets us prove the code-split from the emitted graph
   // rather than by eyeballing bundle sizes (ADR-0018).
   const webDir = new URL("./web/", import.meta.url);
@@ -2028,7 +2058,7 @@ await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle
 // app-wide, tracks status/stale (never green while blind), ignores malformed frames, rings
 // the frame buffer, dumps-then-appends webhooks, and reseeds a reopened subscription from the
 // retained master buffers. No timers — driven entirely by the fake socket.
-await test("useAppControl sync lifecycle (status/stale/rings/reseed)", async () => {
+await webTest("useAppControl sync lifecycle (status/stale/rings/reseed)", appctl, async () => {
   const { factory, sockets } = fakeSocketFactory();
   const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1, frameRing: 3, webhookRing: 5 });
   ac.start();
@@ -2083,7 +2113,7 @@ await test("useAppControl sync lifecycle (status/stale/rings/reseed)", async () 
 // buffers persist, a disposed subscription leaks no listener (disposer idempotent), and a
 // wedged-but-open socket ages status out to stale. Kept separate from the synchronous cases
 // because it drives real setTimeout/setInterval.
-await test("useAppControl reconnect & heartbeat age-out", async () => {
+await webTest("useAppControl reconnect & heartbeat age-out", appctl, async () => {
   const { factory, sockets } = fakeSocketFactory();
   const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1, staleMs: 20 });
   const a = ac.subscribe(["frame"]);
@@ -2128,7 +2158,7 @@ await test("useAppControl reconnect & heartbeat age-out", async () => {
 
 // menuStatus derivation (ADR-0017): worst-of badge precedence, per-line trust (lines are
 // only trustworthy while app-control is live), and the worstBadge primitive underneath.
-await test("menuStatus derivation & precedence (ADR-0017)", async () => {
+await webTest("menuStatus derivation & precedence (ADR-0017)", menuStatusMod, async () => {
   // worstBadge primitive: highest severity wins, empty -> green.
   assert.equal(mWorst(["green", "green"]), "green");
   assert.equal(mWorst(["green", "amber", "green"]), "amber");
@@ -2162,6 +2192,6 @@ await test("menuStatus derivation & precedence (ADR-0017)", async () => {
   assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
 });
 
-console.log(`\nselftest: ${passed} passed, ${failed} failed`);
+console.log(`\nselftest: ${passed} passed, ${failed} failed, ${skipped} skipped`);
 if (failed) process.exit(1);
 

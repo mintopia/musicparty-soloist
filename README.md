@@ -22,7 +22,9 @@ pipewire-enabled Snapserver, so LAN Snapclients can play it.
   dashboard.
 - Docker on a Linux host for the full audio deployment. This will not work under Docker
   Desktop on macOS or Windows. The networking note below explains why.
-- Node.js 22+ if you only want the standalone proxy.
+- Node.js 24+ if you only want the standalone proxy. The self-check suite additionally
+  relies on Node's TypeScript type-stripping (default-on from Node 22.18 / 24), so run it
+  on Node 24.
 
 The Soloist binary is downloaded at runtime and never committed or baked into the image,
 because redistributing it is prohibited. Builds expire about 90 days after they are cut.
@@ -237,12 +239,17 @@ needs LAN zeroconf, so run it on a host that sits on the LAN, not inside an isol
 ## Development
 
 ```bash
-npm run build      # tsc -> dist/
-npm test           # build, then the assert-based self-check (auth gate, arch map, config, webhook routing/throttle)
+npm run build      # tsc + vite build -> dist/
+npm test           # full build, then the assert-based self-check (auth gate, arch map, config, webhook routing/throttle)
+npm run test:backend  # fast path: tsc only (skips vite build + the web-layer tests) for backend-only changes
 npm start          # node dist/main.js
 ```
 
-TypeScript on Node 22. The only runtime dependencies are `ws` and `yaml`. Tar extraction
+`npm test` runs a full `tsc && vite build` and exercises the web layer (raw Vue-app `.ts`
+imported via Node type-stripping, plus the vite manifest). When your change is backend-only,
+`npm run test:backend` skips the vite build and those web tests for a much faster loop.
+
+TypeScript on Node 24. The only runtime dependencies are `ws` and `yaml`. Tar extraction
 shells out to the system `tar`. The constant-time token compare and the HTTPS download
 are Node built-ins.
 
