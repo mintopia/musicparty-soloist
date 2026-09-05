@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, useId } from "vue";
 import { useConfig } from "../composables/useConfig";
 import EyeIcon from "./EyeIcon.vue";
 
@@ -25,6 +25,7 @@ const { revealSecret } = useConfig();
 const revealed = ref(false);
 const revealedValue = ref("");
 const show = ref(false); // whether the new-value input is unmasked
+const id = useId();
 
 function edit() {
   model.value = "";
@@ -47,15 +48,15 @@ async function view() {
 
 <template>
   <div class="sr">
-    <label class="flabel">{{ label }}</label>
+    <label class="flabel" :for="id">{{ label }}</label>
     <div class="field row box">
       <template v-if="typeof model === 'string'">
-        <input class="bare" :class="{ mono: show }" :type="show ? 'text' : 'password'" placeholder="New value" v-model="model" />
+        <input :id="id" class="bare" :class="{ mono: show }" :type="show ? 'text' : 'password'" placeholder="New value" v-model="model" />
         <button type="button" class="iconbtn" :title="show ? 'Hide' : 'Show'" @click="show = !show"><EyeIcon :off="show" /></button>
         <button type="button" class="linkbtn" @click="cancel">Cancel</button>
       </template>
       <template v-else-if="revealed">
-        <input class="bare mono" readonly :value="revealedValue" />
+        <input :id="id" class="bare mono" readonly :value="revealedValue" />
         <button type="button" class="iconbtn" title="Hide" @click="revealed = false"><EyeIcon off /></button>
         <button type="button" class="linkbtn" @click="edit">Replace</button>
       </template>

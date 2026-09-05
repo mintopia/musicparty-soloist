@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useId } from "vue";
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
 import LoadingState from "../../components/LoadingState.vue";
@@ -11,6 +12,7 @@ const c = config as any;
 // literal "{{…}}" in the template would be parsed as a Vue interpolation.
 const streamPh = "{{stream}}";
 const snapwebPh = "{{snapweb}}";
+const configId = useId();
 </script>
 
 <template>
@@ -24,8 +26,8 @@ const snapwebPh = "{{snapweb}}";
       <ToggleSwitch :on="c.snapweb" label="Enable Snapweb" @toggle="c.snapweb = !c.snapweb" />
     </div>
     <div class="tf snap-conf">
-      <label class="flabel">Snapcast server config</label>
-      <textarea class="field mono" rows="12" spellcheck="false" v-model="c.snapcastServerConfig"></textarea>
+      <label class="flabel" :for="configId">Snapcast server config</label>
+      <textarea :id="configId" class="field mono" rows="12" spellcheck="false" v-model="c.snapcastServerConfig"></textarea>
       <div class="dev-hint">
         <code>{{ streamPh }}</code> expands to the capture source line,
         <code>{{ snapwebPh }}</code> to the Snapweb enable flag (true/false).
