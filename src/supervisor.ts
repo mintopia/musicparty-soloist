@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { acquireSoloist } from "./acquire.js";
 import { soloistReady, type Config } from "./config.js";
 import { makeLog } from "./log.js";
+import { getPipewireDeviceOverride } from "./runtime.js";
 
 export const EXIT_EXPIRED = 10;
 export const BACKOFF_BASE = 1.0;
@@ -36,28 +37,6 @@ export function backoffStep(current: number, ranSeconds: number): { sleep: numbe
 
 const log = makeLog("supervisor");
 
-// ponytail: module-global set once at boot. A --pipewire-device flag pins Soloist's
-// output node. In Docker it's the soloist-sink null-sink (the fan-out anchor, ADR-0011);
-// in standalone it's an optional user-supplied device (ADR-0015). Either way it comes
-// from a main.js flag rather than cfg, so it stays out of buildArgv's persisted round-trip
-// — though cfg.soloist.pipewireDevice still wins over it when both are set.
-let pipewireDeviceOverride = "";
-export function setPipewireDeviceOverride(name: string): void {
-  pipewireDeviceOverride = name.trim();
-}
-
-// Docker mode = the managed-audio deployment (ADR-0011/0015): the Proxy owns a Snapcast +
-// hardware-sink fan-out and serves the Audio Route UI. Set explicitly by the container's
-// s6 run script (--docker). Standalone (npx) leaves it false: no Snapcast, no fan-out —
-// Soloist outputs straight to its optional --pipewire-device / soloist.pipewire_device.
-let dockerMode = false;
-export function setDockerMode(on: boolean): void {
-  dockerMode = on;
-}
-export function isDockerMode(): boolean {
-  return dockerMode;
-}
-
 export function buildArgv(cfg: Config): string[] {
   const argv = [
     "-w", cfg.soloistWs,
@@ -66,7 +45,7 @@ export function buildArgv(cfg: Config): string[] {
     "--data-dir", cfg.soloist.dataDir,
   ];
   // An explicit config value wins; otherwise fall back to the Docker pin.
-  const device = cfg.soloist.pipewireDevice || pipewireDeviceOverride;
+  const device = cfg.soloist.pipewireDevice || getPipewireDeviceOverride();
   if (device) argv.push("--pipewire-device", device);
   argv.push(...cfg.soloist.extraArgs);
   return argv;

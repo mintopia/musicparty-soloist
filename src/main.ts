@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ConfigError, DEFAULT_CONFIG_PATH, defaultConfig, ensureSecrets, loadConfig, soloistReady } from "./config.js";
 import { serveProxy } from "./proxy.js";
-import { supervise, Aborted, SoloistControl, setPipewireDeviceOverride, setDockerMode } from "./supervisor.js";
+import { supervise, Aborted, SoloistControl } from "./supervisor.js";
+import { setPipewireDeviceOverride, setDockerMode } from "./runtime.js";
 import { makeLog } from "./log.js";
 
 const log = makeLog("main");

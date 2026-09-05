@@ -11,7 +11,7 @@ import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHas
 import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
 import { getSinkCache, refreshSinkCache, reconcileOutputs, listStandaloneSinks } from "./pipewire.js";
-import { isDockerMode } from "./supervisor.js";
+import { isDockerMode } from "./runtime.js";
 import { restartSnapserver, snapcastNeedsRestart } from "./snapserver.js";
 import { safeStrEqual } from "./util.js";
 import { makeLog } from "./log.js";
