@@ -50,9 +50,9 @@ const setL = (v: string) => { hex.value = hslToHex(h.value, s.value, Number(v));
         <input type="color" class="picker" :value="hex" @input="hex = ($event.target as HTMLInputElement).value" />
       </button>
       <div class="sliders">
-        <input type="range" class="hsl" min="0" max="360" step="1" :value="h" :style="{ background: hueTrack }" @input="setH(($event.target as HTMLInputElement).value)" />
-        <input type="range" class="hsl" min="0" max="100" step="1" :value="s" :style="{ background: satTrack }" @input="setS(($event.target as HTMLInputElement).value)" />
-        <input type="range" class="hsl" min="0" max="100" step="1" :value="l" :style="{ background: litTrack }" @input="setL(($event.target as HTMLInputElement).value)" />
+        <input type="range" class="hsl" min="0" max="360" step="1" :value="h" :aria-label="`${label} hue`" :style="{ background: hueTrack }" @input="setH(($event.target as HTMLInputElement).value)" />
+        <input type="range" class="hsl" min="0" max="100" step="1" :value="s" :aria-label="`${label} saturation`" :style="{ background: satTrack }" @input="setS(($event.target as HTMLInputElement).value)" />
+        <input type="range" class="hsl" min="0" max="100" step="1" :value="l" :aria-label="`${label} lightness`" :style="{ background: litTrack }" @input="setL(($event.target as HTMLInputElement).value)" />
       </div>
     </div>
   </div>
