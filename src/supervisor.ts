@@ -5,6 +5,7 @@ import { acquireSoloist } from "./acquire.js";
 import { soloistReady, type Config } from "./config.js";
 import { makeLog } from "./log.js";
 import { getPipewireDeviceOverride } from "./runtime.js";
+import { deferred } from "./util.js";
 import type { SoloistState } from "./wire-contract.js";
 
 export const EXIT_EXPIRED = 10;
@@ -52,9 +53,30 @@ export class SoloistControl {
   private appliedArgv: string | null = null;
   private iter: AbortController | null = null;
   private state: SoloistState = "waiting";
+  private wake = deferred();
 
   bindIteration(ac: AbortController): void {
     this.iter = ac;
+  }
+
+  // Crash-loop backoff sleep that returns early when restart() fires or `signal`
+  // aborts, so a queued restart (or shutdown) during the wait isn't held off until
+  // the backoff cap — iter is already spent once the run has exited, so the sleep,
+  // not the iteration abort, is what a restart must interrupt here.
+  async backoffSleep(ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    const onAbort = () => this.signalWake();
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      await Promise.race([sleep(ms), this.wake.promise]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private signalWake(): void {
+    this.wake.resolve();
+    this.wake = deferred();
   }
 
   // Supervisor-internal: the loop calls this at each phase boundary. Read-only
@@ -82,6 +104,7 @@ export class SoloistControl {
   restart(cfg: Config): void {
     this.markApplied(cfg);
     this.iter?.abort();
+    this.signalWake();
   }
 }
 
@@ -214,7 +237,8 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     const { sleep: waitS, next } = backoffStep(backoff, ran);
     log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
     control?.setState("backoff");
-    await sleep(waitS * 1000);
+    if (control) await control.backoffSleep(waitS * 1000, signal);
+    else await sleep(waitS * 1000);
     backoff = next;
   }
   } finally {
