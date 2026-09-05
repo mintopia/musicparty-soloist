@@ -203,8 +203,9 @@ function apiAuthed(req: IncomingMessage, res: ServerResponse, cfg: Config): bool
   return true;
 }
 
-// Validate → persist → apply hot fields live by mutating the shared Config in
-// place (tokens, sessionUser, webhooks, autoplay, overlay all read it live).
+// Validate → persist → apply. Hot fields apply by mutating the shared Config in place
+// (never reassigning — see the Config contract); callback fields go through onConfigChange;
+// restart fields surface a banner. Per-field strategy: APPLY_STRATEGY (ADR-0022).
 async function handlePutConfig(
   req: IncomingMessage,
   res: ServerResponse,
