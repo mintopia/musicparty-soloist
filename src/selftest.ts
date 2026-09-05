@@ -1844,8 +1844,9 @@ const setupReq = (method: string, url: string, body = ""): IncomingMessage => {
   return r as IncomingMessage;
 };
 
-// First-run setup gating: creds unset -> only /setup served, everything else fails
-// closed; POST /setup sets creds + redirects to login; then /setup is unreachable.
+// First-run setup gating: creds unset -> only /setup served, page navigations redirect
+// there and API calls fail closed; POST /setup sets creds + logs the operator in; then
+// /setup is unreachable.
 await test("first-run setup gating", async () => {
   const call = (r: ReturnType<typeof fakeRes>, req: IncomingMessage, cfg: Config) =>
     handleWebRequest(req, r as unknown as ServerResponse, cfg, setupCfgPath);
@@ -1867,10 +1868,18 @@ await test("first-run setup gating", async () => {
   assert.equal(r.statusCode, 302, "root redirects in setup mode");
   assert.equal(r.headers.location, "/setup", "root redirects to /setup");
 
-  for (const p of ["/api/config", "/api/config-summary", "/api/relay", "/login"]) {
+  for (const p of ["/api/config", "/api/config-summary", "/api/relay"]) {
     r = fakeRes();
     call(r, setupReq("GET", p), scfg);
     assert.equal(r.statusCode, 503, `${p} fails closed in setup mode`);
+  }
+
+  // Page navigations (not /api) land on the Setup Page instead of a dead-end notice.
+  for (const p of ["/login", "/settings", "/lyrics"]) {
+    r = fakeRes();
+    call(r, setupReq("GET", p), scfg);
+    assert.equal(r.statusCode, 302, `GET ${p} redirects in setup mode`);
+    assert.equal(r.headers.location, "/setup", `GET ${p} -> /setup`);
   }
 
   // POST /setup with mismatched passwords: error redirect, creds stay unset.
@@ -1881,12 +1890,15 @@ await test("first-run setup gating", async () => {
   assert.equal(r.headers.location, "/setup?error=1", "mismatch -> setup error");
   assert.equal(webConfigured(scfg), false, "mismatch did not set creds");
 
-  // POST /setup with valid input: sets creds, writes file, redirects to login.
+  // POST /setup with valid input: sets creds, writes file, logs the operator straight in.
   r = fakeRes();
   call(r, setupReq("POST", "/setup", "username=dj&password=hunter2&confirm=hunter2"), scfg);
   await r.done;
   assert.equal(r.statusCode, 302, "valid setup redirects");
-  assert.equal(r.headers.location, "/login", "valid setup -> login");
+  assert.equal(r.headers.location, "/", "valid setup -> logged in at /");
+  const setupCookie = r.headers["set-cookie"];
+  assert.match(String(setupCookie), new RegExp(`^${SESSION_COOKIE}=[^;]+;`), "valid setup issues a session cookie");
+  assert.equal(verifySession(String(setupCookie).slice(SESSION_COOKIE.length + 1).split(";")[0], scfg.web.sessionSecret, scfg.web.password), "dj", "setup session cookie authenticates the new user");
   assert.equal(scfg.web.username, "dj", "username set from setup");
   assert.ok(isPasswordHashed(scfg.web.password), "setup password stored hashed, not cleartext");
   assert.ok(verifyPassword("hunter2", scfg.web.password), "setup password verifies");
@@ -1930,8 +1942,8 @@ await test("setup TOCTOU guard", async () => {
   // check — either way, exactly one save must win and the account must be uncorrupted.
   assert.deepEqual([r1.statusCode, r2.statusCode], [302, 302], "both requests get a redirect response");
   const locations = [r1.headers.location, r2.headers.location];
-  assert.ok(locations.includes("/login"), "one request completes setup and redirects to login");
-  assert.ok(locations.every((l) => l === "/login" || l === "/setup?error=1"), "no other outcome for a concurrent setup POST");
+  assert.ok(locations.includes("/"), "one request completes setup and is logged straight in at /");
+  assert.ok(locations.every((l) => l === "/" || l === "/login" || l === "/setup?error=1"), "no other outcome for a concurrent setup POST");
   assert.equal(webConfigured(raceCfg), true, "the winner's creds were applied");
   assert.equal(loadConfig(racePath).web.username, "dj", "exactly one save persisted, uncorrupted");
   rmSync(raceDir, { recursive: true, force: true });

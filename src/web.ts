@@ -269,7 +269,7 @@ async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cf
 // exactly one, but the latch is keyed so tests covering several don't collide.
 const setupClaimed = new Set<string>();
 
-// First-run setup: set web creds only, persist, redirect to login. Runs only while
+// First-run setup: set web creds only, persist, log the operator in. Runs only while
 // web creds are unset (gated in handleWebRequest), so it never overwrites live creds.
 async function handleSetup(
   req: IncomingMessage,
@@ -315,7 +315,10 @@ async function handleSetup(
   }
   Object.assign(cfg, next);
   log("first-run setup complete: web creds set for %s", username);
-  redirect(res, "/login");
+  // Log the operator straight in with the creds they just set, rather than bouncing
+  // them to /login to retype them.
+  setSession(res, cfg);
+  redirect(res, "/");
 }
 
 async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Config, configPath: string): Promise<void> {
@@ -374,7 +377,9 @@ export function handleWebRequest(
     if (path === "/setup" && method === "POST") return void handleSetup(req, res, cfg, configPath), true;
     // The Vite-built Setup Page pulls its module + styles from /assets/.
     if (method === "GET" && path.startsWith("/assets/")) return serveAsset(res, path), true;
-    if (path === "/" && method === "GET") return redirect(res, "/setup"), true;
+    // Any page navigation lands on the Setup Page rather than a dead-end "go to setup"
+    // notice. API calls (and non-GET) still fail closed so machine clients get a real error.
+    if (method === "GET" && !path.startsWith("/api/")) return redirect(res, "/setup"), true;
     return failClosed(res), true;
   }
   if (path === "/setup") return redirect(res, "/"), true;
