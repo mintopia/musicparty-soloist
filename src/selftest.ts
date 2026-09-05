@@ -63,6 +63,67 @@ const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
 const hl = await import(new URL("../src/web-vue/lib/highlight.ts", import.meta.url).href);
 const { highlightJson } = hl as { highlightJson(src: string): Promise<string> };
 
+// useAppControl composable (T8): same raw-.ts, computed-specifier import as highlight.ts —
+// exercised headlessly here (Vue reactivity is DOM-free) against a fake socket, so the tests
+// drive the exact App-Control client the app ships, not a re-implementation.
+const appctl = await import(new URL("../src/web-vue/composables/useAppControl.ts", import.meta.url).href);
+type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
+type AppControlApi = {
+  status: { value: any };
+  connected: { value: boolean };
+  stale: { value: boolean };
+  subscribe(streams: string[]): AppControlSub;
+  start(): void;
+  stop(): void;
+};
+const { createAppControl } = appctl as {
+  createAppControl(opts?: {
+    url?: string;
+    socketFactory?: (url: string) => any;
+    staleMs?: number;
+    frameRing?: number;
+    webhookRing?: number;
+    backoffBaseMs?: number;
+    backoffMaxMs?: number;
+  }): AppControlApi;
+};
+
+// A minimal WebSocket stand-in the composable can drive: tests trigger open/close/message
+// by hand and read back what was sent. close() fires onclose to mirror the browser.
+interface FakeSocket {
+  url: string;
+  readyState: number;
+  sent: string[];
+  onopen: ((ev?: unknown) => void) | null;
+  onclose: ((ev?: unknown) => void) | null;
+  onerror: ((ev?: unknown) => void) | null;
+  onmessage: ((ev: { data: unknown }) => void) | null;
+  send(d: string): void;
+  close(): void;
+  open(): void;
+  deliver(stream: string, data: unknown): void;
+  raw(data: unknown): void;
+  error(): void;
+}
+function fakeSocketFactory() {
+  const sockets: FakeSocket[] = [];
+  const factory = (url: string): FakeSocket => {
+    const s: FakeSocket = {
+      url, readyState: 0, sent: [], onopen: null, onclose: null, onerror: null, onmessage: null,
+      send(d) { this.sent.push(d); },
+      close() { if (this.readyState === 3) return; this.readyState = 3; this.onclose?.(); },
+      open() { this.readyState = 1; this.onopen?.(); },
+      deliver(stream, data) { this.onmessage?.({ data: JSON.stringify({ stream, data }) }); },
+      raw(data) { this.onmessage?.({ data }); },
+      error() { this.onerror?.(); },
+    };
+    sockets.push(s);
+    return s;
+  };
+  return { factory, sockets };
+}
+const emptyRelay = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
+
 function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
@@ -1727,6 +1788,111 @@ await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle
   assert.ok(debug.css?.length, "Debug chunk must ship a CSS asset (the hljs theme)");
   const themeCss = readFileSync(new URL(debug.css![0], webDir), "utf8");
   assert.ok(themeCss.includes(".hljs"), "Debug chunk CSS must contain hljs theme rules");
+});
+
+
+// useAppControl: opens /ws/app, always subscribes proxy_status app-wide, tracks status, and
+// never leaves status green while blind — a disconnect surfaces as stale immediately.
+await test("useAppControl subscribes proxy_status app-wide and tracks status/stale", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1 });
+  ac.start();
+  ac.start(); // idempotent: no second socket
+  assert.equal(sockets.length, 1, "start opens exactly one socket");
+  assert.equal(ac.connected.value, false, "not connected before open");
+  assert.equal(ac.stale.value, true, "stale before any status arrives (never green while blind)");
+  sockets[0].open();
+  assert.equal(ac.connected.value, true, "connected on open");
+  assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "subscribe", streams: ["proxy_status"] }, "subscribes proxy_status even with zero consumers");
+
+  const st = { soloist: { state: "running", upstream: true, loggedIn: true }, clients: 2, relay: emptyRelay, webhook: null };
+  sockets[0].deliver("proxy_status", st);
+  assert.deepEqual(ac.status.value, st, "status reflects the latest proxy_status");
+  assert.equal(ac.stale.value, false, "a fresh proxy_status clears stale");
+
+  // malformed / non-string frames are ignored without disturbing state.
+  sockets[0].raw("not json");
+  sockets[0].raw({ not: "a string" });
+  sockets[0].deliver("proxy_status", { junk: true } as any);
+  assert.deepEqual(ac.status.value, { junk: true }, "a well-formed proxy_status still applies; malformed frames were inert");
+
+  sockets[0].close();
+  assert.equal(ac.connected.value, false, "connected=false after the socket closes");
+  assert.equal(ac.stale.value, true, "connected=false surfaces as stale status to consumers");
+  ac.stop();
+});
+
+
+// useAppControl: on reconnect it resubscribes only the still-live streams, buffers persist,
+// and a disposed subscription receives nothing afterwards (no listener leak). Disposer is
+// idempotent.
+await test("useAppControl resubscribes on reconnect; disposed subscriptions leak no listeners", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1 });
+  const a = ac.subscribe(["frame"]);
+  const b = ac.subscribe(["clients"]);
+  sockets[0].open();
+  assert.deepEqual(
+    new Set(JSON.parse(sockets[0].sent.at(-1)!).streams),
+    new Set(["proxy_status", "frame", "clients"]),
+    "opening subscribes the union of consumer streams plus proxy_status",
+  );
+  sockets[0].deliver("frame", { type: "playback_state", n: 1 });
+  sockets[0].deliver("clients", [{ id: "c1" }]);
+  assert.equal(a.frames.length, 1, "consumer A receives its frame");
+  assert.deepEqual(b.clients.map((c: any) => c.id), ["c1"], "consumer B receives the clients snapshot");
+
+  a.dispose();
+  a.dispose(); // idempotent: a second call is a no-op, not a throw
+  sockets[0].close(); // schedules a reconnect (backoffBaseMs 1ms)
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(sockets.length, 2, "reconnect opened a fresh socket");
+  sockets[1].open();
+  assert.deepEqual(
+    new Set(JSON.parse(sockets[1].sent.at(-1)!).streams),
+    new Set(["proxy_status", "clients"]),
+    "reconnect resubscribes only live streams — disposed A's 'frame' is gone",
+  );
+  sockets[1].deliver("frame", { n: 2 });
+  sockets[1].deliver("clients", [{ id: "c1" }, { id: "c2" }]);
+  assert.equal(a.frames.length, 1, "disposed A gets nothing after reconnect (no leaked listener)");
+  assert.deepEqual(b.clients.map((c: any) => c.id), ["c1", "c2"], "B's buffer persists across reconnect and keeps updating");
+  ac.stop();
+});
+
+
+// useAppControl: frame buffer is a ring (oldest evicted at cap); webhooks takes the
+// on-subscribe history dump (an array, replaces) then appends live single deliveries.
+await test("useAppControl frame ring cap and webhooks dump-then-append", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, frameRing: 3, webhookRing: 5 });
+  const s = ac.subscribe(["frame", "webhooks"]);
+  sockets[0].open();
+  for (let i = 0; i < 5; i++) sockets[0].deliver("frame", { n: i });
+  assert.deepEqual(s.frames.map((f: any) => f.n), [2, 3, 4], "frame ring keeps only the last frameRing items, oldest evicted");
+
+  sockets[0].deliver("webhooks", [{ at: 1 }, { at: 2 }]);
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2], "on-subscribe history dump replaces the webhooks buffer");
+  sockets[0].deliver("webhooks", { at: 3 });
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2, 3], "a live delivery appends to the buffer");
+  ac.stop();
+});
+
+
+// useAppControl: a wedged-but-open socket (heartbeat stops) ages status out to stale, so it
+// never lingers green while the connection is technically up.
+await test("useAppControl ages out status when the heartbeat stops", async () => {
+  const { factory, sockets } = fakeSocketFactory();
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, staleMs: 20 });
+  ac.start();
+  sockets[0].open();
+  sockets[0].deliver("proxy_status", { soloist: { state: null, upstream: true, loggedIn: null }, clients: 0, relay: emptyRelay, webhook: null });
+  assert.equal(ac.stale.value, false, "fresh status is not stale");
+  assert.equal(ac.connected.value, true, "socket is connected");
+  await new Promise((r) => setTimeout(r, 120)); // several watchdog ticks past staleMs, no new heartbeat
+  assert.equal(ac.stale.value, true, "status ages out to stale after the heartbeat stops");
+  assert.equal(ac.connected.value, true, "the connection itself is still open");
+  ac.stop();
 });
 
 
