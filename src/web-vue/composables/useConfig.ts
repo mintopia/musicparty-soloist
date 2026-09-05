@@ -33,6 +33,19 @@ const loaded = ref(false);
 
 const dirty = computed(() => JSON.stringify(config) !== saved.value);
 
+// Guard tab-close / back-nav / hard reload while edits are unsaved (UX-H3): without this
+// the working copy vanishes with no prompt. Reads the shared dirty flag so it tracks the
+// singleton live; setting returnValue is what triggers the browser's native confirm.
+export function beforeUnloadGuard(e: BeforeUnloadEvent) {
+  if (!dirty.value) return;
+  e.preventDefault();
+  e.returnValue = "";
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", beforeUnloadGuard);
+}
+
 function replace(target: Config, next: Config) {
   for (const k of Object.keys(target)) delete target[k];
   Object.assign(target, next);
