@@ -9,6 +9,6 @@
     "noEmit": true,
     "isolatedModules": true
   },
-  "include": ["**/*.ts", "env.d.ts"],
+  "include": ["**/*.ts", "**/*.vue", "env.d.ts"],
   "exclude": []
 }
