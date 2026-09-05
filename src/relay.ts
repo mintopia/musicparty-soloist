@@ -6,7 +6,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
-import type { SoloistHub } from "./proxy.js";
+import type { SoloistHub } from "./hub.js";
 import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
 

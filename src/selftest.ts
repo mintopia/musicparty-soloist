@@ -8,7 +8,8 @@ import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual } from "./util.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
-import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, buildProxyStatus, makeServer, type UpstreamFrame } from "./proxy.js";
+import { shouldAutoplay, AUTOPLAY_FRAMES, listenParts, buildProxyStatus, makeServer } from "./proxy.js";
+import { decodeFrame, SoloistHub, type UpstreamFrame } from "./hub.js";
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
 import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
@@ -808,7 +809,7 @@ await test("sessionUser gating (parseCookies/webConfigured/fail-closed/rotation)
 });
 
 
-const meta = (over: Partial<import("./proxy.js").ClientMeta> = {}): import("./proxy.js").ClientMeta =>
+const meta = (over: Partial<import("./hub.js").ClientMeta> = {}): import("./hub.js").ClientMeta =>
   ({ id: "id", remoteAddr: "127.0.0.1", tier: "control", auth: "auth-token", connectedAt: 0, userAgent: "ua", ...over });
 
 // Hub read-only drop + state replay, against a real in-process upstream.
