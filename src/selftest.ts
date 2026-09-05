@@ -98,7 +98,7 @@ const { highlightJson } = (hl ?? {}) as { highlightJson(src: string): Promise<st
 const appctl = await loadRawTs("../src/web-vue/composables/useAppControl.ts");
 const useConfigMod = await loadRawTs("../src/web-vue/composables/useConfig.ts");
 const { useConfig: loadUseConfig, beforeUnloadGuard } = (useConfigMod ?? {}) as {
-  useConfig(): { config: Record<string, unknown>; trySave(): void; dirty: { value: boolean }; status: { value: string } };
+  useConfig(): { config: Record<string, unknown>; trySave(): void; save(): Promise<void>; restartSoloist(): Promise<void>; dirty: { value: boolean }; status: { value: string }; error: { value: string } };
   beforeUnloadGuard(e: { preventDefault(): void; returnValue: unknown }): void;
 };
 type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
@@ -2393,6 +2393,53 @@ await webTest("useConfig.trySave guards the Enter-to-save path", useConfigMod, a
     for (const k of Object.keys(config)) delete config[k];
     Object.assign(config, snapshot);
     status.value = "idle";
+  }
+});
+
+// A failed PUT must land in "error" (never stay "saving") with the server's message and
+// leave edits dirty so Save re-enables, and a later success must clear back to saved/idle
+// (UX-C1): otherwise the save bar hangs on "Saving…" and the user's edits look in-flight.
+await webTest("useConfig.save surfaces failures and recovers", useConfigMod, async () => {
+  const { config, save, restartSoloist, dirty, status, error } = loadUseConfig();
+  const origFetch = globalThis.fetch;
+  const snapshot = JSON.parse(JSON.stringify(config));
+  let ok = false;
+  // A successful PUT echoes the pristine snapshot: config reconciles back to clean, which
+  // both proves the recovery path and leaves the shared singleton untouched for later tests.
+  globalThis.fetch = (async (_url: any, opts: any) => {
+    if (opts?.method === "PUT" && !ok) {
+      return { ok: false, status: 500, json: async () => ({ error: "failed to save config" }) } as any;
+    }
+    return { ok: true, json: async () => (opts?.method === "PUT" ? snapshot : {}) } as any;
+  }) as any;
+  try {
+    (config as any).relay = { url: "wss://x" };
+    assert.equal(dirty.value, true, "editing the working copy marks it dirty");
+
+    await save();
+    assert.equal(status.value, "error", "a failed PUT lands in error, never stays saving");
+    assert.ok(error.value.includes("failed to save config"), "the server message is surfaced");
+    assert.equal(dirty.value, true, "edits stay dirty so Save re-enables for a retry");
+
+    ok = true;
+    await save();
+    assert.equal(status.value, "saved", "a retry that succeeds clears the error state");
+    assert.equal(error.value, "", "the error message clears on a successful save");
+    assert.equal(dirty.value, false, "a successful save reconciles the working copy");
+
+    // A restart that succeeds must clear a lingering error so the save bar doesn't keep
+    // showing a stale red message after the underlying failure is resolved.
+    status.value = "error";
+    error.value = "Restart failed — boom";
+    await restartSoloist();
+    assert.equal(status.value, "idle", "a successful restart clears a lingering error status");
+    assert.equal(error.value, "", "a successful restart clears the stale error message");
+  } finally {
+    globalThis.fetch = origFetch;
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, snapshot);
+    status.value = "idle";
+    error.value = "";
   }
 });
 
