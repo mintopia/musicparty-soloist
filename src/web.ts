@@ -169,14 +169,14 @@ async function handlePutConfig(
     if (err instanceof ConfigError) return json(res, 400, { error: err.message });
     // Handler is floated (void handlePutConfig); a re-throw here would be an
     // unhandled rejection and the client would hang. Log and 500 instead.
-    log("config save failed: %s", (err as Error).message);
+    log.error("config save failed: %s", (err as Error).message);
     return json(res, 500, { error: "failed to save config" });
   }
   Object.assign(cfg, next);
   log("config saved and applied live");
   // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Docker only
   // (ADR-0015); runtime, idempotent, and fire-and-forget so the save isn't held on pw-link.
-  if (isDockerMode()) void reconcileOutputs(cfg).catch((err) => log("reconcile after save failed: %s", (err as Error).message));
+  if (isDockerMode()) void reconcileOutputs(cfg).catch((err) => log.error("reconcile after save failed: %s", (err as Error).message));
   // Push the new Overlay Config to any open overlays so they restyle immediately.
   onConfigChange?.(cfg);
   json(res, 200, maskConfig(cfg));
@@ -196,7 +196,7 @@ async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cf
       json(res, 200, { sinks: await listStandaloneSinks(), refreshedAt: Date.now() });
     }
   } catch (err) {
-    log("pw-dump failed: %s", (err as Error).message);
+    log.error("pw-dump failed: %s", (err as Error).message);
     json(res, 500, { error: "failed to enumerate sinks" });
   }
 }
@@ -249,7 +249,7 @@ async function handleSetup(
   try {
     saveConfig(configPath, next);
   } catch (err) {
-    log("setup save failed: %s", (err as Error).message);
+    log.error("setup save failed: %s", (err as Error).message);
     setupClaimed.delete(configPath); // save failed — allow a retry to claim it
     res.writeHead(500).end("Failed to save setup\n");
     return;
@@ -284,7 +284,7 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
         Object.assign(cfg, next);
         log("rehashed legacy web password to scrypt");
       } catch (err) {
-        log("password rehash failed: %s", (err as Error).message);
+        log.error("password rehash failed: %s", (err as Error).message);
       }
     }
     setSession(res, cfg);
@@ -292,7 +292,7 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse, cfg: Confi
     redirect(res, "/");
     return;
   }
-  log("login failed from %s", req.socket.remoteAddress);
+  log.warn("login failed from %s", req.socket.remoteAddress);
   redirect(res, "/login?error=1");
 }
 

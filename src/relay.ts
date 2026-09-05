@@ -91,7 +91,7 @@ export class SoloistRelay {
         });
       } catch (err) {
         this.status.lastError = (err as Error).message;
-        log("relay %s error: %s", url, (err as Error).message);
+        log.error("relay %s error: %s", url, (err as Error).message);
       } finally {
         this.conn = null;
         this.status.connected = false;

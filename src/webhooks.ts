@@ -68,7 +68,7 @@ export class WebhookQueue {
         task();
       } catch (err) {
         // A throwing task must not wedge the queue with draining stuck true.
-        log("webhook task threw: %s", (err as Error).message);
+        log.error("webhook task threw: %s", (err as Error).message);
       }
       const delay = this.getDelay();
       if (delay > 0) {
@@ -104,7 +104,7 @@ export class WebhookHistory {
       try {
         cb(d);
       } catch (err) {
-        log("webhook onEntry cb threw: %s", (err as Error).message);
+        log.error("webhook onEntry cb threw: %s", (err as Error).message);
       }
     }
   }
@@ -184,10 +184,10 @@ export async function postWebhook(
       if (WEBHOOK_RESP_HEADER_ALLOWLIST.has(lk)) respHeaders[lk] = v;
     });
     respBody = await readCappedBody(res, WEBHOOK_RESP_BODY_CAP);
-    if (!res.ok) log("webhook %s -> HTTP %d", url, res.status);
+    if (!res.ok) log.warn("webhook %s -> HTTP %d", url, res.status);
   } catch (err) {
     error = (err as Error).message;
-    log("webhook %s failed: %s", url, error);
+    log.error("webhook %s failed: %s", url, error);
   }
   const durationMs = Date.now() - at;
   const redactedReqHeaders = { ...reqHeaders };
@@ -202,7 +202,7 @@ export async function postWebhook(
 export function attachWebhooks(hub: SoloistHub, cfg: Config): WebhookHistory {
   const history = new WebhookHistory();
   const queue = new WebhookQueue(() => cfg.webhooks.delayMs, {
-    onDrop: () => log("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
+    onDrop: () => log.warn("webhook queue full (%d); dropped oldest", WEBHOOK_QUEUE_CAP),
   });
   hub.observe((frame) => {
     const url = resolveWebhookUrl(frame.type, cfg.webhooks);

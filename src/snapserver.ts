@@ -57,7 +57,7 @@ export function restartSnapserver(cfg: Config): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(S6_SVC, ["-r", SNAPSERVER_SERVICE], (err) => {
       if (err) {
-        log("snapserver restart failed: %s", err.message);
+        log.error("snapserver restart failed: %s", err.message);
         reject(err);
       } else {
         log("snapserver restarted to apply config");

@@ -280,7 +280,7 @@ async function ensureDelayChild(delays: Record<string, number>, tokens: Map<stri
   writeFileSync(confPath, conf);
   const spawnFn = opts.spawn ?? defaultSpawn;
   const child = spawnFn("pipewire", ["-c", confPath]);
-  child.on("error", (err) => log("delay filter-chain spawn failed: %s", (err as Error).message));
+  child.on("error", (err) => log.error("delay filter-chain spawn failed: %s", (err as Error).message));
   delayChild = child;
   delayChildKey = key;
 }
@@ -308,7 +308,7 @@ async function runReconcile(cfg: Config, opts: ReconcileOptions): Promise<Reconc
   } catch (err) {
     // No reachable PipeWire graph (e.g. standalone, no pw-link): nothing to do.
     // In Docker the proxy only starts after wait-for-sink, so this means absent.
-    log("pipewire graph unavailable; skipping reconcile: %s", (err as Error).message);
+    log.warn("pipewire graph unavailable; skipping reconcile: %s", (err as Error).message);
     return { linked: [], removed: [], missing: [] };
   }
 
@@ -329,14 +329,14 @@ async function runReconcile(cfg: Config, opts: ReconcileOptions): Promise<Reconc
         result.linked.push(node);
       } else {
         result.missing.push(node);
-        log("output node '%s' (or its delay filter) absent; skipped (flagged)", node);
+        log.warn("output node '%s' (or its delay filter) absent; skipped (flagged)", node);
       }
     } else if (await waitForNode(node, run, retries, intervalMs)) {
       await linkPair(node, run);
       result.linked.push(node);
     } else {
       result.missing.push(node);
-      log("output node '%s' absent; skipped (flagged)", node);
+      log.warn("output node '%s' absent; skipped (flagged)", node);
     }
   }
 
@@ -400,7 +400,7 @@ export function getSinkCache(): SinkCache {
 // is a no-op. The timer is unref'd so it never keeps the process alive on shutdown.
 export function startSinkPolling(cfg: Config, intervalMs = 30_000): void {
   if (sinkPollTimer) return;
-  const tick = () => void refreshSinkCache(cfg).catch((e) => log("sink poll failed: %s", (e as Error).message));
+  const tick = () => void refreshSinkCache(cfg).catch((e) => log.warn("sink poll failed: %s", (e as Error).message));
   tick();
   sinkPollTimer = setInterval(tick, intervalMs);
   sinkPollTimer.unref?.();
