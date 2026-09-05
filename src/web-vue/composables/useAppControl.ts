@@ -42,9 +42,10 @@ export interface WebhookDelivery {
 
 export type Frame = Record<string, unknown>;
 
-// Per-consumer reactive buffers plus an idempotent disposer. frames is a ring; clients is a
-// full snapshot (server always publishes the whole list); webhooks is the on-subscribe dump
-// (an array, replaces) followed by live single deliveries (appended to a ring).
+// Per-consumer reactive buffers (seeded from the retained master on subscribe) plus an
+// idempotent disposer. frames is a ring; clients is a full snapshot (server always publishes
+// the whole list); webhooks is the on-subscribe dump (an array, replaces) followed by live
+// single deliveries (appended to a ring).
 export interface AppControlSubscription {
   frames: Frame[];
   clients: ClientMeta[];
@@ -114,6 +115,16 @@ export function createAppControl(opts: AppControlOptions = {}) {
   const stale = ref(true);
 
   const subs = new Set<Sub>();
+  // Retained master buffers, kept current for the life of the singleton by every message the
+  // socket receives — even with no live consumer, since this shared socket stays subscribed
+  // across page visits (dispose() never unsubscribes). A subscribe() seeds its fresh buffers
+  // from these, so a Debug Page reopened via client-side nav paints from the last-known
+  // snapshot instead of empty: the server won't re-seed an already-subscribed stream
+  // (idempotent subscribe, appcontrol.ts), so without this the reopened buffers stay blank
+  // until the next live event.
+  const masterFrames: Frame[] = [];
+  const masterClients: ClientMeta[] = [];
+  const masterWebhooks: WebhookDelivery[] = [];
   let ws: WebSocketLike | null = null;
   let backoffMs = backoffBaseMs;
   let started = false;
@@ -155,15 +166,22 @@ export function createAppControl(opts: AppControlOptions = {}) {
       applyStatus(data as ProxyStatus);
       return;
     }
-    for (const sub of subs) {
-      if (!sub.streams.has(stream as DebugStream)) continue;
-      if (stream === "frame") pushRing(sub.frames, data as Frame, frameRing);
-      else if (stream === "clients") replaceAll(sub.clients, data as ClientMeta[]);
-      else if (stream === "webhooks") {
-        // On-subscribe dump is the full history array; live deliveries arrive one at a time.
-        // The dump is ring-capped too, so a large history can never exceed the buffer bound.
-        if (Array.isArray(data)) replaceAll(sub.webhooks, (data as WebhookDelivery[]).slice(-webhookRing));
-        else pushRing(sub.webhooks, data as WebhookDelivery, webhookRing);
+    if (stream === "frame") {
+      pushRing(masterFrames, data as Frame, frameRing);
+      for (const sub of subs) if (sub.streams.has("frame")) pushRing(sub.frames, data as Frame, frameRing);
+    } else if (stream === "clients") {
+      replaceAll(masterClients, data as ClientMeta[]);
+      for (const sub of subs) if (sub.streams.has("clients")) replaceAll(sub.clients, data as ClientMeta[]);
+    } else if (stream === "webhooks") {
+      // On-subscribe dump is the full history array; live deliveries arrive one at a time.
+      // The dump is ring-capped too, so a large history can never exceed the buffer bound.
+      if (Array.isArray(data)) {
+        const dump = (data as WebhookDelivery[]).slice(-webhookRing);
+        replaceAll(masterWebhooks, dump);
+        for (const sub of subs) if (sub.streams.has("webhooks")) replaceAll(sub.webhooks, dump);
+      } else {
+        pushRing(masterWebhooks, data as WebhookDelivery, webhookRing);
+        for (const sub of subs) if (sub.streams.has("webhooks")) pushRing(sub.webhooks, data as WebhookDelivery, webhookRing);
       }
     }
   }
@@ -222,11 +240,13 @@ export function createAppControl(opts: AppControlOptions = {}) {
   }
 
   function subscribe(streams: DebugStream[]): AppControlSubscription {
+    // Seed from the retained master so a reopened Debug Page paints immediately (see the
+    // master-buffer note above) instead of waiting on a server re-seed that won't come.
     const sub: Sub = {
       streams: new Set(streams),
-      frames: reactive<Frame[]>([]),
-      clients: reactive<ClientMeta[]>([]),
-      webhooks: reactive<WebhookDelivery[]>([]),
+      frames: reactive<Frame[]>([...masterFrames]),
+      clients: reactive<ClientMeta[]>([...masterClients]),
+      webhooks: reactive<WebhookDelivery[]>([...masterWebhooks]),
     };
     subs.add(sub);
     start();
