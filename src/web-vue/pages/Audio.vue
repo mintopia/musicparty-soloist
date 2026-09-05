@@ -72,7 +72,7 @@ function setDelay(name: string, v: string) {
   <SectionCard title="Audio Outputs" subtitle="Route Soloist's stream to Snapcast or a hardware sink.">
     <template #action>
       <span v-if="refreshedLabel" class="stamp">{{ refreshedLabel }}</span>
-      <button class="btn" :disabled="refreshing" @click="refresh(true)">
+      <button type="button" class="btn" :disabled="refreshing" @click="refresh(true)">
         {{ refreshing ? "Refreshing…" : "Refresh sinks" }}
       </button>
     </template>
