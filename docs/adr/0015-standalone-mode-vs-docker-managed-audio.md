@@ -32,6 +32,10 @@ Config File or the Settings page instead of a flag.
   `dockerMode: false`, and exposes an optional **PipeWire output device** field on Settings
   (bound to `soloist.pipewire_device`, restart-to-apply). "Unknown" (pre-load) is treated as
   Docker so the existing container UI never flickers.
+- The Settings page never surfaces `soloist_ws` in either mode: it is the internal loopback
+  the bundled Soloist uses to reach the Proxy, so standalone routes through the Proxy just like
+  Docker and the operator never sets it. It stays editable via the Config File (default
+  `127.0.0.1:3678`).
 - No config-schema change: `soloist.pipewire_device` already existed and already flows to
   `buildArgv`. `soloist-sink` stays out of the Config File (ADR-0010/0011) — it is a container
   flag, now paired with `--docker`.
