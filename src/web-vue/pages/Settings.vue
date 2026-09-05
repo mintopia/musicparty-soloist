@@ -71,7 +71,6 @@ const pill = computed(() => {
     <SectionCard title="Soloist">
       <div class="grid2">
         <TextField label="Device name" v-model="c.soloist.deviceName" />
-        <TextField v-if="!summary.dockerMode" label="Soloist WS" v-model="c.soloistWs" />
         <div v-if="!summary.dockerMode" class="tf">
           <div class="dev-label">
             <label class="flabel">PipeWire output device</label>
