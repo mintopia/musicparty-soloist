@@ -119,11 +119,29 @@ _Avoid_: settings, manifest, env.
 **Landing Page** (Web UI):
 The authenticated web app the Proxy serves on its own HTTP port (the same port as the
 control WebSocket). Behind a Web Session it shows the Soloist WebSocket details and
-current (non-secret) configuration, links to Snapweb, lists Webhooks and their Webhook
-Status, edits the Relay and shows its live connection status, gives playback status and
-basic controls, and edits the Overlay Config. It never renders secrets — only whether
-each is set.
+current (non-secret) configuration, links to Snapweb, lists and configures Webhooks,
+edits the Relay and shows its live connection status, gives playback status and basic
+controls, and edits the Overlay Config. A top-right Menu holds the light/dark toggle,
+logout, a link to the Debug Page, and live status entries (Soloist, Client Count, Relay,
+Webhook Status). It never renders secrets — only whether each is set.
 _Avoid_: dashboard, admin panel, control socket (that is the Soloist WebSocket).
+
+**Menu** (Landing Page):
+The top-right dropdown in the Landing Page's top bar. Holds the light/dark toggle, a
+link to the Debug Page, logout, and — below a divider — live status entries: Soloist
+(process/link/login), Client Count, Relay connection, and Webhook Status. Its trigger
+carries a worst-of-state badge dot so a problem is visible without opening it. The status
+entries are fed by the Proxy Status frame over the App-Control WebSocket, so they update
+without polling.
+_Avoid_: navbar (that is the page-tab row), settings.
+
+**Debug Page** (Landing Page):
+An operator-only Landing Page view for diagnostics. Shows three things live: the pure
+Soloist→downstream frame stream (output only — no client input, no Proxy-originated
+frames), the list of connected Downstream Clients (each with remote address, tier, auth
+method, uptime, and user-agent), and the Webhook Delivery History. All of it arrives over
+the App-Control WebSocket.
+_Avoid_: console, admin panel.
 
 **Web Session**:
 A signed, HttpOnly cookie proving a browser logged in to the Landing Page with the
@@ -163,11 +181,46 @@ Token into the served Lyrics Overlay HTML — the overlay never reads the Config
 _Avoid_: settings.
 
 **Webhook Status**:
-Runtime, in-memory delivery stats the Hub records per Webhook destination as it fires:
-last HTTP status, last delivery time, success/failure counts, last error. Shown on the
-Landing Page next to the configured Webhooks. Reset on restart; it is observed delivery
-history, not an active health probe.
+The single most-recent Webhook delivery outcome (last HTTP status and when), surfaced as
+a live entry in the Menu. Derived from the newest entry of the Webhook Delivery History.
+Reset on restart; observed delivery history, not an active health probe.
 _Avoid_: Webhook (that is the outbound POST itself), health check.
+
+**Webhook Delivery History**:
+A runtime, in-memory ring buffer of the last ten Webhook deliveries the Hub records as it
+fires, shown on the Debug Page. Each entry holds the event type, destination URL, HTTP
+status, round-trip time, request headers (with the `Authorization` secret redacted),
+response headers, and response body (size-capped). Lost on restart; best-effort, like the
+Webhook itself.
+_Avoid_: Webhook Status (that is only the newest entry's outcome), log, audit trail.
+
+**Client Count**:
+The number of Downstream Clients currently connected to the Proxy (control and read-only
+tiers), including the viewer's own browser connection. A live Menu entry; the Debug Page
+lists the same connections in full. Debug Subscribers are not counted.
+_Avoid_: connections (generic — this excludes the App-Control WebSocket and the Relay).
+
+**App-Control WebSocket**:
+A second, session-gated WebSocket the Landing Page opens alongside the Soloist data
+stream — the Proxy's own operator channel, kept strictly separate so the Soloist data
+stream stays pure (Soloist frames verbatim, auth only). It always carries the Proxy
+Status frame; a Debug Page additionally subscribes to the live frame mirror, Client list,
+and Webhook Delivery History over it. Only a browser holding a Web Session may open it.
+_Avoid_: Soloist data stream / control WebSocket (that is the `/` Downstream Client
+stream), Relay (an outbound bridge, not an operator channel).
+
+**Debug Subscriber**:
+A connection on the App-Control WebSocket. It observes (Proxy Status, and on request the
+frame mirror, Client list, and Webhook Delivery History) but is never a Downstream Client:
+it is not counted in the Client Count, never appears in the Client list, and can never
+send a frame to the Soloist WebSocket.
+_Avoid_: Downstream Client (that consumes the Soloist data stream and may hold control).
+
+**Proxy Status**:
+A Proxy-originated telemetry frame pushed periodically over the App-Control WebSocket
+(never over the Soloist data stream): Soloist process/link/login state, Client Count,
+Relay status, and the newest Webhook Status. It feeds the Menu's status entries and badge.
+_Avoid_: Webhook Status (one field of it), health check (this is pushed state, not a probe).
 
 **Snapweb**:
 Snapcast's own built-in web UI, served by Snapserver on its web port (`1780`) in the
