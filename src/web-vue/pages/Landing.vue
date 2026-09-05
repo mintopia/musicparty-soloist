@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { usePlayback } from "../composables/usePlayback";
 import { fmtTime } from "../lib/wire";
 import Marquee from "../components/Marquee.vue";
-import { PhShuffle, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhRepeat, PhRepeatOnce, PhSpeakerSimpleHigh } from "@phosphor-icons/vue";
+import { PhShuffle, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhRepeat, PhRepeatOnce, PhSpeakerSimpleHigh, PhVinylRecord } from "@phosphor-icons/vue";
 
 // Now-playing hero + up-next queue, driven live by usePlayback (control WS). Ported from
 // buildNow/renderNowPlaying/renderQueue in src/web/app.js — every control sends the same
@@ -60,7 +60,7 @@ const repeatTitle = computed(() =>
             <Marquee class="title" :text="track ? track.title || 'Untitled' : 'Nothing playing'" />
             <div class="artist">{{ track ? [track.artist, track.album].filter(Boolean).join(" — ") || "—" : "—" }}</div>
             <div class="row chips">
-              <span v-if="track && track.album" class="hchip">◆ {{ track.album }}</span>
+              <span v-if="track && track.album" class="hchip"><PhVinylRecord :size="16" weight="fill" />{{ track.album }}</span>
             </div>
           </div>
         </div>
@@ -168,7 +168,7 @@ const repeatTitle = computed(() =>
 }
 .artist { color: var(--h-fg2); font-size: 15px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chips { gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-.hchip { font-size: 12px; font-weight: 600; color: var(--h-fg2); background: rgba(255,255,255,.10); border-radius: 20px; padding: 4px 11px; }
+.hchip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--h-fg2); background: rgba(255,255,255,.10); border-radius: 20px; padding: 4px 11px; }
 
 .prog-wrap { margin-top: 24px; }
 .bar { height: 5px; border-radius: 4px; background: var(--h-track); position: relative; cursor: pointer; }
