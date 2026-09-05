@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
+import LoadingState from "../../components/LoadingState.vue";
 import TextField from "../../components/TextField.vue";
 import SecretRow from "../../components/SecretRow.vue";
 
@@ -31,7 +32,7 @@ const pill = computed(() => {
 </script>
 
 <template>
-  <div v-if="!loaded" class="lbl">Loading…</div>
+  <LoadingState v-if="!loaded" />
   <SectionCard
     v-else
     title="WebSocket Relay"

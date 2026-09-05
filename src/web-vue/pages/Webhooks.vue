@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useConfig } from "../composables/useConfig";
 import SecretRow from "../components/SecretRow.vue";
 import SectionCard from "../components/SectionCard.vue";
+import LoadingState from "../components/LoadingState.vue";
 
 // Soloist state events that fire webhooks (proxy.ts STATE_EVENTS), ordered by usefulness.
 const WEBHOOK_EVENTS = [
@@ -52,7 +53,7 @@ function addOverride() {
 <template>
   <div class="col">
     <SectionCard title="Webhooks" subtitle="Fire an HTTP request to an external service on Soloist state events.">
-      <p v-if="!loaded || !config.webhooks" class="lbl">Loading…</p>
+      <LoadingState v-if="!loaded || !config.webhooks" />
       <template v-else>
         <div class="top">
           <div class="grow">

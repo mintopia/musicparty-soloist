@@ -4,6 +4,7 @@ import { useConfig } from "../composables/useConfig";
 import { usePlayback } from "../composables/usePlayback";
 import { mountPreview, currentIndex, fetchSyncedLyrics, type LyricLine } from "../lib/overlay-engine";
 import OvColour from "../components/OvColour.vue";
+import LoadingState from "../components/LoadingState.vue";
 import { PhTextAlignLeft, PhTextAlignCenter, PhTextAlignRight, PhAlignTop, PhAlignCenterHorizontal, PhAlignBottom } from "@phosphor-icons/vue";
 
 // Lyrics tab: the authenticated Overlay Config editor + live preview. Ported from the
@@ -19,7 +20,7 @@ interface OverlayCfg {
   fxIntensity: number; fxDurMs: number; alignment: string; anchor: string; lineCount: number; timingOffsetMs: number;
 }
 
-const { config, loaded } = useConfig();
+const { config } = useConfig();
 const { state, positionMs } = usePlayback();
 
 // The shared reactive config is populated async by load(); overlay is absent until then.
@@ -280,6 +281,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         </div>
       </div>
       </template>
+      <LoadingState v-else />
 
       <!-- OBS output -->
       <div class="obs">
