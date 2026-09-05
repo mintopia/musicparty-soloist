@@ -1,11 +1,12 @@
 // Fronts Soloist's unauthenticated localhost-only control WS with token auth (ADR-0001).
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
 import type { SoloistControl } from "./supervisor.js";
-import { checkAuth, presentedToken, sameOrigin } from "./auth.js";
+import { sameOrigin, resolveAuth, type ClientAuth } from "./auth.js";
 import { attachWebhooks, STATE_EVENTS } from "./webhooks.js";
 import { SoloistRelay, type RelayStatus } from "./relay.js";
 import { handleWebRequest } from "./web.js";
@@ -24,6 +25,15 @@ export interface UpstreamFrame {
   type: string;
   message: Record<string, unknown>;
   raw: string;
+}
+
+export interface ClientMeta {
+  id: string;
+  remoteAddr: string;
+  tier: "control" | "readonly";
+  auth: ClientAuth;
+  connectedAt: number;
+  userAgent: string;
 }
 
 export type FrameObserver = (frame: UpstreamFrame) => void;
@@ -55,8 +65,7 @@ export class SoloistHub {
   // Resolved live on each (re)connect so a soloist_ws change applies after a
   // Soloist restart without restarting the Proxy.
   private urlFn: () => string;
-  private clients = new Set<WebSocket>();
-  private readonlyClients = new WeakSet<WebSocket>();
+  private clients = new Map<WebSocket, ClientMeta>();
   private latestState = new Map<string, UpstreamFrame>();
   private observers = new Set<FrameObserver>();
   private connectFn: (() => void) | null = null;
@@ -98,14 +107,13 @@ export class SoloistHub {
   // e.g. live overlay-config updates so open overlays restyle on save.
   broadcastMessage(obj: Record<string, unknown>): void {
     const raw = JSON.stringify(obj);
-    for (const client of this.clients) {
+    for (const client of this.clients.keys()) {
       if (client.readyState === WebSocket.OPEN) client.send(raw);
     }
   }
 
-  register(client: WebSocket, opts: { readOnly?: boolean } = {}): void {
-    this.clients.add(client);
-    if (opts.readOnly) this.readonlyClients.add(client);
+  register(client: WebSocket, meta: ClientMeta): void {
+    this.clients.set(client, meta);
     for (const frame of this.latestState.values()) {
       if (client.readyState === WebSocket.OPEN) client.send(frame.raw);
     }
@@ -113,11 +121,10 @@ export class SoloistHub {
 
   unregister(client: WebSocket): void {
     this.clients.delete(client);
-    this.readonlyClients.delete(client);
   }
 
   async forward(client: WebSocket, data: RawData, isBinary: boolean): Promise<void> {
-    if (this.readonlyClients.has(client)) return; // read-only tier never reaches upstream
+    if (this.clients.get(client)?.tier === "readonly") return; // read-only tier never reaches upstream
     const ac = new AbortController();
     const timeout = sleep(HUB_READY_TIMEOUT * 1000, "timeout" as const, { signal: ac.signal }).catch(
       () => "aborted" as const,
@@ -146,13 +153,32 @@ export class SoloistHub {
   }
 
   private broadcast(data: RawData, isBinary: boolean): void {
-    for (const client of this.clients) {
+    for (const client of this.clients.keys()) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(data, { binary: isBinary });
       } else {
         this.clients.delete(client);
       }
     }
+  }
+
+  clientCount(): number {
+    return this.clients.size;
+  }
+
+  clientList(): ClientMeta[] {
+    return [...this.clients.values()];
+  }
+
+  get upstreamConnected(): boolean {
+    return this.conn?.readyState === WebSocket.OPEN;
+  }
+
+  // null while upstream is down (state is stale); otherwise the last auth_state.logged_in.
+  // latestState is intentionally NOT cleared on disconnect (its replay role is preserved).
+  loggedIn(): boolean | null {
+    if (!this.upstreamConnected) return null;
+    return this.latestState.get("auth_state")?.message.logged_in === true;
   }
 
   private signalWake(): void {
@@ -262,23 +288,32 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   });
 
   server.on("upgrade", (req, socket, head) => {
-    const tier = checkAuth(req, cfg);
+    const { tier, auth } = resolveAuth(req, cfg);
     if (tier === "none") {
       log("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
       socket.destroy();
       return;
     }
-    // A cookie-authed (tokenless) upgrade must be same-origin, or a malicious page could
-    // ride the ambient session cookie into full control (cross-site WebSocket hijacking).
-    if (presentedToken(req) === null && !sameOrigin(req)) {
+    // A cookie-authed upgrade must be same-origin, or a malicious page could ride the
+    // ambient session cookie into full control (cross-site WebSocket hijacking). Keyed on
+    // the derived auth kind, not token presence: a bogus token alongside a valid cookie
+    // still resolves to session-cookie and must not slip past this gate.
+    if (auth === "session-cookie" && !sameOrigin(req)) {
       log("rejected cookie upgrade from %s: cross-origin", req.socket.remoteAddress);
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (client) => {
-      hub.register(client, { readOnly: tier === "readonly" });
+      hub.register(client, {
+        id: randomUUID(),
+        remoteAddr: req.socket.remoteAddress ?? "",
+        tier,
+        auth: auth as ClientAuth,
+        connectedAt: Date.now(),
+        userAgent: req.headers["user-agent"] ?? "",
+      });
       client.on("message", (data, isBinary) => hub.forward(client, data, isBinary));
       client.on("close", () => hub.unregister(client));
       client.on("error", () => hub.unregister(client));
