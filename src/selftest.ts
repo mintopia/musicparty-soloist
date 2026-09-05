@@ -355,22 +355,37 @@ await test("deferred external-resolve promise", async () => {
   assert.doesNotThrow(() => d.resolve(), "a second resolve() is a harmless no-op");
 });
 
-// makeLog: builds a scoped logger that prefixes an ISO timestamp + `soloist.<scope>` before
-// the message and forwards any extra args through to console.log unchanged.
+// makeLog: builds a scoped logger that prefixes an ISO timestamp + `soloist.<scope>` +
+// level before the message and forwards any extra args through unchanged. info (the bare
+// call and .info) goes to console.log; warn/error go to console.error.
 await test("makeLog scoped, timestamped, forwards args", async () => {
-  const calls: unknown[][] = [];
-  const orig = console.log;
-  console.log = (...a: unknown[]) => { calls.push(a); };
+  const out: unknown[][] = [];
+  const err: unknown[][] = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...a: unknown[]) => { out.push(a); };
+  console.error = (...a: unknown[]) => { err.push(a); };
   try {
     const log = makeLog("relay");
     const extra = { detail: 1 };
     log("hello", extra, 42);
-    assert.equal(calls.length, 1, "one console.log per call");
-    const [line, ...rest] = calls[0] as [string, ...unknown[]];
-    assert.match(line, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z soloist\.relay hello$/, "ISO timestamp + soloist.<scope> + message");
+    assert.equal(out.length, 1, "one console.log per info call");
+    const [line, ...rest] = out[0] as [string, ...unknown[]];
+    assert.match(line, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z soloist\.relay info hello$/, "ISO timestamp + soloist.<scope> + info level + message");
     assert.deepEqual(rest, [extra, 42], "extra args forwarded through unchanged");
+
+    log.warn("careful %s", "now");
+    log.error("broke", extra);
+    assert.equal(out.length, 1, "warn/error do not go to stdout");
+    assert.equal(err.length, 2, "warn and error both go to stderr");
+    assert.match(err[0][0] as string, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z soloist\.relay warn careful %s$/, "warn level tag");
+    assert.match(err[1][0] as string, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z soloist\.relay error broke$/, "error level tag");
+    assert.deepEqual(err[1].slice(1), [extra], "error forwards extra args");
+
+    assert.equal(log.info, log, "bare log is the info logger");
   } finally {
-    console.log = orig;
+    console.log = origLog;
+    console.error = origErr;
   }
 });
 

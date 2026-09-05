@@ -184,7 +184,7 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     } catch (err) {
       if (signal.aborted) throw new Aborted();
       const { sleep: waitS, next } = backoffStep(backoff, 0);
-      log("soloist acquisition failed (%s); retrying in %ss", (err as Error).message, waitS);
+      log.error("soloist acquisition failed (%s); retrying in %ss", (err as Error).message, waitS);
       control?.setState("backoff");
       try {
         await sleep(waitS * 1000, undefined, { signal });
@@ -235,7 +235,7 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
       continue;
     }
     const { sleep: waitS, next } = backoffStep(backoff, ran);
-    log("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
+    log.warn("soloist exited with code %d after %ds; restarting in %ss", code, Math.round(ran), waitS);
     control?.setState("backoff");
     if (control) await control.backoffSleep(waitS * 1000, signal);
     else await sleep(waitS * 1000);

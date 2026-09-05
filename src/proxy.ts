@@ -65,7 +65,7 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   hub.onConnect(() => (state.fired = false));
   hub.observe((frame) => {
     if (!cfg.autoplay) return;
-    if (frame.type === "error") log("autoplay: upstream error frame: %s", frame.raw);
+    if (frame.type === "error") log.error("autoplay: upstream error frame: %s", frame.raw);
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
     log("autoplay: logged in, injecting activate then play");
@@ -144,7 +144,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     // origin (no tokens). Registered as a Debug Subscriber, never a Downstream Client.
     if (path === APP_CONTROL_PATH) {
       if (!appControlAllowed(req, cfg)) {
-        log("rejected app-control upgrade from %s: no session or cross-origin", req.socket.remoteAddress);
+        log.warn("rejected app-control upgrade from %s: no session or cross-origin", req.socket.remoteAddress);
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
         socket.destroy();
         return;
@@ -154,7 +154,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     }
     const { tier, auth } = resolveAuth(req, cfg);
     if (tier === "none") {
-      log("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
+      log.warn("rejected connection from %s: bad/missing token", req.socket.remoteAddress);
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nUnauthorized\n");
       socket.destroy();
       return;
@@ -164,7 +164,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     // the derived auth kind, not token presence: a bogus token alongside a valid cookie
     // still resolves to session-cookie and must not slip past this gate.
     if (auth === "session-cookie" && !sameOrigin(req)) {
-      log("rejected cookie upgrade from %s: cross-origin", req.socket.remoteAddress);
+      log.warn("rejected cookie upgrade from %s: cross-origin", req.socket.remoteAddress);
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden\n");
       socket.destroy();
       return;
@@ -198,17 +198,17 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   });
 
   const hubRun = hub.run();
-  hubRun.catch((e) => log("hub crashed: %s", (e as Error).message));
+  hubRun.catch((e) => log.error("hub crashed: %s", (e as Error).message));
 
   const relayRun = relay.run();
-  relayRun.catch((e) => log("relay crashed: %s", (e as Error).message));
+  relayRun.catch((e) => log.error("relay crashed: %s", (e as Error).message));
 
   // Docker only (ADR-0011/0015): the Snapcast + hardware fan-out and its sink cache. In
   // standalone there is no soloist-sink to reconcile — Soloist outputs to its device direct.
   if (isDockerMode()) {
     // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.
     // Fire-and-forget — it waits/retries for target nodes and must not block listen.
-    void reconcileOutputs(cfg).catch((e) => log("boot reconcile failed: %s", (e as Error).message));
+    void reconcileOutputs(cfg).catch((e) => log.error("boot reconcile failed: %s", (e as Error).message));
     // Keep the Audio page's sink list warm so it paints populated (see startSinkPolling).
     startSinkPolling(cfg);
   }

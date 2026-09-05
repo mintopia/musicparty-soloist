@@ -120,7 +120,7 @@ export class AppControl {
         try {
           hook(stream, (data) => this.deliver(sub, stream, JSON.stringify({ stream, data })));
         } catch (err) {
-          log("subscribe hook threw: %s", (err as Error).message);
+          log.error("subscribe hook threw: %s", (err as Error).message);
         }
       }
     }
@@ -150,7 +150,7 @@ export class AppControl {
     if (sub.ws.readyState !== WebSocket.OPEN) return;
     const buffered = sub.ws.bufferedAmount;
     if (buffered > BUFFER_CLOSE_BYTES) {
-      log("closing slow debug subscriber: %d bytes buffered", buffered);
+      log.warn("closing slow debug subscriber: %d bytes buffered", buffered);
       this.close(sub, 1013, "slow consumer");
       return;
     }

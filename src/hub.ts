@@ -132,7 +132,7 @@ export class SoloistHub {
         try {
           obs(frame);
         } catch (err) {
-          log("frame observer error: %s", (err as Error).message);
+          log.error("frame observer error: %s", (err as Error).message);
         }
       }
     }
@@ -197,7 +197,7 @@ export class SoloistHub {
             try {
               this.connectFn?.();
             } catch (err) {
-              log("connect observer error: %s", (err as Error).message);
+              log.error("connect observer error: %s", (err as Error).message);
             }
           });
           conn.on("message", (data, isBinary) => this.onUpstream(data, isBinary));
@@ -205,13 +205,13 @@ export class SoloistHub {
           conn.on("close", () => resolve());
         });
       } catch (err) {
-        log("soloist upstream %s error: %s", url, (err as Error).message);
+        log.error("soloist upstream %s error: %s", url, (err as Error).message);
       } finally {
         this.conn = null;
         this.ready = deferred();
       }
       if (this.stopped) break;
-      log("soloist upstream down; reconnecting in %ss", backoff);
+      log.warn("soloist upstream down; reconnecting in %ss", backoff);
       // Backoff, but wake early on stop() so shutdown never waits out the cap.
       await Promise.race([sleep(backoff * 1000), this.wake.promise]);
       backoff = Math.min(backoff * 2, HUB_BACKOFF_MAX);
