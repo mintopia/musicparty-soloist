@@ -2092,9 +2092,18 @@ await test("first-run setup gating", async () => {
   assert.equal(r.headers.location, "/setup?error=1", "mismatch -> setup error");
   assert.equal(webConfigured(scfg), false, "mismatch did not set creds");
 
+  // POST /setup with a matching but too-short password (UX-M8): server rejects it even
+  // though the client guard could be bypassed, and creds stay unset.
+  r = fakeRes();
+  call(r, setupReq("POST", "/setup", "username=admin&password=short&confirm=short"), scfg);
+  await r.done;
+  assert.equal(r.statusCode, 302, "short password redirects");
+  assert.equal(r.headers.location, "/setup?error=1", "short password -> setup error");
+  assert.equal(webConfigured(scfg), false, "short password did not set creds");
+
   // POST /setup with valid input: sets creds, writes file, logs the operator straight in.
   r = fakeRes();
-  call(r, setupReq("POST", "/setup", "username=dj&password=hunter2&confirm=hunter2"), scfg);
+  call(r, setupReq("POST", "/setup", "username=dj&password=hunter2x&confirm=hunter2x"), scfg);
   await r.done;
   assert.equal(r.statusCode, 302, "valid setup redirects");
   assert.equal(r.headers.location, "/", "valid setup -> logged in at /");
@@ -2103,11 +2112,11 @@ await test("first-run setup gating", async () => {
   assert.equal(verifySession(String(setupCookie).slice(SESSION_COOKIE.length + 1).split(";")[0], scfg.web.sessionSecret, scfg.web.password), "dj", "setup session cookie authenticates the new user");
   assert.equal(scfg.web.username, "dj", "username set from setup");
   assert.ok(isPasswordHashed(scfg.web.password), "setup password stored hashed, not cleartext");
-  assert.ok(verifyPassword("hunter2", scfg.web.password), "setup password verifies");
+  assert.ok(verifyPassword("hunter2x", scfg.web.password), "setup password verifies");
   assert.equal(webConfigured(scfg), true, "creds now configured");
   const savedSetup = loadConfig(setupCfgPath);
   assert.equal(savedSetup.web.username, "dj", "setup creds persisted to file");
-  assert.ok(isPasswordHashed(savedSetup.web.password) && verifyPassword("hunter2", savedSetup.web.password), "setup password persisted hashed + verifies");
+  assert.ok(isPasswordHashed(savedSetup.web.password) && verifyPassword("hunter2x", savedSetup.web.password), "setup password persisted hashed + verifies");
   assert.equal(soloistReady(scfg), false, "creds only: soloist still not ready (args absent)");
 
   // Setup done: the Setup Page is no longer reachable.
@@ -2130,7 +2139,7 @@ await test("setup TOCTOU guard", async () => {
   const racePath = join(raceDir, "config.yaml");
   const raceCfg = defaultConfig();
   raceCfg.web.sessionSecret = "sess";
-  const body = "username=dj&password=hunter2&confirm=hunter2";
+  const body = "username=dj&password=hunter2x&confirm=hunter2x";
 
   const r1 = fakeRes();
   const r2 = fakeRes();

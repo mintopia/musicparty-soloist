@@ -206,6 +206,10 @@ async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cf
 // exactly one, but the latch is keyed so tests covering several don't collide.
 const setupClaimed = new Set<string>();
 
+// Minimum admin-password length (UX-M8). The client mirrors this; the server is the
+// authority since form JS can be bypassed.
+export const MIN_PASSWORD_LENGTH = 8;
+
 // First-run setup: set web creds only, persist, log the operator in. Runs only while
 // web creds are unset (gated in handleWebRequest), so it never overwrites live creds.
 async function handleSetup(
@@ -225,7 +229,7 @@ async function handleSetup(
   const username = (form.get("username") ?? "").trim();
   const password = form.get("password") ?? "";
   const confirm = form.get("confirm") ?? "";
-  if (username === "" || password === "" || password !== confirm) {
+  if (username === "" || password.length < MIN_PASSWORD_LENGTH || password !== confirm) {
     redirect(res, "/setup?error=1");
     return;
   }
