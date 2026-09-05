@@ -481,7 +481,9 @@ export function handleWebRequest(
     return true;
   }
 
-  if (APP_PATHS.has(path) && method === "GET") {
+  // Serve the SPA shell for top-level app paths and any Settings detail deep-link
+  // (master-detail nests /settings/<section>), so a hard reload or bookmark resolves.
+  if ((APP_PATHS.has(path) || path.startsWith("/settings/")) && method === "GET") {
     if (!webConfigured(cfg)) return failClosed(res), true;
     if (!sessionUser(req, cfg)) return redirect(res, "/login"), true;
     serveAsset(res, "/index.html");

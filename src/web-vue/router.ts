@@ -1,18 +1,33 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 import Landing from "./pages/Landing.vue";
-import Audio from "./pages/Audio.vue";
-import Webhooks from "./pages/Webhooks.vue";
 import Lyrics from "./pages/Lyrics.vue";
 import Settings from "./pages/Settings.vue";
+import Audio from "./pages/Audio.vue";
+import Webhooks from "./pages/Webhooks.vue";
+import SettingsSoloist from "./pages/settings/SettingsSoloist.vue";
+import SettingsSnapcast from "./pages/settings/SettingsSnapcast.vue";
+import SettingsRelay from "./pages/settings/SettingsRelay.vue";
+import SettingsWeb from "./pages/settings/SettingsWeb.vue";
 
-// Paths mirror web.ts APP_PATHS; unknown paths fall back to Now. History mode replaces
-// the old hand-rolled pushState/popstate, preserving deep-links and back/forward.
+// Top-level surfaces: Now Playing · Lyrics · Settings · Debug. Audio and Webhooks moved
+// under Settings as detail pages (master-detail); Snapweb lives in the menu. Paths mirror
+// web.ts APP_PATHS; unknown paths fall back to Now. History mode preserves deep-links.
 const routes: RouteRecordRaw[] = [
   { path: "/", name: "now", component: Landing },
-  { path: "/audio", name: "audio", component: Audio },
-  { path: "/webhooks", name: "webhooks", component: Webhooks },
   { path: "/lyrics", name: "lyrics", component: Lyrics },
-  { path: "/settings", name: "settings", component: Settings },
+  {
+    path: "/settings",
+    component: Settings,
+    children: [
+      { path: "", redirect: "/settings/soloist" },
+      { path: "soloist", name: "settings-soloist", component: SettingsSoloist },
+      { path: "audio", name: "settings-audio", component: Audio },
+      { path: "snapcast", name: "settings-snapcast", component: SettingsSnapcast },
+      { path: "webhooks", name: "settings-webhooks", component: Webhooks },
+      { path: "relay", name: "settings-relay", component: SettingsRelay },
+      { path: "web", name: "settings-web", component: SettingsWeb },
+    ],
+  },
   // Lazy so hljs + its theme CSS split into a Debug-only async chunk (ADR-0018), never
   // the main bundle.
   { path: "/debug", name: "debug", component: () => import("./pages/Debug.vue") },

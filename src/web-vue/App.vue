@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
+import { useRoute } from "vue-router";
+import { PhMusicNotesSimple } from "@phosphor-icons/vue";
 import { useConfig } from "./composables/useConfig";
 import { usePlayback } from "./composables/usePlayback";
 import { useAppControl } from "./composables/useAppControl";
@@ -19,19 +21,26 @@ const standalone = computed(() => cfg.summary.dockerMode === false);
 // (pre-load) as enabled so the link never flickers out on the existing container UI.
 const snapwebEnabled = computed(() => cfg.summary.snapweb !== false);
 
-const tabs = computed(() => {
-  const all = [
-    { to: "/", label: "Now Playing" },
-    { to: "/audio", label: "Audio" },
-    { to: "/webhooks", label: "Webhooks" },
-    { to: "/lyrics", label: "Lyrics" },
-    { to: "/settings", label: "Settings" },
-  ];
-  return standalone.value ? all.filter((t) => t.to !== "/audio") : all;
-});
+// Top-level surfaces. Audio + Webhooks now live inside Settings (master-detail); Debug is
+// promoted from the menu. `exact` keeps "/" from matching every nested route.
+const tabs = [
+  { to: "/", label: "Now Playing", exact: true },
+  { to: "/lyrics", label: "Lyrics" },
+  { to: "/settings", label: "Settings" },
+  { to: "/debug", label: "Debug" },
+];
+
+// Explicit active check: RouterLink's own active-class mis-handles the /settings child
+// redirect, so a section deep-link wouldn't light the Settings tab. Prefix-match instead.
+const route = useRoute();
+function isActive(t: { to: string; exact?: boolean }) {
+  return t.exact ? route.path === t.to : route.path === t.to || route.path.startsWith(t.to + "/");
+}
 
 // Snapweb (Snapcast web UI) runs on the deployment host's port 1780 (docker-compose).
+// Lives in the menu now, not the top bar.
 const snapwebUrl = `http://${location.hostname}:1780`;
+const showSnapweb = computed(() => !standalone.value && snapwebEnabled.value);
 
 // Save bar: hidden when clean/idle; "Saving…" mid-flight; "Unsaved changes" when dirty;
 // "Saved" briefly after a successful save.
@@ -55,13 +64,13 @@ onMounted(() => {
     <header class="topbar">
       <div class="brand">
         <div class="brandmark">
-          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+          <PhMusicNotesSimple :size="20" weight="bold" color="#fff" />
         </div>
         <div class="brandtxt">Soloist Proxy</div>
       </div>
 
       <nav class="nav">
-        <RouterLink v-for="t in tabs" :key="t.to" :to="t.to" class="tab" exact-active-class="act">
+        <RouterLink v-for="t in tabs" :key="t.to" :to="t.to" class="tab" :class="{ act: isActive(t) }">
           {{ t.label }}
         </RouterLink>
       </nav>
@@ -70,12 +79,7 @@ onMounted(() => {
 
       <MiniPlayer />
 
-      <a v-if="!standalone && snapwebEnabled" class="btn snapweb" :href="snapwebUrl" target="_blank" rel="noopener" title="Open Snapweb">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4M7 6v12M11 3v18M15 8v8M19 5v14"/></svg>
-        Snapweb
-      </a>
-
-      <AppMenu />
+      <AppMenu :nav-items="tabs" :snapweb-url="snapwebUrl" :show-snapweb="showSnapweb" />
     </header>
 
     <div v-if="cfg.summary.pendingRestart" class="banner">
@@ -129,7 +133,7 @@ onMounted(() => {
 .nav { display: flex; gap: 2px; flex: 0 0 auto; flex-wrap: nowrap; }
 .tab { font-size: 13px; font-weight: 600; color: var(--dim); padding: 8px 13px; border-radius: 9px; }
 .tab:hover { color: var(--txt); background: rgba(0, 0, 0, .03); }
-.tab.act { background: var(--ind-s); color: var(--ind); }
+.tab.act { background: var(--ind-s); color: var(--link); }
 
 .spacer { flex: 1; }
 .snapweb { text-decoration: none; }
@@ -160,8 +164,10 @@ onMounted(() => {
 .save-actions { display: flex; gap: 8px; }
 
 @media (max-width: 860px) {
-  .topbar { flex-wrap: wrap; gap: 8px 10px; padding: 8px 13px; }
-  .nav { order: 5; width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+  /* Mobile collapses to hamburger-only: the horizontal nav and mini-player drop out, the
+     menu carries the sections (App-Menu renders them below this breakpoint). */
+  .topbar { gap: 8px 10px; padding: 8px 13px; }
+  .nav { display: none; }
   .wrap { padding: 18px 15px; }
 }
 </style>

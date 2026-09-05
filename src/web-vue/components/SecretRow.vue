@@ -69,7 +69,7 @@ async function view() {
 <style scoped>
 .box { justify-content: space-between; }
 .box .pill { margin-right: auto; }
-.pill.set { background: var(--ind-s); color: var(--ind); }
+.pill.set { background: var(--ind-s); color: var(--link); }
 .pill.unset { background: var(--warn-s); color: var(--warn); }
 .bare {
   flex: 1; min-width: 0; border: none; background: transparent; padding: 0;
@@ -79,7 +79,7 @@ async function view() {
 .bare.mono { font-family: ui-monospace, monospace; font-size: 13px; }
 .linkbtn {
   font-size: 12px; white-space: nowrap; margin-left: 12px; border: none; background: none;
-  padding: 0; cursor: pointer; color: var(--ind); font-family: inherit;
+  padding: 0; cursor: pointer; color: var(--link); font-family: inherit;
 }
 .linkbtn:hover { color: var(--ind-h); }
 .iconbtn {

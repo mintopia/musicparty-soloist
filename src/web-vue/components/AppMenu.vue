@@ -1,13 +1,35 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, type Component } from "vue";
+import { useRoute } from "vue-router";
+import { PhList, PhPlayCircle, PhMicrophoneStage, PhGearSix, PhTerminal, PhBroadcast, PhArrowUpRight, PhSun, PhMoon, PhSignOut } from "@phosphor-icons/vue";
 import { useTheme } from "../composables/useTheme";
 import { useAppControl } from "../composables/useAppControl";
 import { usePlayback } from "../composables/usePlayback";
 import { badgeLevel, soloistLevel, relayLevel, webhookLevel, soloistText, type BadgeLevel } from "../lib/menuStatus";
 
+defineProps<{
+  navItems: { to: string; label: string; exact?: boolean }[];
+  snapwebUrl: string;
+  showSnapweb: boolean;
+}>();
+
 const { theme, toggle } = useTheme();
 const ctl = useAppControl();
 const playback = usePlayback();
+
+// Icons for the mobile nav rows (top-nav is hidden < 860px, so the menu carries it).
+const NAV_ICONS: Record<string, Component> = {
+  "/": PhPlayCircle,
+  "/lyrics": PhMicrophoneStage,
+  "/settings": PhGearSix,
+  "/debug": PhTerminal,
+};
+
+// Prefix-match active state (RouterLink's own mis-handles the /settings child redirect).
+const route = useRoute();
+function isCurrent(n: { to: string; exact?: boolean }) {
+  return n.exact ? route.path === n.to : route.path === n.to || route.path.startsWith(n.to + "/");
+}
 
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
@@ -101,25 +123,40 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
       :aria-label="`Menu — status: ${BADGE_SUMMARY[badge]}`"
       @click="toggleMenu"
     >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      <PhList :size="18" weight="bold" />
       <span class="badge" :class="`lvl-${badge}`" aria-hidden="true"></span>
     </button>
 
     <div v-if="open" id="appmenu-panel" ref="panel" class="panel" aria-label="Menu">
+      <nav class="menu-nav" aria-label="Sections">
+        <RouterLink
+          v-for="n in navItems" :key="n.to" data-menuitem class="item nav-item" :to="n.to"
+          :class="{ cur: isCurrent(n) }" @click="closeMenu()"
+        >
+          <component :is="NAV_ICONS[n.to]" :size="16" weight="bold" />
+          <span>{{ n.label }}</span>
+        </RouterLink>
+        <div class="divider" role="separator"></div>
+      </nav>
+
+      <a
+        v-if="showSnapweb" data-menuitem class="item" :href="snapwebUrl"
+        target="_blank" rel="noopener" @click="closeMenu()"
+      >
+        <PhBroadcast :size="16" weight="bold" />
+        <span>Snapweb</span>
+        <PhArrowUpRight class="ext" :size="13" weight="bold" />
+      </a>
+
       <button data-menuitem class="item" type="button" @click="toggle">
-        <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-        <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <PhSun v-if="theme === 'dark'" :size="16" weight="bold" />
+        <PhMoon v-else :size="16" weight="bold" />
         <span>{{ theme === "dark" ? "Light mode" : "Dark mode" }}</span>
       </button>
 
-      <RouterLink data-menuitem class="item" to="/debug" @click="closeMenu()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v3M16 2v3M9 15h6M12 12v6"/><rect x="4" y="6" width="16" height="14" rx="3"/></svg>
-        <span>Debug</span>
-      </RouterLink>
-
       <form method="POST" action="/logout" class="logout-form">
         <button data-menuitem class="item" type="submit">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <PhSignOut :size="16" weight="bold" />
           <span>Log out</span>
         </button>
       </form>
@@ -156,10 +193,10 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
 .appmenu { position: relative; flex: 0 0 auto; }
 
 .trigger {
-  position: relative; width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--line2);
-  background: var(--card); color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  position: relative; width: 36px; height: 36px; border-radius: 9px; border: none;
+  background: transparent; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
 }
-.trigger:hover { border-color: var(--ind); color: var(--ind); }
+.trigger:hover { color: var(--ind); background: rgba(125, 125, 135, .12); }
 
 .badge {
   position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%;
@@ -181,9 +218,17 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
   font: 600 13px var(--sans); color: var(--txt); text-decoration: none; text-align: left;
 }
 .item svg { color: var(--dim); flex: 0 0 auto; }
-.item:hover { background: rgba(0, 0, 0, .04); }
+.item:hover { background: rgba(125, 125, 135, .14); }
 .item:hover svg { color: var(--ind); }
 .logout-form { margin: 0; }
+
+/* Section nav lives in the menu only on mobile (< 860px); desktop uses the top bar. */
+.menu-nav { display: none; }
+@media (max-width: 860px) { .menu-nav { display: block; } }
+.nav-item.cur { background: var(--ind-s); color: var(--link); }
+.nav-item.cur svg { color: var(--link); }
+.item .ext { margin-left: auto; color: var(--faint); }
+.item:hover .ext { color: var(--ind); }
 
 .divider { height: 1px; background: var(--line); margin: 6px 4px; }
 

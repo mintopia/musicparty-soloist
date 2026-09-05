@@ -4,6 +4,7 @@ import { useConfig } from "../composables/useConfig";
 import { usePlayback } from "../composables/usePlayback";
 import { mountPreview, currentIndex, fetchSyncedLyrics, type LyricLine } from "../lib/overlay-engine";
 import OvColour from "../components/OvColour.vue";
+import { PhTextAlignLeft, PhTextAlignCenter, PhTextAlignRight, PhAlignTop, PhAlignCenterHorizontal, PhAlignBottom } from "@phosphor-icons/vue";
 
 // Lyrics tab: the authenticated Overlay Config editor + live preview. Ported from the
 // vanilla overlay-panel.js (ADR-0014). Every edit mutates config.overlay, which the
@@ -45,15 +46,14 @@ const OV_MOTION: [string, string][] = [["Slide + fade", "slide"], ["Crossfade", 
 const OV_EFFECTS = ["none", "glow", "shimmer", "rainbow", "sparkles", "wipe", "neon", "glitch", "pulse"];
 const OV_LINES = ["1", "3", "5"];
 const ALIGN_OPTS = [
-  { value: "left", title: "Left", icon: "M4 6h16M4 12h10M4 18h13" },
-  { value: "center", title: "Center", icon: "M4 6h16M7 12h10M6 18h12" },
-  { value: "right", title: "Right", icon: "M4 6h16M10 12h10M7 18h13" },
+  { value: "left", title: "Left", icon: PhTextAlignLeft },
+  { value: "center", title: "Center", icon: PhTextAlignCenter },
+  { value: "right", title: "Right", icon: PhTextAlignRight },
 ];
-const anchorIcon = (y: number) => `<rect x="3" y="3" width="18" height="18" rx="2.5"/><rect x="7" y="${y}" width="10" height="3" rx="1.5" fill="currentColor" stroke="none"/>`;
 const ANCHOR_OPTS = [
-  { value: "top", title: "Top", icon: anchorIcon(6) },
-  { value: "center", title: "Center", icon: anchorIcon(10.5) },
-  { value: "bottom", title: "Bottom", icon: anchorIcon(15) },
+  { value: "top", title: "Top", icon: PhAlignTop },
+  { value: "center", title: "Center", icon: PhAlignCenterHorizontal },
+  { value: "bottom", title: "Bottom", icon: PhAlignBottom },
 ];
 type OvTab = "layout" | "text" | "motion";
 const TABS: [OvTab, string][] = [["layout", "Layout"], ["text", "Text"], ["motion", "Motion & FX"]];
@@ -203,7 +203,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
           <label class="flabel">Alignment</label>
           <div class="seg">
             <button v-for="opt in ALIGN_OPTS" :key="opt.value" type="button" :title="opt.title" :aria-label="opt.title" :class="{ on: o.alignment === opt.value }" @click="o.alignment = opt.value">
-              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="opt.icon" /></svg>
+              <component :is="opt.icon" :size="19" weight="bold" />
             </button>
           </div>
         </div>
@@ -211,8 +211,7 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
           <label class="flabel">Anchor</label>
           <div class="seg">
             <button v-for="opt in ANCHOR_OPTS" :key="opt.value" type="button" :title="opt.title" :aria-label="opt.title" :class="{ on: o.anchor === opt.value }" @click="o.anchor = opt.value">
-              <!-- opt.icon is a static developer constant (multi-path SVG markup), never user data — safe for v-html. -->
-              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="opt.icon"></svg>
+              <component :is="opt.icon" :size="19" weight="bold" />
             </button>
           </div>
         </div>

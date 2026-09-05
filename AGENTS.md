@@ -47,3 +47,9 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/do
 Web UI (`src/web/`) must follow `DESIGN.md` (Clean & Light, teal) and the mockups in
 `docs/design/` — lift token values verbatim; match the per-surface mockup. See
 `docs/design/README.md`.
+
+### Deploy to hardware
+
+The test Pi runs a locally-built `musicparty-soloist:test` image: rsync the working
+tree into `/opt/musicparty/build`, rebuild, then `docker compose up -d --force-recreate`.
+Connection and web creds come from `.hardware`. See `docs/agents/deploy.md`.

@@ -8,16 +8,22 @@ const props = defineProps<{ text: string }>();
 
 const clip = ref<HTMLElement | null>(null);
 const span = ref<HTMLElement | null>(null);
+// Edge-fade masks apply only while the text overflows, so short titles stay crisp and a
+// clipped long title reads as "there's more", not a hard cut.
+const overflowing = ref(false);
 
 function animate() {
   const c = clip.value, s = span.value;
   if (!c || !s) return;
   s.getAnimations().forEach((a) => a.cancel());
-  // Honor reduced-motion: leave the text static (clipped) rather than scroll it forever.
-  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
   s.style.transform = "translateX(0)";
+  const staticOverflow = s.scrollWidth - c.clientWidth;
+  overflowing.value = staticOverflow > 1;
+  // Honor reduced-motion: leave the text static (edge-faded) rather than scroll it forever.
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
   requestAnimationFrame(() => {
     const overflow = s.scrollWidth - c.clientWidth;
+    overflowing.value = overflow > 1;
     if (overflow <= 1) return;
     s.animate([
       { transform: "translateX(0)" },
@@ -42,10 +48,15 @@ onBeforeUnmount(() => window.removeEventListener("resize", onResize));
 </script>
 
 <template>
-  <span ref="clip" class="mq-clip"><span ref="span" class="mq">{{ text }}</span></span>
+  <span ref="clip" class="mq-clip" :class="{ over: overflowing }"><span ref="span" class="mq">{{ text }}</span></span>
 </template>
 
 <style scoped>
 .mq-clip { display: block; overflow: hidden; white-space: nowrap; }
 .mq { display: inline-block; will-change: transform; }
+/* Fade both clipped edges only while overflowing — a soft "more text here" cue. */
+.mq-clip.over {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 18px), transparent 100%);
+}
 </style>

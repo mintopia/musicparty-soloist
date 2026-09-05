@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { usePlayback } from "../composables/usePlayback";
 import { trackHasSyncedLyrics } from "../lib/lyrics";
 import Marquee from "./Marquee.vue";
+import { PhMicrophoneStage, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhSpeakerSimpleHigh, PhSpeakerSimpleX } from "@phosphor-icons/vue";
 
 // Top-bar mini-player. Ported from the #miniPlayer half of renderNowPlaying + wireStatic
 // (src/web/app.js): art/title/artist, play/prev/next, a volume popover, and the synced-
@@ -69,31 +70,26 @@ onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
       <div class="mpArtist">{{ track.artist || "—" }}</div>
     </div>
     <div v-if="hasLyrics" class="mpLyrics" title="Synced lyrics available for this track">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 10h13M4 14h8M4 18h11"/></svg>
+      <PhMicrophoneStage :size="14" weight="fill" />
     </div>
     <div class="mpctl">
       <button class="mpb" title="Previous" aria-label="Previous track" @click="sendCommand('skip_prev')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6L9 12l11 6z"/></svg>
+        <PhSkipBack :size="15" weight="fill" />
       </button>
       <button class="mpb mpplay" title="Play/Pause" :aria-label="state.playing ? 'Pause' : 'Play'" @click="sendCommand(state.playing ? 'pause' : 'play')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path v-if="state.playing" d="M6 5h4v14H6zM14 5h4v14h-4z"/>
-          <path v-else d="M8 5v14l11-7z"/>
-        </svg>
+        <PhPause v-if="state.playing" :size="16" weight="fill" />
+        <PhPlay v-else :size="16" weight="fill" />
       </button>
       <button class="mpb" title="Next" aria-label="Next track" @click="sendCommand('skip_next')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l11 6L4 18z"/></svg>
+        <PhSkipForward :size="15" weight="fill" />
       </button>
       <div class="mpvol">
         <button class="mpb" title="Volume" :aria-label="muted ? 'Unmute' : 'Volume'" @click="toggleVol">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M11 5 6 9H2v6h4l5 4z"/>
-            <template v-if="muted"><path d="M22 9l-6 6M16 9l6 6"/></template>
-            <template v-else><path d="M15.5 8.5a5 5 0 0 1 0 7"/></template>
-          </svg>
+          <PhSpeakerSimpleX v-if="muted" :size="15" weight="fill" />
+          <PhSpeakerSimpleHigh v-else :size="15" weight="fill" />
         </button>
         <div v-show="volOpen" class="mpVolPop" :style="volPos">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 5 6 9H2v6h4l5 4z"/></svg>
+          <PhSpeakerSimpleHigh :size="15" weight="fill" />
           <input class="mpVolRange" type="range" min="0" max="100" step="1" :value="localVol" @input="onVolInput" />
           <span class="mpVolVal">{{ localVol }}</span>
         </div>

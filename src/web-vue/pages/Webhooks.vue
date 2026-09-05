@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { useConfig } from "../composables/useConfig";
 import SecretRow from "../components/SecretRow.vue";
+import SectionCard from "../components/SectionCard.vue";
 
 // Soloist state events that fire webhooks (proxy.ts STATE_EVENTS), ordered by usefulness.
 const WEBHOOK_EVENTS = [
@@ -50,8 +51,7 @@ function addOverride() {
 
 <template>
   <div class="col">
-    <section class="card view">
-      <h1>Webhooks</h1>
+    <SectionCard title="Webhooks" subtitle="Fire an HTTP request to an external service on Soloist state events.">
       <p v-if="!loaded || !config.webhooks" class="lbl">Loading…</p>
       <template v-else>
         <div class="top">
@@ -85,12 +85,12 @@ function addOverride() {
           <button class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
         </div>
       </template>
-    </section>
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
-.col { display: flex; flex-direction: column; gap: 20px; max-width: 720px; margin: 0 auto; }
+.col { display: flex; flex-direction: column; gap: 20px; }
 .top { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
 .grow { flex: 1; }
 .delay { flex: 0 0 auto; width: 120px; }

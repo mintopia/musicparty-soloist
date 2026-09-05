@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from "vue";
 import { useConfig } from "../composables/useConfig";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
+import SectionCard from "../components/SectionCard.vue";
+import { PhBroadcast, PhSpeakerHifi } from "@phosphor-icons/vue";
 
 // Synthetic sentinel node.name for the Snapcast toggle (mirrors SNAPCAST_KEY in
 // src/pipewire.ts). Real PipeWire nodes never use it.
@@ -66,32 +68,21 @@ function setDelay(name: string, v: string) {
 </script>
 
 <template>
-  <div class="fcol">
-  <section class="card view">
-    <div class="head">
-      <span class="head-title">Audio outputs</span>
-      <div class="head-right">
-        <span v-if="refreshedLabel" class="stamp">{{ refreshedLabel }}</span>
-        <button class="btn" :disabled="refreshing" @click="refresh(true)">
-          {{ refreshing ? "Refreshing…" : "Refresh sinks" }}
-        </button>
-      </div>
-    </div>
+  <div>
+  <SectionCard title="Audio Outputs" subtitle="Route Soloist's stream to Snapcast or a hardware sink.">
+    <template #action>
+      <span v-if="refreshedLabel" class="stamp">{{ refreshedLabel }}</span>
+      <button class="btn" :disabled="refreshing" @click="refresh(true)">
+        {{ refreshing ? "Refreshing…" : "Refresh sinks" }}
+      </button>
+    </template>
 
     <div v-if="loaded && sinks.length" class="list">
       <div v-for="s in sinks" :key="s.name" class="out" :class="isOn(s) ? 'on' : 'off'">
         <div class="out-head">
           <div class="tile">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <template v-if="isSnap(s)">
-                <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 5v14" />
-              </template>
-              <template v-else>
-                <path d="M11 5 6 9H2v6h4l5 4z" />
-                <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                <path d="M19 5a9 9 0 0 1 0 14" />
-              </template>
-            </svg>
+            <PhBroadcast v-if="isSnap(s)" :size="19" weight="fill" />
+            <PhSpeakerHifi v-else :size="19" weight="fill" />
           </div>
           <div class="meta">
             <div class="name">{{ s.description }}</div>
@@ -120,14 +111,11 @@ function setDelay(name: string, v: string) {
 
     <p v-else-if="loaded && sinksLoaded" class="empty">No PipeWire sinks reported. Is the audio path up?</p>
     <p v-else class="empty">Loading…</p>
-  </section>
+  </SectionCard>
   </div>
 </template>
 
 <style scoped>
-.head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
-.head-title { font-family: var(--disp); font-size: 16px; font-weight: 700; }
-.head-right { display: flex; align-items: center; gap: 12px; }
 .stamp { font-size: 12px; color: var(--faint); white-space: nowrap; }
 .list { display: flex; flex-direction: column; gap: 10px; }
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PhMusicNotesSimple } from "@phosphor-icons/vue";
 import SiteFooter from "./SiteFooter.vue";
 
 // Shared chrome for the standalone auth entries (Login, Setup): centered card column,
@@ -12,7 +13,7 @@ defineProps<{ title: string }>();
     <div class="col">
       <div class="head">
         <div class="mark">
-          <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+          <PhMusicNotesSimple :size="26" weight="bold" color="#fff" />
         </div>
         <div class="title">{{ title }}</div>
       </div>

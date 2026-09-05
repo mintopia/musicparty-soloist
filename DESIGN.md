@@ -1,113 +1,143 @@
 # Design — Soloist Proxy
 
-Visual system for the Proxy's web surfaces: Landing Page, first-run Setup, Login, Lyrics
-Overlay. Direction: **Clean & Light** — warm off-white ground, teal accent, rounded cards,
-airy spacing; a calm, legible operator console (Operate mode), with restrained liquid-glass
-accents on the now-playing hero and the Setup/Login cards.
+Visual system for the Proxy's web console: **Now Playing**, **Lyrics**, **Settings**
+(master-detail), **Debug**, plus **Login**/**Setup** and the transparent **Lyrics Overlay**.
+It is an **Operate**-mode operator console — scanability, consistency, and native expectations
+outrank expression; brand lives in precise details.
 
-**This is the visual source of truth for `src/web/` — build to it.** Hi-fi mockups (one file
-per surface) live in `docs/design/mockups/`; see `docs/design/README.md` for which mockup maps
-to which ticket. Live canvas: https://claude.ai/code/artifact/81422f63-4fe6-437a-b7f6-240435f7f5b7
+Direction: a calm, legible console with **two committed themes**:
+
+- **Light — "Clean & Light":** warm off-white ground, teal accent, rounded cards, airy spacing.
+- **Dark — "Cold Glass":** a cold slate/ink ground under cyan/teal ambient blooms; data cards
+  are translucent glass that **lift** off the ground; the now-playing hero is a deep cold-ocean
+  panel. Deliberately cold (blue-cold), never warm charcoal.
+
+**This is the visual source of truth for `src/web-vue/` — build to it.** The SPA is a
+multi-page app (vue-router, history mode); the shipped implementation is authoritative for
+structure. The static mockups in `docs/design/mockups/` predate the master-detail redesign and
+are historical reference for tokens/mood only.
 
 ## Tokens
 
+Light on bare `:root`; dark redefines the same token names under `:root[data-theme="dark"]`
+(pre-paint bootstrap in every HTML shell — `index/login/setup.html` — sets `data-theme` from
+`localStorage['soloist-theme']` before first paint, so no theme flash and **all** surfaces,
+auth included, honor the choice).
+
 ```css
-:root{
-  /* ground */
-  --bg:#f6f6f4; --card:#ffffff; --sub:#fbfbf9; --line:#e9e9e5; --line2:#dcdcd7;
-  /* text */
-  --txt:#1b1b1a; --dim:#6d6d68; --faint:#9a9a94;
-  /* accent (teal) */
-  --ind:#0d9488; --ind-h:#0f766e; --ind-s:#e2f5f1;
-  /* status */
-  --ok:#16a34a; --ok-s:#eafaf0; --bad:#dc2626; --bad-s:#fdeaea;
-  --warn:#b45309; --warn-s:#fdf3e7;
-  /* type */
+:root {
+  /* ground (light) */
+  --bg:#edece8; --card:#ffffff; --sub:#fbfbf9; --line:#e9e9e5; --line2:#dcdcd7;
+  --txt:#1b1b1a; --dim:#6d6d68; --faint:#78776f;              /* --faint clears AA on labels */
+  --ind:#0d9488; --ind-h:#0f766e; --ind-s:#e2f5f1; --link:#0f766e;  /* --link = AA-safe teal text */
+  --ok:#16a34a; --ok-s:#eafaf0; --bad:#dc2626; --bad-s:#fdeaea; --warn:#b45309; --warn-s:#fdf3e7;
   --sans:'Instrument Sans',system-ui,sans-serif;   /* body + UI */
   --disp:'Space Grotesk',system-ui,sans-serif;     /* headings, wordmark, numerics */
-  /* elevation */
   --sh:0 1px 2px rgba(20,20,20,.05); --sh2:0 12px 40px rgba(30,30,40,.10);
+  --bar:rgba(255,255,255,.66); --savebar:rgba(255,255,255,.82);   /* docked glass chrome */
 }
-
-/* Liquid-glass accents — use sparingly (topbar, hero, auth cards), never on every card */
-.glass{background:rgba(255,255,255,.55);backdrop-filter:blur(18px) saturate(1.4);
-  -webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid rgba(255,255,255,.7);
-  box-shadow:var(--sh2), inset 0 1px 0 rgba(255,255,255,.85)}
-.glassbar{background:rgba(250,250,248,.68);backdrop-filter:blur(14px) saturate(1.3);
-  -webkit-backdrop-filter:blur(14px) saturate(1.3);border:1px solid rgba(255,255,255,.6);
-  box-shadow:0 4px 22px rgba(30,30,40,.06), inset 0 1px 0 rgba(255,255,255,.9)}
-/* Glass needs something behind it: page paints two low-opacity blooms so surfaces refract. */
+:root[data-theme="dark"] {
+  --bg:#0b0f16; --card:#161e2b; --sub:#10161f; --line:#273241; --line2:#37455a;   /* cold slate */
+  --txt:#eef2f8; --dim:#a8b6c8; --faint:#8695a8;
+  --ind:#2dd4bf; --ind-h:#5eead4; --ind-s:rgba(45,212,191,.18); --link:#5eead4;
+  --ok:#4ade80; --bad:#fb7185; --warn:#fbbf24;   /* + soft-tint *-s variants */
+  --sh:0 1px 2px rgba(0,0,0,.5); --sh2:0 16px 46px rgba(0,0,0,.55);
+  --bar:rgba(18,25,36,.58); --savebar:rgba(18,25,36,.66);
+}
 ```
 
-Glass rule: it earns depth only against the ambient blooms and only on a couple of surfaces —
-the topbar, the now-playing hero, the Setup/Login cards. Data cards (outputs, webhooks, config)
-stay solid `--card` for legibility and to keep the page from reading as AI-slop glass soup.
+**Ambient blooms** — the body paints low-opacity teal/cyan radial clouds (colder + larger in
+dark) so glass surfaces have something to refract. Glass never floats over a flat fill.
 
-Fonts via Google Fonts (`Instrument Sans` 400/500/600, `Space Grotesk` 500/600/700), each
-with a `system-ui` fallback. Avoid Inter/Roboto/Arial.
+**Card elevation, per theme:**
+- Light: solid `--card` with a soft `--sh`. Data cards stay solid for legibility.
+- Dark: a translucent light film (`rgba(148,163,184,.06–.13)`) over a semi-opaque slate, blurred,
+  with a bright top hairline (`inset 0 1px 0 rgba(255,255,255,.12)`) and a real dropped shadow.
+  The film is **lighter than `--bg`**, so cards read as *raised* — never darker than the ground.
+
+Fonts via Google Fonts (`Instrument Sans` 400/500/600, `Space Grotesk` 500/600/700), each with a
+`system-ui` fallback. Avoid Inter/Roboto/Arial.
+
+**Browser surfaces** are themed from the palette: `::selection`, caret, `accent-color`, and
+custom scrollbars all use `--ind`/`--line2` — never browser defaults.
 
 ## Type ramp
 
-- Page/section heading: `--disp` 700, 17–25px, letter-spacing −.015em.
-- Body: `--sans` 400/500, 14px.
-- Section label (`.lbl`): `--sans` 600, 11px, uppercase, letter-spacing .07em, colour `--faint`.
-- Numeric/time readouts: `--disp` or `--sans` 600, tabular where it matters.
+One ramp, applied everywhere — do not introduce a section heading at a page-title size (the
+master-detail makes any drift obvious side-by-side).
+
+- **Hero title** (Now Playing): `--disp` 700, 30px, −.02em. Marquee-scrolls when it overflows.
+- **Page title** (Debug, auth cards): `--disp` 700, 22px, −.015em.
+- **Section / card title** (`SectionCard`, every Settings detail, Debug/Lyrics panels):
+  `--disp` 700, **16px, −.01em**. This is the single card-title size — all detail sections match.
+- **Body / UI:** `--sans` 400/500, 14px.
+- **Section label** (`.lbl` / `.flabel`): `--sans` 600, 11px, uppercase, .07em, `--faint`/`--dim`.
+- **Numeric / time readouts:** `--disp` or `--sans` 600, tabular where it matters.
 
 ## Spacing, radii, shape
 
-- Base unit 4px. Card padding 20–22px; page padding 26–32px; grid gap 16–18px.
-- Radii: cards 16, controls 10–12, pills 20, inner previews 12.
-- Borders: 1px `--line` (dividers/cards), `--line2` (inputs). Shadow `--sh` on cards, `--sh2`
-  on floating panels (Setup/Login).
+- Base unit 4px. Card padding 22px; page padding 24–30px; grid gap 16–18px.
+- Radii: cards 16, controls 10–12, pills 20, hero/queue 20.
+- Borders: 1px `--line` (dividers/cards), `--line2` (inputs). `--sh` on cards, `--sh2` on floating
+  panels (menu, auth). Declare elevation once — never a 1px border under a wide soft shadow.
 
 ## Components
 
-- **Button** `.btn`: 13px 600, radius 10, `--card` bg + `--line2` border; hover → indigo
-  border+text. `.btn.pri`: indigo fill, white; hover `--ind-h`. Icon+label gap 7px.
-- **Status pill** `.pill`: 12px 600, radius 20, soft-tinted bg + solid fg per status
-  (`--ok-s`/`--ok`, `--bad-s`/`--bad`, `--warn-s`/`--warn`, `--ind-s`/`--ind`); leading dot 8px.
-- **Toggle** `.sw`: 38×22 track, 18px knob. On = `--ind`; off = `#e0e0db`.
-- **Field**: `--sub` bg, `--line2` border, radius 10–11, 12–14px pad. Read-only variant
-  `.field.ro` (`#f1f1ee`, `--dim`) for sharp/file-only values, prefixed by a small lock label.
-- **Card**: `--card`, 1px `--line`, radius 16, `--sh`.
-- **Banner** (pending restart): `--warn-s` bg, `#f0d9a8` border, warning glyph, primary action
-  in `--warn`.
-- **Side nav item** `.navi`: 13px 600 `--dim`; active `.navi.act` = `--ind-s` bg, `--ind` text.
-- **Icons**: inline stroke SVG, 16–19px, 2–2.4 stroke, round caps. No emoji.
+- **Button** `.btn`: 13px 600, radius 10, `--card` bg + `--line2` border; hover → teal. `.btn.pri`:
+  teal fill, white; hover `--ind-h`.
+- **Status pill** `.pill`: 12px 600, radius 20, soft-tint bg + solid fg per status; leading dot 8px.
+  Teal-on-tint text uses `--link` (not `--ind`) for AA.
+- **Toggle** `.sw`: 38×22 track, 18px knob. On = `--ind`; off = `#d7d7d1` (light) /
+  `rgba(255,255,255,.16)` (dark). Never a hardcoded light hex in dark.
+- **Field**: `--sub` bg, `--line2` border, radius 10. Read-only `.field.ro` token-driven per theme.
+- **Card** `.card` / **SectionCard**: `SectionCard` is the one card-title primitive — `title` +
+  optional `subtitle` + optional `#action` slot (right-aligned, e.g. Audio's "Refresh sinks").
+  Every Settings detail section renders through it, so titles are identical.
+- **Master-detail sidebar** `.navi`: 13px 600 `--dim`; active `.navi.act` = `--ind-s` bg,
+  **`--link`** text. Sticky column on desktop; a horizontal scroller on mobile.
+- **Banner** (pending restart): `--warn-s` bg, warning border, primary action in `--warn`.
+- **Marquee**: single-line ping-pong scroll for overflowing titles (hero + mini-player), with a
+  both-edge fade mask applied **only while overflowing**. Honors `prefers-reduced-motion`.
+- **Icons**: [Phosphor](https://phosphoricons.com) via `@phosphor-icons/vue` (ADR-0021), sized
+  16–19px in chrome/controls. **`weight="fill"` everywhere**, except the brand mark
+  (`PhMusicNotesSimple`, `weight="bold"`). Never hand-author inline SVGs or use emoji/Unicode
+  glyphs; external links carry a `PhArrowUpRight` glyph. Named icons in use include
+  `PhSpotifyLogo` (Soloist), `PhSpeakerHifi` (Audio), `PhBroadcast` (Snapcast),
+  `PhWebhooksLogo`, `PhPlugs` (relay), `PhLock` (web access), `PhTerminal` (Debug).
 
-## Surfaces
+## Surfaces & navigation
 
-- **Landing Page** — max-width ~1180, centered. Order: topbar (wordmark, status pills, user
-  menu) → pending-restart banner (conditional) → **player cluster** (now-playing hero +
-  up-next queue, side by side) → 3-col grid (Audio outputs · Webhooks+status · Overlay) →
-  Configuration card (left nav + panel; sharp fields read-only under a lock label) → footer
-  (WebSocket, Snapweb, secret set/unset pills). **Elevation discipline:** the player cluster
-  is the one elevated moment; the topbar sits bare on the page ground, the three data sections
-  live in a *single* panel split by vertical hairlines (not three cards), and the config
-  editor is the one other card — avoid boxes-within-boxes (read-only values are plain
-  label/value, not boxed fields).
-- **Player cluster** — the hero and the queue share one row so neither wastes horizontal
-  space. Hero ~1.7fr; the **Up next** queue is a matching dark rail (~1fr, min 330px) with a
-  count badge, "Clear", and compact rows (index, art thumb, title, artist, duration,
-  hover-revealed remove `.qxd`). Fed by the Soloist WS `queue_changed` state event
-  (confirmed in `src/proxy.ts`).
-- **Now-playing hero** — the deliberate focal point: a dark, immersive panel (deep
-  indigo→plum) contrasting the light page, with teal/cyan colour blooms (teal top-left,
-  cyan bottom-right), a glossy album tile, quality/source chips, a **slim teal progress bar**
-  (round handle), and circular transport (shuffle · prev · large teal-gradient play · next ·
-  repeat) with a teal volume track. This is the one dark surface — everything else stays light.
-- **First-run Setup** — centered ~440 card on tinted ground. Admin username + password + confirm
-  only, primary CTA, an indigo info note ("saved to config.yaml; everything else after
-  sign-in"), and a 3-step progress (Admin → Sign in → Configure).
-- **Login** — centered ~400 card, username + password, single primary CTA; focus ring =
-  `--ind` + `--ind-s` glow.
-- **Lyrics Overlay** — transparent background (over any scene). Bottom-centered stack: current
-  line large in `--disp` 700 white with a soft glow + subtle dark text-stroke; adjacent lines
-  ~26px at .34 opacity. Optional now-playing chip bottom-left (blurred dark glass). Anchor,
-  size, colour, effect all driven by the Overlay Config.
+**Top bar** (sticky, glass `--bar`): wordmark · nav · mini-player · menu. **Top-level nav is four
+items: Now Playing · Lyrics · Settings · Debug.** The active tab is prefix-matched (a
+`/settings/*` deep-link lights **Settings**). **Snapweb** and the theme toggle / log-out /
+live-status live in the **hamburger menu**. **On mobile (< 860px) the bar collapses to
+hamburger-only** — the nav sections move into the menu; the mini-player is hidden.
+
+- **Now Playing** (`/`) — the **hero** (deep cold-ocean panel in dark; deep indigo→plum in light —
+  the one elevated focal surface, with teal/cyan blooms, glossy tile, slim teal progress + round
+  handle, circular transport, teal volume) stacked above the **Up next** dark queue rail (count
+  badge, art thumb · title · artist · duration rows). Centered ~720 column.
+- **Lyrics** (`/lyrics`) — Overlay config (Layout / Text / Motion&FX) beside a **live preview** on
+  a transparency checkerboard showing the real karaoke render.
+- **Settings** (`/settings`) — **master-detail**: a `.navi` sidebar (Title-Case labels: Soloist ·
+  Audio Outputs · Snapcast · Webhooks · WebSocket Relay · Web Access; Audio/Snapcast hidden in
+  standalone) and a
+  `<router-view>` detail pane. Each section is a deep-linkable route (`/settings/<section>`, served
+  by the SPA on hard reload) rendering one `SectionCard`. `/settings` redirects to the first section.
+- **Debug** (`/debug`) — dense operator readouts: frame stream (with empty state), client list
+  (IP · tier pill · auth · uptime · user-agent), webhook delivery log (status pill · event ·
+  latency ms · timestamp). Monospace for data/measurement only.
+- **Login / Setup** — centered auth card (`AuthShell`), 22px title, single primary CTA. Honors the
+  dark theme via the shell's pre-paint bootstrap.
+- **Lyrics Overlay** — transparent; bottom-centered stack, current line large `--disp` 700 white
+  with glow + dark stroke, neighbours dimmed. Anchor/size/colour/effect from the Overlay config.
 
 ## Conventions
 
 - Never render a secret value — show a set/unset pill or masked field with a Replace action.
-- Theme is committed light; if a dark mode is ever added, define it as token overrides only.
-- Static mockups here; interaction/wiring lands in the T2/T10 build tickets.
+- **Both light and dark are committed themes** (default light; the user opts into dark, persisted
+  in `localStorage['soloist-theme']`). Dark is a full palette + glass treatment, not token
+  overrides alone — but it reuses every token *name*, so components stay theme-agnostic.
+- Teal used as **text** (links, active nav, pills) uses `--link`; teal as a **fill** uses `--ind`.
+- One card-title size (16px) across all detail sections — route new config surfaces through
+  `SectionCard`, never a bespoke `<h1>`.
