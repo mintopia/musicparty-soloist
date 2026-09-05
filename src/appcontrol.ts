@@ -13,6 +13,7 @@ import type { Config } from "./config.js";
 import { sameOrigin } from "./auth.js";
 import { parseCookies, sessionUser, SESSION_COOKIE } from "./web.js";
 import { makeLog } from "./log.js";
+import { DEBUG_STREAMS, type DebugStream } from "./wire-contract.js";
 
 const log = makeLog("appcontrol");
 
@@ -24,8 +25,8 @@ export const APP_CONTROL_MAX_PAYLOAD = 4096;
 
 // The fixed set of diagnostic streams a Debug Subscriber may subscribe to. This tier owns
 // the subscription protocol and fan-out; the producers that feed these streams live elsewhere.
-export const DEBUG_STREAMS = ["frame", "clients", "webhooks", "proxy_status"] as const;
-export type DebugStream = (typeof DEBUG_STREAMS)[number];
+export { DEBUG_STREAMS };
+export type { DebugStream };
 const VALID_STREAMS = new Set<string>(DEBUG_STREAMS);
 
 // Post-upgrade auth lifecycle: a socket authed once at handshake must not live forever on

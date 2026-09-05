@@ -5,6 +5,7 @@ import type { IncomingMessage } from "node:http";
 import type { Config } from "./config.js";
 import { sessionUser } from "./web.js";
 import { safeStrEqual } from "./util.js";
+import type { ClientAuth } from "./wire-contract.js";
 
 const BEARER = "Bearer ";
 
@@ -22,7 +23,7 @@ function tokenEquals(presented: string, token: string): boolean {
 
 export type AuthTier = "control" | "readonly" | "none";
 
-export type ClientAuth = "auth-token" | "readonly-token" | "session-cookie";
+export type { ClientAuth } from "./wire-contract.js";
 
 // Host-only by design: no scheme compare. A plain createServer behind a TLS-terminating
 // proxy sees no reliable scheme on the request, and host-only already defeats CSWSH — a

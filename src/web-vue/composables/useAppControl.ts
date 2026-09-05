@@ -1,4 +1,5 @@
 import { reactive, ref, type Ref } from "vue";
+import type { DebugStream, ProxyStatus, ClientMeta, WebhookDelivery } from "../../wire-contract";
 
 // App-Control WebSocket client (ADR-0017): the operator-only diagnostics channel that rides
 // `/ws/app`, kept entirely off the pure `/` Soloist data path. It always subscribes to
@@ -6,39 +7,10 @@ import { reactive, ref, type Ref } from "vue";
 // higher-rate diagnostic streams (frame/clients/webhooks) via subscribe() and drop them via
 // the returned disposer. Nothing here parses Soloist frames — those ride through verbatim.
 
-// Mirrors the server's fixed stream set (src/appcontrol.ts). proxy_status is subscribed
-// implicitly and never requested by a consumer.
-export type DebugStream = "frame" | "clients" | "webhooks" | "proxy_status";
-
-// Compact status snapshot (src/proxy.ts buildProxyStatus): the webhook field is a summary
-// only — full delivery detail rides the separate `webhooks` stream.
-export interface ProxyStatus {
-  soloist: { state: string | null; upstream: boolean; loggedIn: boolean | null };
-  clients: number;
-  relay: { enabled: boolean; connected: boolean; lastConnectAt: number | null; lastError: string | null };
-  webhook: { at: number; type: string; status: number | null; ok: boolean } | null;
-}
-
-export interface ClientMeta {
-  id: string;
-  remoteAddr: string;
-  tier: "control" | "readonly";
-  auth: string;
-  connectedAt: number;
-  userAgent: string;
-}
-
-export interface WebhookDelivery {
-  at: number;
-  type: string;
-  url: string;
-  status: number | null;
-  durationMs: number;
-  reqHeaders: Record<string, string>;
-  respHeaders: Record<string, string>;
-  respBody: string;
-  error: string | null;
-}
+// The App-Control wire types (DebugStream, ProxyStatus, ClientMeta, WebhookDelivery) come
+// from the shared wire contract so this client and the server can't drift. Re-exported here
+// because existing consumers (e.g. Debug.vue) import them from this composable.
+export type { DebugStream, ProxyStatus, ClientMeta, WebhookDelivery };
 
 export type Frame = Record<string, unknown>;
 

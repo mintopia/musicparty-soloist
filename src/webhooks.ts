@@ -5,6 +5,7 @@
 import type { Config, WebhooksConfig } from "./config.js";
 import type { SoloistHub } from "./proxy.js";
 import { makeLog } from "./log.js";
+import type { WebhookDelivery } from "./wire-contract.js";
 
 const log = makeLog("proxy");
 
@@ -85,17 +86,7 @@ export const WEBHOOK_RESP_HEADER_ALLOWLIST = new Set([
   "content-type", "content-length", "date", "server", "content-encoding", "etag", "cache-control", "age", "vary",
 ]);
 
-export interface WebhookDelivery {
-  at: number; // start of the delivery attempt, not when it was recorded
-  type: string;
-  url: string;
-  status: number | null; // null on network/timeout error (no response)
-  durationMs: number;
-  reqHeaders: Record<string, string>; // authorization redacted to "Bearer ***"
-  respHeaders: Record<string, string>; // allowlisted only, lowercase keys
-  respBody: string; // capped to WEBHOOK_RESP_BODY_CAP bytes, "…[truncated]" if it overflowed
-  error: string | null;
-}
+export type { WebhookDelivery } from "./wire-contract.js";
 
 export class WebhookHistory {
   private buf: WebhookDelivery[] = [];

@@ -5,6 +5,7 @@ import { acquireSoloist } from "./acquire.js";
 import { soloistReady, type Config } from "./config.js";
 import { makeLog } from "./log.js";
 import { getPipewireDeviceOverride } from "./runtime.js";
+import type { SoloistState } from "./wire-contract.js";
 
 export const EXIT_EXPIRED = 10;
 export const BACKOFF_BASE = 1.0;
@@ -17,14 +18,7 @@ export class Aborted extends Error {}
 // The supervisor loop's transient phase, surfaced for the Menu's Soloist status.
 // Mirrors the loop boundaries: waiting-for-config → acquire → start → run → on exit
 // either re-acquire (exit 10) or backoff+restart; `stopped` is terminal (shutdown/crash).
-export type SoloistState =
-  | "waiting"
-  | "acquiring"
-  | "starting"
-  | "running"
-  | "backoff"
-  | "expired-reacquiring"
-  | "stopped";
+export type { SoloistState } from "./wire-contract.js";
 
 // Crash-loop backoff arithmetic, pure so it can be table-tested without fake timers.
 // `sleep` is how long to wait before the next restart; `next` is the backoff to carry
