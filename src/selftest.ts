@@ -380,49 +380,35 @@ await test("postWebhook records delivery capture shape", async () => {
   assert.ok(d!.durationMs >= 0, "durationMs recorded");
 });
 
-// b) Request redaction: the Authorization header is masked in the recorded delivery,
-// and the raw secret never appears anywhere in it.
-await test("postWebhook redacts the request secret", async () => {
-  const h = new WebhookHistory();
-  await postWebhook(h, "track_changed", "http://t", "{}", "supersecret", fakeFetch(200, { "content-type": "application/json" }, "ok"));
-  const d = h.last()!;
-  assert.equal(d.reqHeaders.authorization, "Bearer ***", "authorization header redacted");
-  assert.equal(d.reqHeaders["content-type"], "application/json", "content-type header preserved");
-  assertNoLeak("postWebhook delivery", d, ["supersecret"]);
-});
+// postWebhook redaction (ADR-0016): the request Authorization header is masked and the raw
+// secret never appears in the recorded delivery; response headers pass an allowlist so
+// vendor/API-key headers and Set-Cookie (a session-fixation vector) never reach a Debug
+// Subscriber, while content-type/date survive.
+await test("postWebhook redaction (request secret + response allowlist)", async () => {
+  // Request-secret redaction: Authorization masked, raw secret absent everywhere.
+  const hReq = new WebhookHistory();
+  await postWebhook(hReq, "track_changed", "http://t", "{}", "supersecret", fakeFetch(200, { "content-type": "application/json" }, "ok"));
+  const dReq = hReq.last()!;
+  assert.equal(dReq.reqHeaders.authorization, "Bearer ***", "authorization header redacted");
+  assert.equal(dReq.reqHeaders["content-type"], "application/json", "content-type request header preserved");
+  assertNoLeak("postWebhook delivery", dReq, ["supersecret"]);
 
-// c) Response header allowlist: only allowlisted response headers survive; anything
-// else (e.g. vendor/API-key headers) is dropped, never recorded.
-await test("postWebhook allowlists response headers", async () => {
-  const h = new WebhookHistory();
-  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {
+  // Response-header allowlist: content-type/date kept; set-cookie, x-api-key, vendor sig dropped.
+  const hResp = new WebhookHistory();
+  await postWebhook(hResp, "track_changed", "http://t", "{}", "", fakeFetch(200, {
     "content-type": "application/json",
     "date": "Fri, 04 Sep 2026 00:00:00 GMT",
+    "set-cookie": "sid=leak; HttpOnly",
     "x-api-key": "leak",
     "x-vendor-sig": "sig",
   }, "ok"));
-  const d = h.last()!;
-  assert.ok(d.respHeaders["content-type"], "allowlisted content-type kept");
-  assert.ok(d.respHeaders["date"], "allowlisted date kept");
-  assert.ok(!("x-api-key" in d.respHeaders), "non-allowlisted x-api-key dropped");
-  assert.ok(!("x-vendor-sig" in d.respHeaders), "non-allowlisted x-vendor-sig dropped");
-  assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak", "sig"]);
-});
-
-// Response-header allowlist also drops Set-Cookie (a session-fixation vector) and x-api-key:
-// neither reaches the recorded delivery a Debug Subscriber later sees (ADR-0016).
-await test("postWebhook drops set-cookie and x-api-key response headers", async () => {
-  const h = new WebhookHistory();
-  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {
-    "content-type": "application/json",
-    "set-cookie": "sid=leak; HttpOnly",
-    "x-api-key": "leak",
-  }, "ok"));
-  const d = h.last()!;
-  assert.ok(d.respHeaders["content-type"], "allowlisted content-type kept");
-  assert.ok(!("set-cookie" in d.respHeaders), "non-allowlisted set-cookie dropped");
-  assert.ok(!("x-api-key" in d.respHeaders), "non-allowlisted x-api-key dropped");
-  assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak"]);
+  const dResp = hResp.last()!;
+  assert.ok(dResp.respHeaders["content-type"], "allowlisted content-type kept");
+  assert.ok(dResp.respHeaders["date"], "allowlisted date kept");
+  assert.ok(!("set-cookie" in dResp.respHeaders), "non-allowlisted set-cookie dropped (session-fixation vector)");
+  assert.ok(!("x-api-key" in dResp.respHeaders), "non-allowlisted x-api-key dropped");
+  assert.ok(!("x-vendor-sig" in dResp.respHeaders), "non-allowlisted x-vendor-sig dropped");
+  assertNoLeak("postWebhook respHeaders", dResp.respHeaders, ["leak", "sig"]);
 });
 
 // d) Streamed body cap + truncation: an oversized body is capped and marked truncated;
@@ -490,21 +476,20 @@ await test("WebhookHistory evicts oldest entries at cap 10", async () => {
 });
 
 
-// relayView: reports url + auth presence + live status, never the Authorization value.
-const relayCfg = { relay: { url: "wss://relay.example/x", authorization: "Bearer topsecret" } } as unknown as Config;
-const rStatus = { enabled: true, connected: true, lastConnectAt: 123, lastError: null };
-const rView = relayView(relayCfg, rStatus) as { config: { url: string; hasAuth: boolean }; status: typeof rStatus };
-await test("relayView hides auth", async () => {
-assert.equal(rView.config.url, "wss://relay.example/x", "relay url reported");
-assert.equal(rView.config.hasAuth, true, "auth presence exposed as boolean");
-assertNoLeak("relayView", rView, ["topsecret"]);
-assert.deepEqual(rView.status, rStatus, "live status passed through");
-});
+// relayView: reports url + auth presence + live status, never the Authorization value; and
+// reads as disabled when there's no url/auth.
+await test("relayView (reports url/auth-presence/status, hides auth; disabled)", async () => {
+  const relayCfg = { relay: { url: "wss://relay.example/x", authorization: "Bearer topsecret" } } as unknown as Config;
+  const rStatus = { enabled: true, connected: true, lastConnectAt: 123, lastError: null };
+  const rView = relayView(relayCfg, rStatus) as { config: { url: string; hasAuth: boolean }; status: typeof rStatus };
+  assert.equal(rView.config.url, "wss://relay.example/x", "relay url reported");
+  assert.equal(rView.config.hasAuth, true, "auth presence exposed as boolean");
+  assertNoLeak("relayView", rView, ["topsecret"]);
+  assert.deepEqual(rView.status, rStatus, "live status passed through");
 
-const rViewOff = relayView({ relay: { url: "", authorization: "" } } as unknown as Config) as { config: { hasAuth: boolean }; status: { enabled: boolean } };
-await test("relayView disabled", async () => {
-assert.equal(rViewOff.config.hasAuth, false, "empty auth -> hasAuth false");
-assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
+  const rViewOff = relayView({ relay: { url: "", authorization: "" } } as unknown as Config) as { config: { hasAuth: boolean }; status: { enabled: boolean } };
+  assert.equal(rViewOff.config.hasAuth, false, "empty auth -> hasAuth false");
+  assert.equal(rViewOff.status.enabled, false, "no url + no status -> disabled");
 });
 
 
@@ -777,73 +762,65 @@ await test("applyApiConfig rejects prototype pollution", async () => {
 // Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed, expiry.
 const SECRET = "sessionsecret";
 const signed = signSession("admin", SECRET);
-await test("verifySession", async () => {
-assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
-assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
-// Flip the last MAC char to a guaranteed-different one — a fixed "x" is a no-op when the
-// (timestamped, per-run) MAC already ends in "x", which would leave the token untampered.
-assert.equal(verifySession(signed.slice(0, -1) + (signed.at(-1) === "a" ? "b" : "a"), SECRET), null, "tampered signature rejected");
-});
-
-await test("session tamper rejection", async () => {
-  // Forge a payload for a different user; its signature won't match the original MAC.
-  const forgedPayload = Buffer.from(`root|${Date.now()}`).toString("base64url");
-  const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
-  assert.equal(verifySession(`${forgedPayload}.${originalMac}`, SECRET), null, "tampered payload rejected");
-});
-
-await test("verifySession", async () => {
-assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
-});
-
-
-// Session never expires (item 2 fix): a cookie older than the max age is rejected
-// even with a valid signature.
-await test("session expiry rejection", async () => {
-  // Mirror web.ts's key derivation (secret + password binding) so we can forge a cookie
-  // with a chosen issued-at. Default binding "" matches an unbound signSession/verifySession.
-  const mkMac = (payload: string, pw = "") => {
+// Web Session cookie (web.ts): sign/verify round-trip, tamper rejection (signature + forged
+// payload), malformed/non-finite/expired rejection, and password-rotation invalidation.
+await test("session cookie sign/verify/tamper/expiry", async () => {
+  // Mirror web.ts's key derivation (secret + password binding) so we can forge a cookie with a
+  // chosen issued-at. Default binding "" matches an unbound signSession/verifySession.
+  const mkMac = (encPayload: string, pw = "") => {
     const key = createHmac("sha256", SECRET).update("pw\0").update(pw).digest();
-    return createHmac("sha256", key).update(payload).digest("base64url");
+    return createHmac("sha256", key).update(encPayload).digest("base64url");
   };
-  const oldPayload = Buffer.from(`admin|${Date.now() - 31 * 24 * 60 * 60 * 1000}`).toString("base64url");
-  assert.equal(verifySession(`${oldPayload}.${mkMac(oldPayload)}`, SECRET), null, "expired session rejected");
-  const freshPayload = Buffer.from(`admin|${Date.now() - 24 * 60 * 60 * 1000}`).toString("base64url");
-  assert.equal(verifySession(`${freshPayload}.${mkMac(freshPayload)}`, SECRET), "admin", "1-day-old session still valid");
-});
+  const forge = (rawPayload: string, pw = "") => {
+    const enc = Buffer.from(rawPayload).toString("base64url");
+    return `${enc}.${mkMac(enc, pw)}`;
+  };
 
+  assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
+  assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
+  // Flip the last MAC char to a guaranteed-different one (a fixed 'x' is a no-op if the MAC
+  // already ends in 'x').
+  assert.equal(verifySession(signed.slice(0, -1) + (signed.at(-1) === "a" ? "b" : "a"), SECRET), null, "tampered signature rejected");
+  // Forge a payload for a different user reusing the original MAC — signature won't match.
+  const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
+  assert.equal(verifySession(`${Buffer.from(`root|${Date.now()}`).toString("base64url")}.${originalMac}`, SECRET), null, "tampered payload rejected");
+  assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
+  assert.equal(verifySession(forge("admin|not-a-number"), SECRET), null, "non-finite issued-at rejected");
 
-await test("parseCookies", async () => {
-assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
-assert.deepEqual(parseCookies(undefined), {}, "no cookie header -> empty");
+  // Expiry: older than the max age is rejected even with a valid signature; a recent one is fine.
+  assert.equal(verifySession(forge(`admin|${Date.now() - 31 * 24 * 60 * 60 * 1000}`), SECRET), null, "expired session rejected");
+  assert.equal(verifySession(forge(`admin|${Date.now() - 24 * 60 * 60 * 1000}`), SECRET), "admin", "1-day-old session still valid");
+
+  // Password rotation: a cookie signed under a different password no longer verifies (the MAC
+  // key folds in the password).
+  assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B"), null, "session signed under a different password is rejected");
 });
 
 
 const webReq = (cookie?: string) => ({ headers: cookie ? { cookie } : {} }) as unknown as IncomingMessage;
 const webCfg = (u: string, p: string): Config => ({ web: { username: u, password: p, sessionSecret: SECRET } }) as unknown as Config;
 
-await test("webConfigured", async () => {
-assert.equal(webConfigured(webCfg("admin", "pw")), true, "creds set -> configured");
-assert.equal(webConfigured(webCfg("", "")), false, "creds unset -> not configured");
-assert.equal(webConfigured(webCfg("admin", "")), false, "half-set creds -> not configured");
-});
+// sessionUser gating (web.ts): parseCookies extraction, webConfigured predicate, the cookie
+// -> user path with its rejections (bad secret, other user, no cookie), fail-closed when creds
+// are unset, and password-rotation revocation.
+await test("sessionUser gating (parseCookies/webConfigured/fail-closed/rotation)", async () => {
+  assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
+  assert.deepEqual(parseCookies(undefined), {}, "no cookie header -> empty");
 
+  assert.equal(webConfigured(webCfg("admin", "pw")), true, "creds set -> configured");
+  assert.equal(webConfigured(webCfg("", "")), false, "creds unset -> not configured");
+  assert.equal(webConfigured(webCfg("admin", "")), false, "half-set creds -> not configured");
 
-const cfgSet = webCfg("admin", "pw");
-await test("sessionUser", async () => {
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), cfgSet), "admin", "valid cookie -> user");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong", "pw")}`), cfgSet), null, "bad-secret cookie -> null");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET, "pw")}`), cfgSet), null, "cookie for other user -> null");
-assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
-});
+  const cfgSet = webCfg("admin", "pw");
+  assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), cfgSet), "admin", "valid cookie -> user");
+  assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", "wrong", "pw")}`), cfgSet), null, "bad-secret cookie -> null");
+  assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("mallory", SECRET, "pw")}`), cfgSet), null, "cookie for other user -> null");
+  assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
+  assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
 
-
-// Rotating the password revokes live sessions: the MAC key folds in the password, so a
-// cookie signed under the old password no longer verifies once it changes.
-await test("password rotation revokes sessions", async () => {
-assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "old-pw")}`), webCfg("admin", "new-pw")), null, "password change revokes existing session");
-assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B"), null, "session signed under a different password is rejected");
+  // Rotating the password revokes live sessions: a cookie signed under the old password no
+  // longer authenticates once the stored password changes.
+  assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "old-pw")}`), webCfg("admin", "new-pw")), null, "password change revokes existing session");
 });
 
 
