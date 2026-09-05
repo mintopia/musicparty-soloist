@@ -156,6 +156,15 @@ async function test(name: string, fn: () => void | Promise<void>) {
   catch (e) { failed++; console.error(`FAIL  ${name}\n      ${(e as Error).stack ?? (e as Error).message}`); }
 }
 
+// Fire-and-forget work in the harness (e.g. `void hub.run()`) detaches promises whose
+// rejections would otherwise vanish while test() still records a pass. Count them as real
+// failures so detached faults can't hide behind a green run (TEST-M6).
+process.on("unhandledRejection", (reason) => {
+  failed++;
+  const e = reason as Error;
+  console.error(`FAIL  unhandledRejection\n      ${e?.stack ?? String(reason)}`);
+});
+
 // Asserts none of `secrets` appears in the serialized form of `obj` — the recurring
 // "a view/mask/bootstrap must never leak a secret value" invariant, stated once.
 function assertNoLeak(label: string, obj: unknown, secrets: string[]): void {
@@ -2266,6 +2275,30 @@ await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)
   handlers2.SIGTERM();
   assert.equal(controller2.signal.aborted, true, "invoking the SIGTERM handler aborts its controller");
 });
+
+await test("unhandledRejection handler surfaces detached faults", async () => {
+  const before = failed;
+  const origErr = console.error;
+  const lines: string[] = [];
+  console.error = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+  try {
+    // A detached promise that rejects with no catch — exactly the `void hub.run()` shape.
+    void Promise.reject(new Error("detached-boom"));
+    // unhandledRejection fires on a later macrotask; two ticks is ample.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    console.error = origErr;
+  }
+  assert.equal(failed, before + 1, "detached rejection counts as a failure");
+  assert.ok(lines.some((l) => l.includes("detached-boom")), "handler prints the fault");
+  failed = before; // this fault is deliberate — don't taint the real tally
+});
+
+// Let any detached rejection reach the handler above before we tally — Node surfaces
+// these on a later macrotask, after the last awaited test resolves.
+await new Promise((r) => setImmediate(r));
+await new Promise((r) => setImmediate(r));
 
 console.log(`\nselftest: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
