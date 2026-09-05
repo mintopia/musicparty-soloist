@@ -50,6 +50,27 @@ export function installShutdownHandlers(
   proc.on("SIGTERM", onShutdown);
 }
 
+// Bound on graceful teardown before the watchdog forces exit (ARCH-L3).
+export const SHUTDOWN_TIMEOUT_MS = 15_000;
+
+export interface WatchdogDeps {
+  setTimer: (cb: () => void, ms: number) => { unref: () => void };
+  exit: (code: number) => void;
+  log?: (msg: string) => void;
+}
+
+// serveProxy's close() awaits server.close(), which blocks on lingering keep-alive
+// connections and can hang indefinitely. This force-exits after a bound so a stuck
+// teardown can never wedge the process. unref so a clean shutdown isn't held open.
+export function armShutdownWatchdog(timeoutMs: number, deps: WatchdogDeps): void {
+  deps
+    .setTimer(() => {
+      deps.log?.(`graceful shutdown exceeded ${timeoutMs}ms — forcing exit`);
+      deps.exit(1);
+    }, timeoutMs)
+    .unref();
+}
+
 async function main(): Promise<number> {
   const args = parseMainArgs(process.argv.slice(2));
   applyRuntimeFlags(args);
@@ -69,7 +90,17 @@ async function main(): Promise<number> {
   }
 
   const controller = new AbortController();
-  const shutdown = () => controller.abort();
+  let watchdogArmed = false;
+  const shutdown = () => {
+    controller.abort();
+    if (watchdogArmed) return;
+    watchdogArmed = true;
+    armShutdownWatchdog(SHUTDOWN_TIMEOUT_MS, {
+      setTimer: (cb, ms) => setTimeout(cb, ms),
+      exit: (code) => process.exit(code),
+      log,
+    });
+  };
   installShutdownHandlers(process, shutdown);
 
   // The Proxy HTTP/WS server always starts. The supervisor also always starts but
