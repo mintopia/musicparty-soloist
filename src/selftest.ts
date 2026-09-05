@@ -16,6 +16,7 @@ import { SoloistRelay } from "./relay.js";
 import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
 import { DEBUG_STREAMS as WIRE_DEBUG_STREAMS, type ProxyStatus } from "./wire-contract.js";
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, MAX_OUTPUT_DELAY_MS, DEFAULT_OVERLAY, DEFAULT_SNAPSERVER_CONFIG, APPLY_STRATEGY, type ApplyStrategy, type Config } from "./config.js";
@@ -2381,6 +2382,108 @@ await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)
   handlers2.SIGTERM();
   assert.equal(controller2.signal.aborted, true, "invoking the SIGTERM handler aborts its controller");
 });
+
+// SoloistRelay lifecycle (ADR-0012): the run loop must short-circuit when no url is
+// configured, reconnect after a live relay drops mid-run, and back off between dials while
+// the relay stays unreachable. Drives the real SoloistRelay against real ws/tcp servers.
+const waitUntil = async (pred: () => boolean, tries = 400): Promise<void> => {
+  for (let i = 0; i < tries && !pred(); i++) await new Promise((r) => setTimeout(r, 10));
+};
+
+await test("SoloistRelay: empty url short-circuits — disabled, never dials", async () => {
+  // The relay would dial this exact server once a url points at it, so 0 dials while the url is
+  // empty then 1 after apply() proves the short-circuit gates dialing, not a dead fixture.
+  const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(relaySrv, "listening");
+  const port = (relaySrv.address() as { port: number }).port;
+  let dials = 0;
+  relaySrv.on("connection", () => dials++);
+
+  const cfg = defaultConfig();
+  cfg.relay.url = "";
+  cfg.relay.authorization = "";
+  const relay = new SoloistRelay(new SoloistHub("ws://127.0.0.1:1"), cfg);
+  const running = relay.run();
+  try {
+    await new Promise((r) => setTimeout(r, 100)); // let the run loop reach its park
+    assert.equal(relay.status.enabled, false, "empty url -> relay reports disabled");
+    assert.equal(relay.status.connected, false, "disabled relay is never connected");
+    assert.equal(dials, 0, "disabled relay never dials");
+
+    // Pointing the url at the server lifts the short-circuit: apply() must now dial it.
+    cfg.relay.url = `ws://127.0.0.1:${port}`;
+    relay.apply();
+    await waitUntil(() => relay.status.connected);
+    assert.equal(relay.status.connected, true, "apply() with a url dials and connects");
+    assert.equal(dials, 1, "exactly one dial, only after the url was set");
+  } finally {
+    relay.stop();
+    await running;
+    relaySrv.close();
+  }
+});
+
+await test("SoloistRelay: reconnects after the relay server drops mid-run", async () => {
+  const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(relaySrv, "listening");
+  const port = (relaySrv.address() as { port: number }).port;
+  const serverConns: WebSocket[] = [];
+  relaySrv.on("connection", (ws) => serverConns.push(ws));
+
+  const cfg = defaultConfig();
+  cfg.relay.url = `ws://127.0.0.1:${port}`;
+  cfg.relay.authorization = "";
+  const relay = new SoloistRelay(new SoloistHub("ws://127.0.0.1:1"), cfg);
+  const running = relay.run();
+  try {
+    await waitUntil(() => relay.status.connected);
+    assert.equal(relay.status.connected, true, "relay connects to the live server");
+    assert.equal(serverConns.length, 1, "exactly one dial before the drop");
+
+    serverConns[0].close(); // drop the relay connection mid-run
+    await waitUntil(() => !relay.status.connected);
+    assert.equal(relay.status.connected, false, "relay observes the drop");
+
+    await waitUntil(() => relay.status.connected); // backoff base is 0.5s
+    assert.equal(relay.status.connected, true, "relay reconnects after the drop");
+    assert.ok(serverConns.length >= 2, "relay re-dialled the server");
+  } finally {
+    relay.stop();
+    await running;
+    for (const ws of serverConns) ws.terminate();
+    relaySrv.close();
+  }
+});
+
+await test("SoloistRelay: backoff grows between dials while the relay is unreachable", async () => {
+  // A raw TCP listener that destroys each socket before the WS handshake completes, so every
+  // dial errors (never opens) and backoff is never reset by a successful connect.
+  const attempts: number[] = [];
+  const tcp = createTcpServer((sock) => { attempts.push(Date.now()); sock.destroy(); });
+  await new Promise<void>((r) => tcp.listen(0, "127.0.0.1", () => r()));
+  const port = (tcp.address() as { port: number }).port;
+
+  const cfg = defaultConfig();
+  cfg.relay.url = `ws://127.0.0.1:${port}`;
+  const relay = new SoloistRelay(new SoloistHub("ws://127.0.0.1:1"), cfg);
+  const running = relay.run();
+  try {
+    // Base 0.5s, doubling: dials land at ~0, 0.5s, 1.5s. Collect three to compare the gaps.
+    await waitUntil(() => attempts.length >= 3, 500);
+    assert.ok(attempts.length >= 3, `expected >=3 dials, saw ${attempts.length}`);
+    const gap1 = attempts[1] - attempts[0];
+    const gap2 = attempts[2] - attempts[1];
+    assert.ok(gap2 > gap1 + 200, `backoff grows: gap2 ${gap2}ms should exceed gap1 ${gap1}ms`);
+    assert.equal(relay.status.connected, false, "never connected while unreachable");
+    assert.equal(relay.status.enabled, true, "a configured url leaves the relay enabled");
+    assert.ok(relay.status.lastError, "an unreachable relay records a lastError");
+  } finally {
+    relay.stop();
+    await running;
+    tcp.close();
+  }
+});
+
 
 console.log(`\nselftest: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
