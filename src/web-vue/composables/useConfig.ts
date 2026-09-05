@@ -33,6 +33,21 @@ const loaded = ref(false);
 
 const dirty = computed(() => JSON.stringify(config) !== saved.value);
 
+// Count of changed leaf fields vs the last saved snapshot, for the discard-confirm prompt.
+const dirtyCount = computed(() => {
+  let prevCfg: Config;
+  try { prevCfg = JSON.parse(saved.value) as Config; } catch { return 0; }
+  let n = 0;
+  for (const section of new Set([...Object.keys(config), ...Object.keys(prevCfg)])) {
+    const cur = config[section] ?? {};
+    const prev = prevCfg[section] ?? {};
+    for (const key of new Set([...Object.keys(cur), ...Object.keys(prev)])) {
+      if (JSON.stringify(cur[key]) !== JSON.stringify(prev[key])) n++;
+    }
+  }
+  return n;
+});
+
 // Guard tab-close / back-nav / hard reload while edits are unsaved (UX-H3): without this
 // the working copy vanishes with no prompt. Reads the shared dirty flag so it tracks the
 // singleton live; setting returnValue is what triggers the browser's native confirm.
@@ -125,5 +140,5 @@ async function revealSecret(section: string, key: string): Promise<string> {
 }
 
 export function useConfig() {
-  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, trySave, refreshSummary, restartSoloist, restartSnapcast, revealSecret };
+  return { config, summary, secretSet, dirty, dirtyCount, status, loaded, load, save, discard, trySave, refreshSummary, restartSoloist, restartSnapcast, revealSecret };
 }

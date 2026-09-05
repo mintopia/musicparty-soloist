@@ -98,7 +98,7 @@ const { highlightJson } = (hl ?? {}) as { highlightJson(src: string): Promise<st
 const appctl = await loadRawTs("../src/web-vue/composables/useAppControl.ts");
 const useConfigMod = await loadRawTs("../src/web-vue/composables/useConfig.ts");
 const { useConfig: loadUseConfig, beforeUnloadGuard } = (useConfigMod ?? {}) as {
-  useConfig(): { config: Record<string, unknown>; trySave(): void; dirty: { value: boolean }; status: { value: string } };
+  useConfig(): { config: Record<string, unknown>; trySave(): void; dirty: { value: boolean }; dirtyCount: { value: number }; status: { value: string } };
   beforeUnloadGuard(e: { preventDefault(): void; returnValue: unknown }): void;
 };
 type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
@@ -2419,6 +2419,30 @@ await webTest("useConfig.beforeUnloadGuard guards unsaved edits", useConfigMod, 
     beforeUnloadGuard(editing as any);
     assert.equal(editing.prevented(), true, "dirty config: preventDefault fires the prompt");
     assert.equal(editing.returnValue, "", "dirty config: returnValue set for legacy browsers");
+  } finally {
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, snapshot);
+  }
+});
+
+// dirtyCount powers the discard-confirm prompt's "N unsaved changes" copy: it counts changed
+// leaf fields against the last saved snapshot, independent of `dirty`'s boolean. The singleton
+// starts clean (previous test restored it), so no fetch stub / save() round-trip is needed.
+await webTest("useConfig.dirtyCount counts changed fields", useConfigMod, async () => {
+  const { config, dirtyCount, dirty } = loadUseConfig();
+  const snapshot = JSON.parse(JSON.stringify(config));
+  try {
+    assert.equal(dirty.value, false, "starts clean");
+    assert.equal(dirtyCount.value, 0, "no changes yet");
+
+    (config as any).relay = { url: "wss://x" };
+    assert.equal(dirtyCount.value, 1, "one changed field in a new section");
+
+    (config as any).webhooks = { secret: "abc" };
+    assert.equal(dirtyCount.value, 2, "a second changed field in another section");
+
+    (config as any).relay.token = "xyz";
+    assert.equal(dirtyCount.value, 3, "a third changed field bumps the count again");
   } finally {
     for (const k of Object.keys(config)) delete config[k];
     Object.assign(config, snapshot);
