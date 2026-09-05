@@ -87,6 +87,11 @@ async function restartSoloist() {
   await refreshSummary();
 }
 
+async function restartSnapcast() {
+  await api("/api/restart-snapcast", { method: "POST" });
+  await refreshSummary();
+}
+
 // Fetch one allowlisted secret's plaintext for the reveal toggle (server 404s any
 // key outside REVEALABLE). Kept here so all config API calls share the `api` helper.
 async function revealSecret(section: string, key: string): Promise<string> {
@@ -95,5 +100,5 @@ async function revealSecret(section: string, key: string): Promise<string> {
 }
 
 export function useConfig() {
-  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, refreshSummary, restartSoloist, revealSecret };
+  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, refreshSummary, restartSoloist, restartSnapcast, revealSecret };
 }

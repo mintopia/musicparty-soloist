@@ -9,6 +9,19 @@ export const DEFAULT_PROXY_LISTEN = "0.0.0.0:8687";
 export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
+
+// Docker-only snapserver.conf template (ADR-0020). {{stream}} expands to the pipewire
+// capture source line (derived from streamName), {{snapweb}} to the Snapweb enable flag
+// (true/false). Operator-editable in Settings; rendered by src/snapserver.ts.
+export const DEFAULT_SNAPSERVER_CONFIG = `[stream]
+{{stream}}
+
+[http]
+enabled = {{snapweb}}
+bind_to_address = 0.0.0.0
+port = 1780
+doc_root = /usr/share/snapserver/snapweb
+`;
 export const MAX_OUTPUT_DELAY_MS = 5000;
 
 export class ConfigError extends Error {}
@@ -100,6 +113,8 @@ export interface Config {
   proxy: { listen: string; token: string; readonlyToken: string };
   soloistWs: string;
   streamName: string;
+  snapweb: boolean;              // Docker only: serve the Snapweb UI ([http] enabled in snapserver.conf)
+  snapcastServerConfig: string; // Docker only: snapserver.conf template ({{stream}}, {{snapweb}} placeholders)
   autoplay: boolean;
   webhooks: WebhooksConfig;
   relay: RelayConfig;
@@ -235,6 +250,8 @@ function parseConfig(raw: unknown): Config {
     },
     soloistWs: d.soloist_ws || DEFAULT_SOLOIST_WS,
     streamName: snapcast.stream_name || DEFAULT_STREAM_NAME,
+    snapweb: coerceBool(snapcast.snapweb, true),
+    snapcastServerConfig: String(snapcast.server_config ?? "") || DEFAULT_SNAPSERVER_CONFIG,
     autoplay: coerceBool(d.autoplay, false),
     webhooks: {
       defaultUrl: String(webhooks.default_url ?? "").trim(),
@@ -307,7 +324,7 @@ function configToRaw(c: Config): Record<string, unknown> {
       readonly_token: c.proxy.readonlyToken,
     },
     soloist_ws: c.soloistWs,
-    snapcast: { stream_name: c.streamName },
+    snapcast: { stream_name: c.streamName, snapweb: c.snapweb, server_config: c.snapcastServerConfig },
     autoplay: c.autoplay,
     webhooks: {
       default_url: c.webhooks.defaultUrl,
@@ -411,6 +428,7 @@ export function configSummary(cfg: Config): Record<string, unknown> {
     wsUrl: `ws://${cfg.soloistWs}`,
     autoplay: cfg.autoplay,
     streamName: cfg.streamName,
+    snapweb: cfg.snapweb,
     secrets,
   };
 }

@@ -15,7 +15,8 @@ import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFE
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, DEFAULT_SNAPSERVER_CONFIG, type Config } from "./config.js";
+import { renderSnapserverConf, snapStreamSource } from "./snapserver.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./supervisor.js";
 import { rmSync } from "node:fs";
@@ -572,10 +573,31 @@ assert.equal(cfg.web.username, "", "web.username absent -> empty");
 assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
 assert.deepEqual(cfg.audio.outputs, [], "audio.outputs absent -> []");
 assert.equal(cfg.audio.snapcast, true, "audio.snapcast defaults on");
+assert.equal(cfg.snapweb, true, "snapcast.snapweb defaults on");
+assert.equal(cfg.snapcastServerConfig, DEFAULT_SNAPSERVER_CONFIG, "snapcast.server_config absent -> default template");
 assert.deepEqual(cfg.audio.outputDelays, {}, "audio.output_delays absent -> {}");
 assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
 assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
 assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
+});
+
+
+// Snapserver.conf rendering (ADR-0020): {{stream}} -> capture source line, {{snapweb}} ->
+// the enable flag; the default template round-trips both.
+await test("renderSnapserverConf substitutes {{stream}} and {{snapweb}}", async () => {
+  const base = defaultConfig();
+  const on = renderSnapserverConf({ ...base, streamName: "Party", snapweb: true });
+  assert.ok(on.includes(snapStreamSource({ ...base, streamName: "Party" })), "{{stream}} expands to the capture source for the stream name");
+  assert.ok(/name=Party&/.test(on), "stream name is interpolated into the source");
+  assert.ok(on.includes("enabled = true"), "{{snapweb}} true when snapweb on");
+  assert.ok(!on.includes("{{"), "no unresolved placeholders remain");
+
+  const off = renderSnapserverConf({ ...base, snapweb: false });
+  assert.ok(off.includes("enabled = false"), "{{snapweb}} false when snapweb off");
+
+  // An empty template falls back to the built-in default rather than rendering blank.
+  const empty = renderSnapserverConf({ ...base, snapcastServerConfig: "" });
+  assert.equal(empty, renderSnapserverConf({ ...base, snapcastServerConfig: DEFAULT_SNAPSERVER_CONFIG }), "empty template -> default");
 });
 
 

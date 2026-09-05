@@ -3,21 +3,18 @@
 # pipewire:// source (ADR-0002) and serves the stream to LAN Snapclients. Runs on
 # host networking (see docker-compose) so clients reach it on 1704/1705.
 #
-# Render snapserver.conf from the Config File's stream_name (ADR-0010: no env).
-# Fall back to the "Spotify" default if load_config raises (e.g. the Proxy has not
-# seeded /config yet, or a config error) so a config gap doesn't take the audio
-# server down with it.
-name=$(cd /app && node -e 'import("./dist/config.js").then(m=>process.stdout.write(String(m.loadConfig("/config/config.yaml").streamName))).catch(()=>process.exit(1))' 2>/dev/null) \
-  || name="Spotify"
+# Render snapserver.conf from the operator's editable template (ADR-0020: {{stream}}
+# + {{snapweb}} placeholders, no env per ADR-0010). The Proxy renders byte-identically
+# on restart, so the on-disk file is the reference for "restart Snapcast to apply".
+# Fall back to a built-in default if load/render raises (e.g. the Proxy has not seeded
+# /config yet, or a config error) so a config gap doesn't take the audio server down.
+render_ok=$(cd /app && node -e 'import("./dist/snapserver.js").then(m=>{m.renderConfToFileFromPath("/config/config.yaml");process.stdout.write("ok")}).catch(()=>process.exit(1))' 2>/dev/null) \
+  || render_ok=""
 
-wait-for-sink soloist-sink
-
-# The Proxy owns all fan-out links (ADR-0011): it links soloist-sink:monitor to
-# this capture node when Snapcast is an enabled Audio Output. Snapserver just runs.
-
-cat > /etc/snapserver.conf <<EOF
+if [ "$render_ok" != "ok" ]; then
+  cat > /etc/snapserver.conf <<EOF
 [stream]
-source = pipewire://?name=${name}&sampleformat=48000:16:2&codec=flac&capture_sink=true&target=soloist-sink
+source = pipewire://?name=Spotify&sampleformat=48000:16:2&codec=flac&capture_sink=true&target=soloist-sink
 
 [http]
 enabled = true
@@ -25,5 +22,11 @@ bind_to_address = 0.0.0.0
 port = 1780
 doc_root = /usr/share/snapserver/snapweb
 EOF
+fi
+
+wait-for-sink soloist-sink
+
+# The Proxy owns all fan-out links (ADR-0011): it links soloist-sink:monitor to
+# this capture node when Snapcast is an enabled Audio Output. Snapserver just runs.
 
 exec snapserver -c /etc/snapserver.conf

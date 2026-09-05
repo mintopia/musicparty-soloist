@@ -12,6 +12,7 @@ import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
 import { getSinkCache, refreshSinkCache, reconcileOutputs, listStandaloneSinks } from "./pipewire.js";
 import { isDockerMode } from "./supervisor.js";
+import { restartSnapserver, snapcastNeedsRestart } from "./snapserver.js";
 import { safeStrEqual } from "./util.js";
 import { makeLog } from "./log.js";
 
@@ -408,7 +409,12 @@ export function handleWebRequest(
 
   if (path === "/api/config-summary" && method === "GET") {
     if (apiAuthed(req, res, cfg)) {
-      json(res, 200, { ...configSummary(cfg), pendingRestart: control?.pendingRestart(cfg) ?? false, dockerMode: isDockerMode() });
+      json(res, 200, {
+        ...configSummary(cfg),
+        pendingRestart: control?.pendingRestart(cfg) ?? false,
+        pendingSnapcastRestart: isDockerMode() && snapcastNeedsRestart(cfg),
+        dockerMode: isDockerMode(),
+      });
     }
     return true;
   }
@@ -429,6 +435,19 @@ export function handleWebRequest(
       control?.restart(cfg);
       log("restart-soloist requested via API");
       json(res, 200, { ok: true, pendingRestart: false });
+    }
+    return true;
+  }
+
+  // Re-render snapserver.conf from the current config and bounce the s6 snapserver service
+  // (Docker only). Applies edits to the Snapcast Server Config / Snapweb toggle (ADR-0020).
+  if (path === "/api/restart-snapcast" && method === "POST") {
+    if (apiAuthed(req, res, cfg)) {
+      if (!isDockerMode()) return json(res, 400, { error: "not in docker mode" }), true;
+      restartSnapserver(cfg).then(
+        () => json(res, 200, { ok: true, pendingSnapcastRestart: false }),
+        (err) => json(res, 500, { error: (err as Error).message }),
+      );
     }
     return true;
   }

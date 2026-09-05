@@ -7,6 +7,11 @@ import SecretRow from "../components/SecretRow.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 
 const { config, summary, secretSet, loaded } = useConfig();
+
+// Placeholder tokens shown in the Snapcast config hint. Kept as string constants because a
+// literal "{{…}}" in the template would be parsed as a Vue interpolation.
+const streamPh = "{{stream}}";
+const snapwebPh = "{{snapweb}}";
 // The working copy is a reactive Record; the typed accessors below are only for the
 // template's benefit. Writing through it auto-flips `dirty` — no markDirty needed.
 const c = config as any;
@@ -102,6 +107,24 @@ const pill = computed(() => {
       </div>
     </SectionCard>
 
+    <SectionCard v-if="summary.dockerMode" title="Snapcast" subtitle="Multi-room audio server (Docker). Changes apply after a Snapcast restart.">
+      <div class="setrow first">
+        <div class="setrow-txt">
+          <div class="setrow-title">Enable Snapweb</div>
+          <div class="setrow-sub">Serve the Snapcast web UI and show its link in the top bar.</div>
+        </div>
+        <ToggleSwitch :on="c.snapweb" label="Enable Snapweb" @toggle="c.snapweb = !c.snapweb" />
+      </div>
+      <div class="tf snap-conf">
+        <label class="flabel">Snapcast server config</label>
+        <textarea class="field mono" rows="12" spellcheck="false" v-model="c.snapcastServerConfig"></textarea>
+        <div class="dev-hint">
+          <code>{{ streamPh }}</code> expands to the capture source line,
+          <code>{{ snapwebPh }}</code> to the Snapweb enable flag (true/false).
+        </div>
+      </div>
+    </SectionCard>
+
     <SectionCard
       title="WebSocket relay"
       subtitle="Bridge Soloist to an external server: outbound frames are republished, received frames are relayed back as commands."
@@ -152,6 +175,11 @@ const pill = computed(() => {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line);
 }
+.setrow.first { margin-top: 0; padding-top: 0; border-top: none; }
+.snap-conf { margin-top: 20px; }
+.snap-conf .field { width: 100%; box-sizing: border-box; }
+textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.5; resize: vertical; }
+.snap-conf code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--sub); padding: 1px 4px; border-radius: 4px; }
 .setrow-txt { min-width: 0; }
 .setrow-title { font-size: 14px; font-weight: 600; }
 .setrow-sub { font-size: 12.5px; color: var(--dim); margin-top: 2px; }

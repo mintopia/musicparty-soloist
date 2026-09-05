@@ -15,6 +15,10 @@ const playback = usePlayback();
 // the summary confirms standalone.
 const standalone = computed(() => cfg.summary.dockerMode === false);
 
+// Snapweb link shows only when the Snapcast HTTP server is enabled. Treat "unknown"
+// (pre-load) as enabled so the link never flickers out on the existing container UI.
+const snapwebEnabled = computed(() => cfg.summary.snapweb !== false);
+
 const tabs = computed(() => {
   const all = [
     { to: "/", label: "Now Playing" },
@@ -66,7 +70,7 @@ onMounted(() => {
 
       <MiniPlayer />
 
-      <a v-if="!standalone" class="btn snapweb" :href="snapwebUrl" target="_blank" rel="noopener" title="Open Snapweb">
+      <a v-if="!standalone && snapwebEnabled" class="btn snapweb" :href="snapwebUrl" target="_blank" rel="noopener" title="Open Snapweb">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4M7 6v12M11 3v18M15 8v8M19 5v14"/></svg>
         Snapweb
       </a>
@@ -77,6 +81,11 @@ onMounted(() => {
     <div v-if="cfg.summary.pendingRestart" class="banner">
       <span>Soloist needs a restart to apply changes.</span>
       <button class="btn" @click="cfg.restartSoloist()">Restart</button>
+    </div>
+
+    <div v-if="cfg.summary.pendingSnapcastRestart" class="banner">
+      <span>Snapcast needs a restart to apply the server config.</span>
+      <button class="btn" @click="cfg.restartSnapcast()">Restart Snapcast</button>
     </div>
 
     <main class="wrap">
