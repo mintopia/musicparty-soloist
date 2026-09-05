@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { usePlayback } from "../composables/usePlayback";
-import { trackHasSyncedLyrics } from "../lib/lyrics";
+import { fetchSyncedLyrics } from "../lib/overlay-engine";
 import Marquee from "./Marquee.vue";
 import { PhMicrophoneStage, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhSpeakerSimpleHigh, PhSpeakerSimpleX } from "@phosphor-icons/vue";
 
@@ -29,8 +29,8 @@ watch(trackKey, (key) => {
   hasLyrics.value = false;
   const t = state.track;
   if (!key || !t) return;
-  trackHasSyncedLyrics(t).then((ok) => {
-    if (trackKey.value === key) hasLyrics.value = ok;
+  fetchSyncedLyrics(t).then((lines) => {
+    if (trackKey.value === key) hasLyrics.value = !!lines?.length;
   }).catch(() => { /* transient — leave marker off */ });
 }, { immediate: true });
 
