@@ -921,37 +921,6 @@ await test("Hub getters + buildProxyStatus summary", async () => {
 });
 
 
-// App-Control onSubscribe: a producer hook fires once per newly-subscribed stream and seeds
-// just that socket; a repeated subscribe re-fires nothing; a hook throw is isolated.
-await test("AppControl onSubscribe seeds a new subscriber once", async () => {
-  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
-  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
-  const ac = new AppControl(cfg);
-  ac.onSubscribe((stream, send) => {
-    if (stream === "frame") throw new Error("boom"); // isolated: must not stop clients being seeded
-    send({ snapshot: stream });
-  });
-
-  const ls: Record<string, ((...a: any[]) => void)[]> = {};
-  const ws = {
-    readyState: WebSocket.OPEN, bufferedAmount: 0, sent: [] as string[],
-    on(ev: string, fn: (...a: any[]) => void) { (ls[ev] ??= []).push(fn); return this; },
-    emit(ev: string, ...a: any[]) { (ls[ev] ?? []).forEach((f) => f(...a)); },
-    send(d: string) { this.sent.push(d); }, close() {},
-  };
-  ac.register(ws as unknown as WebSocket, cookie);
-
-  // Subscribing to two streams seeds each once; the throwing `frame` hook is swallowed.
-  ws.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "clients"] })), false);
-  assert.deepEqual(ws.sent, [JSON.stringify({ stream: "clients", data: { snapshot: "clients" } })], "clients seeded once; frame hook throw isolated");
-
-  // Re-subscribing to an already-subscribed stream re-seeds nothing (idempotent).
-  ws.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
-  assert.equal(ws.sent.length, 1, "repeat subscribe re-fires no snapshot");
-  ac.stop();
-});
-
-
 // App-Control upgrade gate: a Debug Subscriber upgrade needs a valid Web Session cookie AND
 // a same-host Origin. Tokens are not accepted; a host mismatch or missing/malformed Origin is
 // rejected; a scheme-only mismatch is NOT a rejection.
@@ -967,9 +936,10 @@ await test("appControlAllowed session+same-host gate", async () => {
 });
 
 
-// Debug Subscriber tier: subscribe validation, idempotency, safe handling of bad frames,
-// backpressure gating, logout/pw-rotation close, and exclusion from the Client Count.
-await test("AppControl Debug Subscriber tier", async () => {
+// Debug Subscriber tier: onSubscribe seeding, subscribe validation, idempotency, safe handling
+// of bad frames, backpressure gating, logout/pw-rotation close, exclusion from the Client
+// Count, and refusal of a cookieless registration.
+await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/recheck/cookieless)", async () => {
   const webCfg = { username: "admin", password: "pw", sessionSecret: AUTH_SECRET };
   const cfg = authCfg(CT, RT, webCfg);
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
@@ -989,6 +959,21 @@ await test("AppControl Debug Subscriber tier", async () => {
       close(code, reason) { this.closed = { code, reason }; this.readyState = WebSocket.CLOSED; },
     };
   };
+
+  // onSubscribe: a producer hook fires once per newly-subscribed stream and seeds just that
+  // socket; a repeated subscribe re-fires nothing; a hook throw is isolated.
+  const acSeed = new AppControl(cfg);
+  acSeed.onSubscribe((stream, send) => {
+    if (stream === "frame") throw new Error("boom"); // isolated: must not stop clients being seeded
+    send({ snapshot: stream });
+  });
+  const seedWs = fakeWs();
+  acSeed.register(seedWs as unknown as WebSocket, cookie);
+  seedWs.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "clients"] })), false);
+  assert.deepEqual(seedWs.sent, [JSON.stringify({ stream: "clients", data: { snapshot: "clients" } })], "clients seeded once; frame hook throw isolated");
+  seedWs.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
+  assert.equal(seedWs.sent.length, 1, "repeat subscribe re-fires no snapshot");
+  await acSeed.stop();
 
   const ac = new AppControl(cfg);
 
@@ -1045,22 +1030,18 @@ await test("AppControl Debug Subscriber tier", async () => {
   ac.recheck();
   assert.equal(c.closed?.code, 1008, "re-check closes a session revoked by password rotation");
 
-  await ac.stop();
-});
-
-
-// A registration with no session cookie is refused outright (defence in depth: the upgrade
-// gate already requires one, but register never trusts a cookieless socket).
-await test("AppControl refuses a cookieless registration", async () => {
-  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
-  const ac = new AppControl(cfg);
-  let closed: number | null = null;
-  const ws = { readyState: WebSocket.OPEN, on() { return this; }, close(code: number) { closed = code; } };
-  ac.register(ws as unknown as WebSocket, "");
-  assert.equal(ac.count(), 0, "no subscriber registered without a session cookie");
-  assert.equal(closed, 1008, "cookieless socket closed 1008");
+  // A registration with no session cookie is refused outright (defence in depth: the upgrade
+  // gate already requires one, but register never trusts a cookieless socket).
+  const acC = new AppControl(cfg);
+  let closedC: number | null = null;
+  const wsC = { readyState: WebSocket.OPEN, on() { return this; }, close(code: number) { closedC = code; } };
+  acC.register(wsC as unknown as WebSocket, "");
+  assert.equal(acC.count(), 0, "no subscriber registered without a session cookie");
+  assert.equal(closedC, 1008, "cookieless socket closed 1008");
   assert.equal(sessionFingerprint(""), null, "empty cookie has no fingerprint");
   assert.equal(DEBUG_STREAMS.includes("frame"), true, "fixed stream set includes frame");
+  await acC.stop();
+
   await ac.stop();
 });
 
@@ -1129,12 +1110,14 @@ await test("AppControl.stop() clears the interval, terminates subscribers, and a
 });
 
 
-// close() lifecycle (integration): a live Debug Subscriber socket is torn down, the listener
-// stops accepting connections, and the returned Promise resolves once shutdown completes.
-await test("RunningProxy.close() tears down debug sockets and the App-Control server", async () => {
+// makeServer App-Control lifecycle (integration): a POST /logout closes every App-Control
+// socket opened under that session (ADR-0016); then close() tears down a live Debug Subscriber,
+// stops the listener accepting connections, and resolves once shutdown completes. Both run
+// against one real makeServer to avoid a second full server spin-up.
+await test("makeServer App-Control lifecycle: logout-close + close teardown", async () => {
   const prevDocker = isDockerMode();
   setDockerMode(false); // no PipeWire fan-out / sink polling under test
-  const dir = mkdtempSync(join(tmpdir(), "close-"));
+  const dir = mkdtempSync(join(tmpdir(), "lifecycle-"));
   const cfgPath = join(dir, "config.yaml");
   // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
   const probe = createServer();
@@ -1148,21 +1131,34 @@ await test("RunningProxy.close() tears down debug sockets and the App-Control se
   cfg.proxy.listen = `127.0.0.1:${port}`;
   cfg.soloistWs = "127.0.0.1:1"; // upstream is unreachable; the Hub retries until close() stops it
   const running = await makeServer(cfg, cfgPath);
-  try {
-    const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const connect = async () => {
     const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
       headers: { cookie, origin: `http://127.0.0.1:${port}` },
     });
     await once(client, "open");
     for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    return client;
+  };
+  try {
+    // logout: a POST /logout closes the session's App-Control socket with 1008.
+    const c1 = await connect();
+    assert.equal(running.appControl.count(), 1, "debug subscriber connected");
+    const c1Closed = once(c1, "close");
+    const res = await fetch(`http://127.0.0.1:${port}/logout`, { method: "POST", headers: { cookie }, redirect: "manual" });
+    assert.equal(res.status, 302, "logout redirects to /login");
+    const [logoutCode] = (await c1Closed) as [number];
+    assert.equal(logoutCode, 1008, "App-Control socket closed with 1008 (logged out)");
+    for (let i = 0; i < 100 && running.appControl.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 0, "no debug subscribers after logout");
+
+    // close(): a live subscriber is torn down, the listener stops, and a fresh connection is refused.
+    const c2 = await connect();
     assert.equal(running.appControl.count(), 1, "debug subscriber connected before close");
-
-    const clientClosed = once(client, "close");
+    const c2Closed = once(c2, "close");
     await running.close();
-    await clientClosed; // the subscriber socket was terminated by the teardown
+    await c2Closed; // the subscriber socket was terminated by the teardown
     assert.equal(running.appControl.count(), 0, "no debug subscribers after close");
-
-    // the listener is gone: a fresh connection is refused
     const dead = new WebSocket(`ws://127.0.0.1:${port}/`);
     await assert.rejects(once(dead, "open"), "server no longer accepts connections after close");
   } finally {
@@ -1276,49 +1272,6 @@ await test("integration purity: diagnostics stay on App-Control; genuine frames 
     upstream.close();
     relaySrv.close();
     hookSrv.close();
-    setDockerMode(prevDocker);
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-
-// Logout revokes the diagnostics channel: a POST /logout closes every App-Control socket opened
-// under that session (ADR-0016).
-await test("integration: POST /logout closes the session's App-Control socket", async () => {
-  const prevDocker = isDockerMode();
-  setDockerMode(false);
-  const dir = mkdtempSync(join(tmpdir(), "logout-"));
-  const cfgPath = join(dir, "config.yaml");
-  const probe = createServer();
-  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
-  const port = (probe.address() as { port: number }).port;
-  await new Promise<void>((r) => probe.close(() => r()));
-
-  const cfg = defaultConfig();
-  cfg.web.username = "admin";
-  cfg.web.password = "pw";
-  cfg.web.sessionSecret = AUTH_SECRET;
-  cfg.proxy.listen = `127.0.0.1:${port}`;
-  cfg.soloistWs = "127.0.0.1:1"; // upstream unreachable; irrelevant to this test
-  const running = await makeServer(cfg, cfgPath);
-  try {
-    const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
-    const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
-      headers: { cookie, origin: `http://127.0.0.1:${port}` },
-    });
-    await once(client, "open");
-    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
-    assert.equal(running.appControl.count(), 1, "debug subscriber connected");
-
-    const closed = once(client, "close");
-    const res = await fetch(`http://127.0.0.1:${port}/logout`, { method: "POST", headers: { cookie }, redirect: "manual" });
-    assert.equal(res.status, 302, "logout redirects to /login");
-    const [code] = (await closed) as [number];
-    assert.equal(code, 1008, "App-Control socket closed with 1008 (logged out)");
-    for (let i = 0; i < 100 && running.appControl.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
-    assert.equal(running.appControl.count(), 0, "no debug subscribers after logout");
-  } finally {
-    await running.close();
     setDockerMode(prevDocker);
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1464,37 +1417,13 @@ await test("supervise restart aborts current run", async () => {
 });
 
 
-// Readiness gate: supervise parks (never acquires/spawns) until the config is
-// minimally valid, then spawns once web creds land — so completing first-run setup
-// starts Soloist without a process restart.
-await test("supervise readiness gate parks", async () => {
-  const sdir = mkdtempSync(join(tmpdir(), "sup-gate-"));
-  const script = join(sdir, "fake-soloist.sh");
-  writeFileSync(script, `#!/bin/sh\nexec sleep 30\n`, { mode: 0o755 });
-  // Ready except for web creds (mirrors the migrated config before first-run setup).
-  const gateCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "", password: "", sessionSecret: "" } } as unknown as Config;
-  const ac = new AbortController();
-  let acquired = false;
-  const supP = supervise(gateCfg, { signal: ac.signal, acquire: async () => { acquired = true; return script; } });
-  supP.catch(() => {});
-  await new Promise((r) => setTimeout(r, 1200));
-  assert.equal(acquired, false, "supervise parks (no acquire) while web creds unset");
-
-  gateCfg.web.username = "dj";
-  gateCfg.web.password = "pw";
-  for (let i = 0; i < 200 && !acquired; i++) await new Promise((r) => setTimeout(r, 20));
-  assert.equal(acquired, true, "supervise spawns once creds land — no restart needed");
-  ac.abort();
-  await supP.catch(() => {});
-  rmSync(sdir, { recursive: true, force: true });
-});
-
-
-// Supervisor state machine: soloistStatus() tracks the loop's transient phase. Drive
-// a full cycle — park → acquire → run → exit-10 re-acquire → run → exit-1 backoff →
-// shutdown — and assert it visits each boundary in order. Records every setState so
-// transient phases (starting/running) are captured without racing the poller.
-await test("supervise state machine transitions", async () => {
+// Supervisor state machine + readiness gate: soloistStatus() tracks the loop's transient
+// phase. Drive a full cycle — park (no acquire while web creds unset) → acquire → run →
+// exit-10 re-acquire → run → exit-1 backoff → shutdown — and assert it visits each boundary
+// in order. Completing first-run setup (creds land) spawns Soloist without a process restart.
+// Records every setState so transient phases (starting/running) are captured without racing
+// the poller.
+await test("supervise state machine transitions + readiness gate", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-state-"));
   // First build "expires" (exit 10 -> re-acquire), second "crashes" (exit 1 -> backoff);
   // each runs ~200ms so the running phase is observable before it exits.
@@ -1518,6 +1447,7 @@ await test("supervise state machine transitions", async () => {
 
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(control.soloistStatus().state, "waiting", "parks in waiting before config is ready");
+  assert.equal(acq, 0, "readiness gate: no acquire/spawn attempted while web creds are unset");
   stCfg.web.username = "dj";
   stCfg.web.password = "pw";
 
