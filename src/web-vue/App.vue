@@ -84,12 +84,12 @@ onMounted(() => {
 
     <div v-if="cfg.summary.pendingRestart" class="banner">
       <span>Soloist needs a restart to apply changes.</span>
-      <button class="btn" @click="cfg.restartSoloist()">Restart</button>
+      <button class="btn pri-warn" @click="cfg.restartSoloist()">Restart</button>
     </div>
 
     <div v-if="cfg.summary.pendingSnapcastRestart" class="banner">
       <span>Snapcast needs a restart to apply the server config.</span>
-      <button class="btn" @click="cfg.restartSnapcast()">Restart Snapcast</button>
+      <button class="btn pri-warn" @click="cfg.restartSnapcast()">Restart Snapcast</button>
     </div>
 
     <main class="wrap">
