@@ -15,8 +15,8 @@ import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFE
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, DEFAULT_SNAPSERVER_CONFIG, type Config } from "./config.js";
-import { renderSnapserverConf, snapStreamSource } from "./snapserver.js";
+import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, MAX_OUTPUT_DELAY_MS, DEFAULT_OVERLAY, DEFAULT_SNAPSERVER_CONFIG, type Config } from "./config.js";
+import { renderSnapserverConf, snapStreamSource, writeSnapserverConf, renderConfToFileFromPath } from "./snapserver.js";
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./supervisor.js";
 import { rmSync } from "node:fs";
@@ -226,17 +226,22 @@ assert.equal(decodeFrame(buf('{"type":"x"}'), true), null, "binary frame skipped
 });
 
 
-await test("coerceBool", async () => {
+await test("coerce* helpers (bool/int/float)", async () => {
 assert.equal(coerceBool("true", false), true);
 assert.equal(coerceBool("NO", true), false);
 assert.equal(coerceBool("1", false), true);
 assert.equal(coerceBool("", true), true, "empty falls back to default");
 assert.equal(coerceBool(undefined, false), false, "unset falls back to default");
 assert.equal(coerceBool("garbage", true), true, "unrecognized falls back to default");
+assert.equal(coerceBool("  YES  ", false), true, "surrounding whitespace tolerated");
 assert.equal(coerceInt("42", 0), 42);
+assert.equal(coerceInt("  42 ", 0), 42, "surrounding whitespace tolerated");
+assert.equal(coerceInt("-7", 0), -7, "negative integer parsed");
 assert.equal(coerceInt("", 5), 5, "empty falls back to default");
 assert.equal(coerceInt("nope", 7), 7, "non-numeric falls back to default");
 assert.equal(coerceFloat("0.35", 1), 0.35, "parses a fractional value");
+assert.equal(coerceFloat("  0.35 ", 1), 0.35, "surrounding whitespace tolerated");
+assert.equal(coerceFloat("-1.5", 0), -1.5, "negative float parsed");
 assert.equal(coerceFloat("", 0.5), 0.5, "empty falls back to default");
 assert.equal(coerceFloat(undefined, 0.5), 0.5, "unset falls back to default");
 assert.equal(coerceFloat("nope", 0.25), 0.25, "non-numeric falls back to default");
@@ -539,55 +544,66 @@ await test("overlayBootstrap token + overlay only", async () => {
 });
 
 
-const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
-const cfgPath = join(dir, "config.yaml");
-// Values are literal now — no ${VAR} interpolation, no env reads.
-writeFileSync(
-  cfgPath,
-  [
-    "# hand-written comment that must survive a save",
-    "soloist:",
-    '  device_name: "Party Speaker"  # inline note',
-    '  api_key: "key123"',
-    "  extra_args: []",
-    "proxy:",
-    '  token: "tok123"',
-    "  listen: 127.0.0.1:9000",
-  ].join("\n"),
-);
+// A base Config File written to a fresh tmp dir per test, so the config tests below are
+// order-independent — no shared, mutate-in-place fixture threaded across test() calls.
+function freshConfigDir(): { dir: string; cfgPath: string } {
+  const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
+  const cfgPath = join(dir, "config.yaml");
+  // Values are literal — no ${VAR} interpolation, no env reads.
+  writeFileSync(
+    cfgPath,
+    [
+      "# hand-written comment that must survive a save",
+      "soloist:",
+      '  device_name: "Party Speaker"  # inline note',
+      '  api_key: "key123"',
+      "  extra_args: []",
+      "proxy:",
+      '  token: "tok123"',
+      "  listen: 127.0.0.1:9000",
+    ].join("\n"),
+  );
+  return { dir, cfgPath };
+}
 
-const cfg = loadConfig(cfgPath);
-await test("cfg", async () => {
-assert.equal(cfg.soloist.deviceName, "Party Speaker", "literal device_name, no interpolation");
-assert.equal(cfg.soloist.apiKey, "key123", "literal value, no env");
-assert.equal(cfg.proxy.token, "tok123");
-assert.equal(cfg.proxy.listen, "127.0.0.1:9000");
-assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
-assert.equal(cfg.webhooks.defaultUrl, "", "webhooks absent -> empty default_url");
-assert.deepEqual(cfg.webhooks.urls, {}, "webhooks absent -> no urls");
-assert.equal(cfg.webhooks.delayMs, 0, "delay_ms default 0");
-});
-
-
-// New config sections default sanely when absent.
-await test("New config sections default sanely when absent", async () => {
-assert.equal(cfg.proxy.readonlyToken, "", "readonly_token absent -> empty");
-assert.equal(cfg.web.username, "", "web.username absent -> empty");
-assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
-assert.deepEqual(cfg.audio.outputs, [], "audio.outputs absent -> []");
-assert.equal(cfg.audio.snapcast, true, "audio.snapcast defaults on");
-assert.equal(cfg.snapweb, true, "snapcast.snapweb defaults on");
-assert.equal(cfg.snapcastServerConfig, DEFAULT_SNAPSERVER_CONFIG, "snapcast.server_config absent -> default template");
-assert.deepEqual(cfg.audio.outputDelays, {}, "audio.output_delays absent -> {}");
-assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
-assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
-assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
+// loadConfig: literal values (no ${VAR} interpolation), sane section defaults for absent
+// sections, and fail-fast on a missing file.
+await test("loadConfig: literals, section defaults, missing file", async () => {
+  const { dir, cfgPath } = freshConfigDir();
+  const cfg = loadConfig(cfgPath);
+  assert.equal(cfg.soloist.deviceName, "Party Speaker", "literal device_name, no interpolation");
+  assert.equal(cfg.soloist.apiKey, "key123", "literal value, no env");
+  assert.equal(cfg.proxy.token, "tok123");
+  assert.equal(cfg.proxy.listen, "127.0.0.1:9000");
+  // absent-section defaults
+  assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
+  assert.equal(cfg.webhooks.defaultUrl, "", "webhooks absent -> empty default_url");
+  assert.deepEqual(cfg.webhooks.urls, {}, "webhooks absent -> no urls");
+  assert.equal(cfg.webhooks.delayMs, 0, "delay_ms default 0");
+  assert.equal(cfg.proxy.readonlyToken, "", "readonly_token absent -> empty");
+  assert.equal(cfg.web.username, "", "web.username absent -> empty");
+  assert.equal(cfg.web.sessionSecret, "", "web.session_secret absent -> empty");
+  assert.deepEqual(cfg.audio.outputs, [], "audio.outputs absent -> []");
+  assert.equal(cfg.audio.snapcast, true, "audio.snapcast defaults on");
+  assert.equal(cfg.snapweb, true, "snapcast.snapweb defaults on");
+  assert.equal(cfg.snapcastServerConfig, DEFAULT_SNAPSERVER_CONFIG, "snapcast.server_config absent -> default template");
+  assert.deepEqual(cfg.audio.outputDelays, {}, "audio.output_delays absent -> {}");
+  assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
+  assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
+  assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
+  // ${VAR} is stored and returned verbatim.
+  const litPath = join(dir, "literal.yaml");
+  writeFileSync(litPath, ['soloist:', '  device_name: "d"', '  api_key: "${API}"', "  extra_args: []", "proxy:", '  token: "t"'].join("\n"));
+  assert.equal(loadConfig(litPath).soloist.apiKey, "${API}", "no interpolation: ${VAR} kept literal");
+  // missing file fails fast
+  assert.throws(() => loadConfig(join(dir, "nope.yaml")), ConfigError, "missing file fails fast");
 });
 
 
 // Snapserver.conf rendering (ADR-0020): {{stream}} -> capture source line, {{snapweb}} ->
-// the enable flag; the default template round-trips both.
-await test("renderSnapserverConf substitutes {{stream}} and {{snapweb}}", async () => {
+// the enable flag, empty template -> built-in default; and the two render-to-file entry
+// points emit exactly renderSnapserverConf(cfg) (the "restart-to-apply matches" invariant).
+await test("renderSnapserverConf + write paths", async () => {
   const base = defaultConfig();
   const on = renderSnapserverConf({ ...base, streamName: "Party", snapweb: true });
   assert.ok(on.includes(snapStreamSource({ ...base, streamName: "Party" })), "{{stream}} expands to the capture source for the stream name");
@@ -601,166 +617,160 @@ await test("renderSnapserverConf substitutes {{stream}} and {{snapweb}}", async 
   // An empty template falls back to the built-in default rather than rendering blank.
   const empty = renderSnapserverConf({ ...base, snapcastServerConfig: "" });
   assert.equal(empty, renderSnapserverConf({ ...base, snapcastServerConfig: DEFAULT_SNAPSERVER_CONFIG }), "empty template -> default");
+
+  const { dir, cfgPath } = freshConfigDir();
+  const cfg = loadConfig(cfgPath);
+  const outA = join(dir, "snap-a.conf");
+  writeSnapserverConf(cfg, outA);
+  assert.equal(readFileSync(outA, "utf8"), renderSnapserverConf(cfg), "writeSnapserverConf writes exactly the rendered conf");
+  const outB = join(dir, "snap-b.conf");
+  renderConfToFileFromPath(cfgPath, outB);
+  assert.equal(readFileSync(outB, "utf8"), renderSnapserverConf(loadConfig(cfgPath)), "renderConfToFileFromPath loads the config then writes the rendered conf");
 });
 
 
-// `${VAR}` is no longer special — it is stored and returned verbatim.
-const litPath = join(dir, "literal.yaml");
-await test("loadConfig", async () => {
-writeFileSync(litPath, ['soloist:', '  device_name: "d"', '  api_key: "${API}"', "  extra_args: []", "proxy:", '  token: "t"'].join("\n"));
-assert.equal(loadConfig(litPath).soloist.apiKey, "${API}", "no interpolation: ${VAR} kept literal");
+// saveConfig: round-trips preserving comments + changed values, clamps output_delays to the
+// max on load, writes atomically (no temp file left behind), and refuses to persist an
+// invalid config (leaving the file untouched).
+await test("saveConfig round-trip, atomicity, rejection", async () => {
+  const { dir, cfgPath } = freshConfigDir();
+  const cfg = loadConfig(cfgPath);
+  cfg.soloist.deviceName = "Renamed Speaker";
+  cfg.audio.outputs = ["alsa_output.hw_0"];
+  cfg.audio.outputDelays = { "alsa_output.hw_0": 250, over_range: MAX_OUTPUT_DELAY_MS + 1000 };
+  cfg.overlay.fontSize = 72;
+  saveConfig(cfgPath, cfg);
+
+  const savedText = readFileSync(cfgPath, "utf8");
+  assert.match(savedText, /hand-written comment that must survive/, "block comment preserved");
+  assert.match(savedText, /inline note/, "inline comment preserved");
+
+  const reloaded = loadConfig(cfgPath);
+  assert.equal(reloaded.soloist.deviceName, "Renamed Speaker", "changed value persisted");
+  assert.deepEqual(reloaded.audio.outputs, ["alsa_output.hw_0"], "list persisted");
+  assert.equal(reloaded.audio.outputDelays["alsa_output.hw_0"], 250, "output_delays round-trips through save/load");
+  assert.equal(reloaded.audio.outputDelays.over_range, MAX_OUTPUT_DELAY_MS, "output_delays clamped to MAX_OUTPUT_DELAY_MS on load");
+  assert.equal(reloaded.overlay.fontSize, 72, "overlay value persisted");
+
+  // Atomic write leaves no temp file behind.
+  assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".tmp-")), [], "no temp file left after save");
+
+  // Invalid config is never persisted (extra_args must be a list).
+  const before = readFileSync(cfgPath, "utf8");
+  const bad = loadConfig(cfgPath);
+  (bad.soloist as { extraArgs: unknown }).extraArgs = "not-a-list";
+  assert.throws(() => saveConfig(cfgPath, bad), ConfigError, "invalid config rejected");
+  assert.equal(readFileSync(cfgPath, "utf8"), before, "file untouched after rejected save");
 });
 
 
-await test("loadConfig", async () => {
-assert.throws(() => loadConfig(join(dir, "nope.yaml")), ConfigError, "missing file fails fast");
+// ensureSecrets: mints + persists absent secrets, is idempotent once they exist, and on a
+// fresh install (no file yet) also mints proxy.token so control-tier token auth works out of
+// the box after setup.
+await test("ensureSecrets mint/persist/idempotent/fresh", async () => {
+  const { dir, cfgPath } = freshConfigDir();
+  const secretsCfg = loadConfig(cfgPath);
+  assert.equal(secretsCfg.web.sessionSecret, "", "precondition: no session_secret");
+  assert.equal(ensureSecrets(cfgPath, secretsCfg), true, "first boot writes secrets");
+  assert.notEqual(secretsCfg.web.sessionSecret, "", "session_secret generated");
+  assert.notEqual(secretsCfg.proxy.readonlyToken, "", "readonly_token generated");
+
+  const persisted = loadConfig(cfgPath);
+  assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
+  assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
+  assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
+
+  // Fresh install: no config file yet — proxy.token is minted too.
+  const freshPath = join(dir, "fresh.yaml");
+  const fresh = defaultConfig();
+  assert.equal(fresh.proxy.token, "", "precondition: default config has no proxy.token");
+  assert.equal(ensureSecrets(freshPath, fresh), true, "fresh config: secrets minted");
+  assert.notEqual(fresh.proxy.token, "", "proxy.token minted");
+  assert.notEqual(fresh.web.sessionSecret, "", "session_secret minted");
+  assert.equal(loadConfig(freshPath).proxy.token, fresh.proxy.token, "proxy.token persisted");
 });
 
 
-// saveConfig round-trips preserving comments and writes the new value.
-cfg.soloist.deviceName = "Renamed Speaker";
-cfg.audio.outputs = ["alsa_output.hw_0"];
-cfg.audio.outputDelays = { "alsa_output.hw_0": 250, over_range: 9999 };
-cfg.overlay.fontSize = 72;
-saveConfig(cfgPath, cfg);
-const savedText = readFileSync(cfgPath, "utf8");
-await test("saveConfig preserves file comments", async () => {
-assert.match(savedText, /hand-written comment that must survive/, "block comment preserved");
-assert.match(savedText, /inline note/, "inline comment preserved");
-});
+// Config API secret handling: maskConfig hides secret values (-> true), configSummary flags
+// presence without leaking, applyApiConfig round-trips (masked-true keeps stored, fresh string
+// updates, masked-false/empty-string keep stored, hot/editable apply, locked fields immutable,
+// bad bodies throw), a plaintext web.password is hashed on the way in, and webhooks.urls is a
+// full-replace map so a dropped URL disappears and stays gone through save.
+await test("config API secret handling (mask/summary/apply/webhook-replace)", async () => {
+  const { cfgPath } = freshConfigDir();
+  const sCfg = loadConfig(cfgPath);
+  sCfg.soloist.apiKey = "SECRET_API";
+  sCfg.proxy.token = "SECRET_TOK";
+  sCfg.proxy.readonlyToken = "SECRET_RO";
+  sCfg.webhooks.secret = "SECRET_WH";
+  sCfg.relay.authorization = "SECRET_RELAY";
+  sCfg.web.password = "SECRET_PW";
+  sCfg.web.sessionSecret = "SECRET_SESS";
+  const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_RELAY", "SECRET_PW", "SECRET_SESS"];
 
-const reloaded = loadConfig(cfgPath);
-await test("reloaded", async () => {
-assert.equal(reloaded.soloist.deviceName, "Renamed Speaker", "changed value persisted");
-assert.deepEqual(reloaded.audio.outputs, ["alsa_output.hw_0"], "list persisted");
-assert.equal(reloaded.audio.outputDelays["alsa_output.hw_0"], 250, "output_delays round-trips through save/load");
-assert.equal(reloaded.audio.outputDelays.over_range, 5000, "output_delays clamped to 5000ms max on load");
-assert.equal(reloaded.overlay.fontSize, 72, "overlay value persisted");
-});
+  const masked = maskConfig(sCfg) as any;
+  assertNoLeak("maskConfig", masked, SECRETS);
+  assert.equal(masked.soloist.apiKey, true, "set secret masks to true");
+  assert.equal(masked.proxy.readonlyToken, true, "set secret masks to true");
+  assert.equal(masked.soloist.deviceName, sCfg.soloist.deviceName, "non-secret preserved in mask");
 
+  const summary = configSummary(sCfg) as any;
+  assertNoLeak("configSummary", summary, SECRETS);
+  assert.equal(summary.secrets.apiKey, true, "summary flags set secret");
+  assert.equal(summary.deviceName, sCfg.soloist.deviceName, "summary reports device name");
+  assert.equal(summary.soloistWs, sCfg.soloistWs, "summary reports soloist_ws");
+  assert.equal(summary.wsUrl, `ws://${sCfg.soloistWs}`, "summary reports WS URL");
+  assert.equal((configSummary(loadConfig(cfgPath)) as any).secrets.webPassword, false, "unset secret flags false");
 
-// Atomic write leaves no temp file behind.
-await test("Atomic write leaves no temp file behind", async () => {
-assert.deepEqual(
-  readdirSync(dir).filter((f) => f.includes(".tmp-")),
-  [],
-  "no temp file left after save",
-);
-});
+  const applied = applyApiConfig(sCfg, {
+    autoplay: true,
+    proxy: { token: true, readonlyToken: "NEW_RO", listen: "9.9.9.9:1" },
+    soloist: { apiKey: true, deviceName: "Renamed", dataDir: "/hacked" },
+    web: { password: false, sessionSecret: "" },
+  });
+  assert.equal(applied.proxy.token, "SECRET_TOK", "masked-true secret keeps stored value");
+  assert.equal(applied.proxy.readonlyToken, "NEW_RO", "fresh string secret updates");
+  assert.equal(applied.soloist.apiKey, "SECRET_API", "masked-true apiKey keeps stored value");
+  assert.equal(applied.web.password, "SECRET_PW", "masked-false secret keeps stored value");
+  assert.equal(applied.web.sessionSecret, "SECRET_SESS", "empty-string secret keeps stored value");
+  assert.equal(applied.autoplay, true, "hot field applies");
+  assert.equal(applied.soloist.deviceName, "Renamed", "editable field applies");
+  assert.equal(applied.proxy.listen, sCfg.proxy.listen, "locked proxy.listen unchanged");
+  assert.equal(applied.soloist.dataDir, sCfg.soloist.dataDir, "locked data_dir unchanged");
+  assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
+  assert.throws(() => applyApiConfig(sCfg, { webhooks: { urls: "nope" } }), ConfigError, "invalid result rejected");
 
+  // A plaintext web.password submitted via PUT (Replace flow) is stored hashed, never cleartext.
+  const pwApplied = applyApiConfig(sCfg, { web: { password: "plaintext-pw" } });
+  assert.ok(isPasswordHashed(pwApplied.web.password), "PUT plaintext password stored hashed");
+  assert.ok(verifyPassword("plaintext-pw", pwApplied.web.password), "hashed password verifies");
+  assert.notEqual(pwApplied.web.password, "plaintext-pw", "cleartext password not stored");
 
-// saveConfig never persists an invalid config. (Empty creds are valid now — setup
-// mode — so use a genuinely malformed field: extra_args must be a list.)
-const before = readFileSync(cfgPath, "utf8");
-const bad = loadConfig(cfgPath);
-await test("saveConfig", async () => {
-(bad.soloist as { extraArgs: unknown }).extraArgs = "not-a-list";
-assert.throws(() => saveConfig(cfgPath, bad), ConfigError, "invalid config rejected");
-assert.equal(readFileSync(cfgPath, "utf8"), before, "file untouched after rejected save");
-});
-
-
-// ensureSecrets mints and persists absent secrets, then is idempotent.
-const secretsCfg = loadConfig(cfgPath);
-await test("secretsCfg", async () => {
-assert.equal(secretsCfg.web.sessionSecret, "", "precondition: no session_secret");
-assert.equal(ensureSecrets(cfgPath, secretsCfg), true, "first boot writes secrets");
-assert.notEqual(secretsCfg.web.sessionSecret, "", "session_secret generated");
-assert.notEqual(secretsCfg.proxy.readonlyToken, "", "readonly_token generated");
-});
-
-const persisted = loadConfig(cfgPath);
-await test("persisted", async () => {
-assert.equal(persisted.web.sessionSecret, secretsCfg.web.sessionSecret, "session_secret persisted");
-assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
-assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
-});
-
-
-// Fresh install (no config file): ensureSecrets mints proxy.token too, so control-tier
-// token auth works out of the box after setup.
-const freshPath = join(dir, "fresh.yaml");
-const fresh = defaultConfig();
-await test("fresh", async () => {
-assert.equal(fresh.proxy.token, "", "precondition: default config has no proxy.token");
-assert.equal(ensureSecrets(freshPath, fresh), true, "fresh config: secrets minted");
-assert.notEqual(fresh.proxy.token, "", "proxy.token minted");
-assert.notEqual(fresh.web.sessionSecret, "", "session_secret minted");
-assert.equal(loadConfig(freshPath).proxy.token, fresh.proxy.token, "proxy.token persisted");
+  // webhooks.urls full-replace: a dropped URL disappears and the removal persists to file.
+  const whCfgBase = loadConfig(cfgPath);
+  whCfgBase.webhooks.urls = { track_changed: "http://a", error: "http://b" };
+  const whApplied = applyApiConfig(whCfgBase, { webhooks: { urls: { track_changed: "http://a" } } });
+  assert.deepEqual(whApplied.webhooks.urls, { track_changed: "http://a" }, "removed webhook URL dropped from config");
+  saveConfig(cfgPath, whApplied);
+  assert.deepEqual(loadConfig(cfgPath).webhooks.urls, { track_changed: "http://a" }, "webhook URL removal persisted to file");
 });
 
 
-// Config API: GET masks secrets, config-summary never leaks, PUT round-trips.
-const sCfg = loadConfig(cfgPath);
-sCfg.soloist.apiKey = "SECRET_API";
-sCfg.proxy.token = "SECRET_TOK";
-sCfg.proxy.readonlyToken = "SECRET_RO";
-sCfg.webhooks.secret = "SECRET_WH";
-sCfg.relay.authorization = "SECRET_RELAY";
-sCfg.web.password = "SECRET_PW";
-sCfg.web.sessionSecret = "SECRET_SESS";
-const SECRETS = ["SECRET_API", "SECRET_TOK", "SECRET_RO", "SECRET_WH", "SECRET_RELAY", "SECRET_PW", "SECRET_SESS"];
-
-const masked = maskConfig(sCfg) as any;
-await test("maskConfig masks secrets", async () => {
-assertNoLeak("maskConfig", masked, SECRETS);
-assert.equal(masked.soloist.apiKey, true, "set secret masks to true");
-assert.equal(masked.proxy.readonlyToken, true, "set secret masks to true");
-assert.equal(masked.soloist.deviceName, sCfg.soloist.deviceName, "non-secret preserved in mask");
-});
-
-
-const summary = configSummary(sCfg) as any;
-await test("configSummary flags secrets", async () => {
-assertNoLeak("configSummary", summary, SECRETS);
-assert.equal(summary.secrets.apiKey, true, "summary flags set secret");
-assert.equal(summary.deviceName, sCfg.soloist.deviceName, "summary reports device name");
-assert.equal(summary.soloistWs, sCfg.soloistWs, "summary reports soloist_ws");
-assert.equal(summary.wsUrl, `ws://${sCfg.soloistWs}`, "summary reports WS URL");
-assert.equal((configSummary(loadConfig(cfgPath)) as any).secrets.webPassword, false, "unset secret flags false");
-});
-
-
-const applied = applyApiConfig(sCfg, {
-  autoplay: true,
-  proxy: { token: true, readonlyToken: "NEW_RO", listen: "9.9.9.9:1" },
-  soloist: { apiKey: true, deviceName: "Renamed", dataDir: "/hacked" },
-  web: { password: false, sessionSecret: "" },
-});
-await test("applied", async () => {
-assert.equal(applied.proxy.token, "SECRET_TOK", "masked-true secret keeps stored value");
-assert.equal(applied.proxy.readonlyToken, "NEW_RO", "fresh string secret updates");
-assert.equal(applied.soloist.apiKey, "SECRET_API", "masked-true apiKey keeps stored value");
-assert.equal(applied.web.password, "SECRET_PW", "masked-false secret keeps stored value");
-assert.equal(applied.web.sessionSecret, "SECRET_SESS", "empty-string secret keeps stored value");
-assert.equal(applied.autoplay, true, "hot field applies");
-assert.equal(applied.soloist.deviceName, "Renamed", "editable field applies");
-assert.equal(applied.proxy.listen, sCfg.proxy.listen, "locked proxy.listen unchanged");
-assert.equal(applied.soloist.dataDir, sCfg.soloist.dataDir, "locked data_dir unchanged");
-assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
-assert.throws(() => applyApiConfig(sCfg, { webhooks: { urls: "nope" } }), ConfigError, "invalid result rejected");
-});
-
-
-// Prototype pollution (item 1 fix): a PUT body's "__proto__"/"constructor" keys must
-// never reach Object.prototype via deepMerge.
-await test("Prototype pollution (item 1 fix): a PUT body's \"__proto__\"/\"cons...", async () => {
-  const evil = JSON.parse('{"autoplay":true,"__proto__":{"polluted":"yes"},"soloist":{"__proto__":{"polluted":"yes"}}}');
-  applyApiConfig(sCfg, evil);
-  assert.equal(({} as any).polluted, undefined, "Object.prototype not polluted by top-level __proto__");
-  assert.equal((sCfg as any).polluted, undefined, "target itself not polluted");
-});
-
-
-// webhooks.urls is a full-replace map: a dropped URL disappears (not merged).
-const whCfgBase = loadConfig(cfgPath);
-whCfgBase.webhooks.urls = { track_changed: "http://a", error: "http://b" };
-const whApplied = applyApiConfig(whCfgBase, { webhooks: { urls: { track_changed: "http://a" } } });
-await test("whApplied", async () => {
-assert.deepEqual(whApplied.webhooks.urls, { track_changed: "http://a" }, "removed webhook URL dropped from config");
-// ...and the removal persists through saveConfig (mergeInto alone would keep it).
-saveConfig(cfgPath, whApplied);
-assert.deepEqual(loadConfig(cfgPath).webhooks.urls, { track_changed: "http://a" }, "webhook URL removal persisted to file");
+// applyApiConfig must never let a PUT body's __proto__/constructor/prototype keys reach
+// Object.prototype via deepMerge (item 1 fix). Kept standalone: burying this in a round-trip
+// test would hide a pollution regression behind unrelated green assertions.
+await test("applyApiConfig rejects prototype pollution", async () => {
+  const { cfgPath } = freshConfigDir();
+  const sCfg = loadConfig(cfgPath);
+  for (const evilJson of [
+    '{"autoplay":true,"__proto__":{"polluted":"yes"},"soloist":{"__proto__":{"polluted":"yes"}}}',
+    '{"constructor":{"prototype":{"polluted":"yes"}}}',
+    '{"soloist":{"constructor":{"prototype":{"polluted":"yes"}}}}',
+  ]) {
+    applyApiConfig(sCfg, JSON.parse(evilJson));
+    assert.equal(({} as any).polluted, undefined, `Object.prototype not polluted by ${evilJson}`);
+    assert.equal((sCfg as any).polluted, undefined, "target itself not polluted");
+  }
 });
 
 
