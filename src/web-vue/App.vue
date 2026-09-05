@@ -42,10 +42,12 @@ function isActive(t: { to: string; exact?: boolean }) {
 const snapwebUrl = `http://${location.hostname}:1780`;
 const showSnapweb = computed(() => !standalone.value && snapwebEnabled.value);
 
-// Save bar: hidden when clean/idle; "Saving…" mid-flight; "Unsaved changes" when dirty;
-// "Saved" briefly after a successful save.
+// Save bar: hidden when clean/idle; "Saving…" mid-flight; the failure message when a save
+// errored (checked before dirty, since a failed save leaves edits dirty); "Unsaved changes"
+// when dirty; "Saved" briefly after a successful save.
 const saveLabel = computed(() => {
   if (cfg.status.value === "saving") return "Saving…";
+  if (cfg.status.value === "error") return cfg.error.value || "Save failed — retry";
   if (cfg.dirty.value) return "Unsaved changes";
   if (cfg.status.value === "saved") return "Saved";
   return "";
@@ -111,7 +113,7 @@ function confirmDiscard() {
     <SiteFooter />
 
     <div v-if="showSaveBar" class="savebar">
-      <span class="save-label">{{ saveLabel }}</span>
+      <span class="save-label" :class="{ 'save-error': cfg.status.value === 'error' }" role="status">{{ saveLabel }}</span>
       <span class="save-actions">
         <button class="btn" :disabled="cfg.status.value === 'saving'" @click="askDiscard()">Discard</button>
         <button class="btn pri" :disabled="!cfg.dirty.value || cfg.status.value === 'saving'" @click="cfg.save()">Save</button>
@@ -184,6 +186,7 @@ function confirmDiscard() {
   box-shadow: 0 -8px 26px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 .save-label { font-weight: 600; font-size: 13px; color: var(--dim); }
+.save-label.save-error { color: var(--bad); }
 .save-actions { display: flex; gap: 8px; }
 
 @media (max-width: 860px) {
