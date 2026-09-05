@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
-import { checkAuth, sameOrigin } from "./auth.js";
+import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual } from "./util.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
 import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
@@ -731,6 +731,9 @@ assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B")
 });
 
 
+const meta = (over: Partial<import("./proxy.js").ClientMeta> = {}): import("./proxy.js").ClientMeta =>
+  ({ id: "id", remoteAddr: "127.0.0.1", tier: "control", auth: "auth-token", connectedAt: 0, userAgent: "ua", ...over });
+
 // Hub read-only drop + state replay, against a real in-process upstream.
 await test("Hub read-only drop + state replay, against a real in-process upstream", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -749,13 +752,13 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
   const fake = () => ({ readyState: WebSocket.OPEN, sent: [] as unknown[], send(d: unknown) { this.sent.push(d); } });
 
   const ro = fake();
-  hub.register(ro as unknown as WebSocket, { readOnly: true });
+  hub.register(ro as unknown as WebSocket, meta({ tier: "readonly", auth: "readonly-token" }));
   assert.deepEqual(ro.sent, ['{"type":"playback_state","playing":true}'], "read-only client gets state replay on connect");
   await hub.forward(ro as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
   assert.deepEqual(gotUpstream, [], "read-only client frames dropped, never forwarded upstream");
 
   const ctrl = fake();
-  hub.register(ctrl as unknown as WebSocket, {});
+  hub.register(ctrl as unknown as WebSocket, meta());
   assert.deepEqual(ctrl.sent, ['{"type":"playback_state","playing":true}'], "control client gets state replay on connect");
   await hub.forward(ctrl as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
   await new Promise((r) => setTimeout(r, 30));
@@ -763,6 +766,38 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
 
   hub.stop();
   upstream.close();
+});
+
+
+// Client metadata enum, clientList shape, and loggedIn() null-while-down.
+await test("Hub client metadata + status getters", async () => {
+  // auth enum is derived, never the raw token
+  const RAWTOK = "CONTROL-SECRET-RAW";
+  const cfg = authCfg(RAWTOK, "RO-RAW");
+  assert.deepEqual(resolveAuth(req({ authorization: `Bearer ${RAWTOK}` }, "/"), cfg), { tier: "control", auth: "auth-token" }, "control token -> auth-token enum");
+  assert.deepEqual(resolveAuth(req({ authorization: `Bearer RO-RAW` }, "/"), cfg), { tier: "readonly", auth: "readonly-token" }, "readonly token -> readonly-token enum");
+  assert.deepEqual(resolveAuth(req({}, "/"), cfg), { tier: "none", auth: null }, "no creds -> none/null");
+  // session cookie -> session-cookie enum
+  const wc = authCfg(RAWTOK, "RO-RAW", { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  assert.deepEqual(resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }, "/"), wc), { tier: "control", auth: "session-cookie" }, "cookie -> session-cookie enum");
+  // A bogus token alongside a valid cookie still resolves to session-cookie, so the
+  // upgrade handler's same-origin gate (keyed on auth) is not bypassed by a junk token.
+  assert.deepEqual(resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }, "/?token=garbage"), wc), { tier: "control", auth: "session-cookie" }, "bogus token + cookie -> session-cookie (CSWSH gate stays armed)");
+
+  // clientList() shape + loggedIn() null while upstream down (never connected)
+  const hub = new SoloistHub("ws://127.0.0.1:1"); // never connects
+  assert.equal(hub.upstreamConnected, false, "upstream not connected");
+  assert.equal(hub.loggedIn(), null, "loggedIn() is null while upstream is down");
+  assert.equal(hub.clientCount(), 0, "no clients yet");
+  const fakeWs = { readyState: WebSocket.OPEN, send() {} };
+  hub.register(fakeWs as unknown as WebSocket, meta({ id: "c1", remoteAddr: "10.0.0.5", tier: "readonly", auth: "readonly-token", connectedAt: 123, userAgent: "TestUA" }));
+  assert.equal(hub.clientCount(), 1, "one client registered");
+  const list = hub.clientList();
+  assert.equal(list.length, 1, "clientList has one entry");
+  assert.deepEqual(list[0], { id: "c1", remoteAddr: "10.0.0.5", tier: "readonly", auth: "readonly-token", connectedAt: 123, userAgent: "TestUA" }, "clientList entry is the full ClientMeta");
+  // the raw token never appears in metadata
+  assert.ok(!JSON.stringify(list).includes(RAWTOK), "raw token never stored in client metadata");
+  hub.stop();
 });
 
 
