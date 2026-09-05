@@ -96,6 +96,10 @@ const { highlightJson } = (hl ?? {}) as { highlightJson(src: string): Promise<st
 // exercised headlessly here (Vue reactivity is DOM-free) against a fake socket, so the tests
 // drive the exact App-Control client the app ships, not a re-implementation.
 const appctl = await loadRawTs("../src/web-vue/composables/useAppControl.ts");
+const useConfigMod = await loadRawTs("../src/web-vue/composables/useConfig.ts");
+const { useConfig: loadUseConfig } = (useConfigMod ?? {}) as {
+  useConfig(): { config: Record<string, unknown>; trySave(): void; dirty: { value: boolean }; status: { value: string } };
+};
 type AppControlSub = { frames: any[]; clients: any[]; webhooks: any[]; dispose(): void };
 type AppControlApi = {
   status: { value: any };
@@ -2355,6 +2359,40 @@ await webTest("menuStatus derivation & precedence (ADR-0017)", menuStatusMod, as
   assert.equal(mText({ state: "running", upstream: true, loggedIn: false }, true, true), "Waiting for login");
   assert.equal(mText({ state: "stopped", upstream: false, loggedIn: null }, true, true), "Down");
   assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
+});
+
+// trySave gates the Enter-to-save path: no PUT when the working copy is clean or a
+// save is in flight, one PUT when dirty. Global fetch is stubbed (useConfig calls it
+// directly); the composable is a module singleton so we drive its reactive config.
+await webTest("useConfig.trySave guards the Enter-to-save path", useConfigMod, async () => {
+  const { config, trySave, dirty, status } = loadUseConfig();
+  const origFetch = globalThis.fetch;
+  const snapshot = JSON.parse(JSON.stringify(config));
+  const calls: { url: string; method: string }[] = [];
+  globalThis.fetch = (async (url: any, opts: any) => {
+    calls.push({ url: String(url), method: opts?.method ?? "GET" });
+    return { ok: true, json: async () => ({}) } as any;
+  }) as any;
+  try {
+    assert.equal(dirty.value, false, "starts clean");
+    trySave();
+    assert.equal(calls.length, 0, "clean config: trySave issues no request");
+
+    (config as any).relay = { url: "wss://x" };
+    assert.equal(dirty.value, true, "editing the working copy marks it dirty");
+    trySave();
+    await new Promise((r) => setTimeout(r, 0));
+    const puts = calls.filter((c) => c.method === "PUT");
+    assert.equal(puts.length, 1, "dirty config: trySave issues exactly one PUT");
+    assert.ok(puts[0].url.includes("/api/config"), "trySave saves via PUT /api/config");
+  } finally {
+    globalThis.fetch = origFetch;
+    // Restore the shared useConfig singleton so later tests see a clean slate and the
+    // pending "saved"->"idle" timer from save() becomes a no-op.
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, snapshot);
+    status.value = "idle";
+  }
 });
 
 // main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1): parseMainArgs

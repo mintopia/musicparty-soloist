@@ -80,9 +80,9 @@ function addOverride() {
               <option v-for="ev in optionsFor(key)" :key="ev" :value="ev">{{ ev }}</option>
             </select>
             <input class="field grow" v-model="webhooks.urls[key]" placeholder="https://…" />
-            <button class="btn" title="Remove" @click="removeOverride(key)">×</button>
+            <button type="button" class="btn" title="Remove" @click="removeOverride(key)">×</button>
           </div>
-          <button class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
+          <button type="button" class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
           <div v-if="!nextEvent" class="dev-hint">Every event already has an override.</div>
         </div>
       </template>

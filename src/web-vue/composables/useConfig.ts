@@ -84,6 +84,12 @@ async function discard() {
   status.value = "idle";
 }
 
+// Enter-to-save from a settings <form>: mirror the save bar's disabled guard
+// (skip when nothing changed or a save is already in flight).
+function trySave() {
+  if (dirty.value && status.value !== "saving") save();
+}
+
 async function refreshSummary() {
   Object.assign(summary, await api("/api/config-summary"));
 }
@@ -106,5 +112,5 @@ async function revealSecret(section: string, key: string): Promise<string> {
 }
 
 export function useConfig() {
-  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, refreshSummary, restartSoloist, restartSnapcast, revealSecret };
+  return { config, summary, secretSet, dirty, status, loaded, load, save, discard, trySave, refreshSummary, restartSoloist, restartSnapcast, revealSecret };
 }
