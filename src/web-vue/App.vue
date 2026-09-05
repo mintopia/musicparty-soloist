@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
-import { useTheme } from "./composables/useTheme";
 import { useConfig } from "./composables/useConfig";
 import { usePlayback } from "./composables/usePlayback";
+import { useAppControl } from "./composables/useAppControl";
 import MiniPlayer from "./components/MiniPlayer.vue";
 import SiteFooter from "./components/SiteFooter.vue";
+import AppMenu from "./components/AppMenu.vue";
 
-const { theme, toggle } = useTheme();
 const cfg = useConfig();
 const playback = usePlayback();
 
@@ -29,9 +29,6 @@ const tabs = computed(() => {
 // Snapweb (Snapcast web UI) runs on the deployment host's port 1780 (docker-compose).
 const snapwebUrl = `http://${location.hostname}:1780`;
 
-// Control-WS connection status pill (mirrors setWsPill in the vanilla playback.js).
-const connected = computed(() => playback.state.connected);
-
 // Save bar: hidden when clean/idle; "Saving…" mid-flight; "Unsaved changes" when dirty;
 // "Saved" briefly after a successful save.
 const saveLabel = computed(() => {
@@ -44,6 +41,7 @@ const showSaveBar = computed(() => saveLabel.value !== "");
 
 onMounted(() => {
   playback.start();
+  useAppControl().start();
   cfg.load().catch(() => { /* boot errors surface in later view tickets */ });
 });
 </script>
@@ -73,20 +71,7 @@ onMounted(() => {
         Snapweb
       </a>
 
-      <span class="pill" :class="connected ? 'ws-ok' : 'ws-down'">
-        <span class="dot"></span>{{ connected ? "Connected" : "Reconnecting…" }}
-      </span>
-
-      <button class="iconbtn" :title="theme === 'dark' ? 'Switch to light' : 'Switch to dark'" :aria-label="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'" @click="toggle">
-        <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-        <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-      </button>
-
-      <form method="POST" action="/logout" class="logout">
-        <button class="iconbtn" type="submit" title="Sign out" aria-label="Sign out">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-        </button>
-      </form>
+      <AppMenu />
     </header>
 
     <div v-if="cfg.summary.pendingRestart" class="banner">
@@ -133,18 +118,6 @@ onMounted(() => {
 
 .spacer { flex: 1; }
 .snapweb { text-decoration: none; }
-.pill .dot { width: 8px; height: 8px; border-radius: 50%; }
-.pill.ws-ok { background: var(--ok-s); color: var(--ok); }
-.pill.ws-ok .dot { background: var(--ok); }
-.pill.ws-down { background: var(--warn-s); color: var(--warn); }
-.pill.ws-down .dot { background: var(--warn); }
-
-.iconbtn {
-  width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--line2); background: var(--card);
-  color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
-}
-.iconbtn:hover { border-color: var(--ind); color: var(--ind); }
-.logout { margin: 0; }
 
 /* Centered content column (vanilla .wrap). */
 .wrap { flex: 1; width: 100%; max-width: 1200px; margin: 0 auto; padding: 24px 30px; }

@@ -88,6 +88,18 @@ const { createAppControl } = appctl as {
   }): AppControlApi;
 };
 
+// Menu status derivation: pure worst-of badge logic, imported raw-.ts like the modules
+// above so the precedence table (ADR-0017) is verified headless.
+const menuStatusMod = await import(new URL("../src/web-vue/lib/menuStatus.ts", import.meta.url).href);
+const { badgeLevel: mBadge, soloistLevel: mSoloist, relayLevel: mRelay, webhookLevel: mWebhook, worstBadge: mWorst, soloistText: mText } = menuStatusMod as {
+  badgeLevel(i: any): string;
+  soloistLevel(s: any, appLive: boolean, dataConnected: boolean): string;
+  relayLevel(r: any, appLive: boolean): string;
+  webhookLevel(ok: boolean | null, appLive: boolean): string;
+  worstBadge(levels: string[]): string;
+  soloistText(s: any, appLive: boolean, dataConnected: boolean): string;
+};
+
 // A minimal WebSocket stand-in the composable can drive: tests trigger open/close/message
 // by hand and read back what was sent. close() fires onclose to mirror the browser.
 interface FakeSocket {
@@ -1895,6 +1907,41 @@ await test("useAppControl ages out status when the heartbeat stops", async () =>
   ac.stop();
 });
 
+
+await test("menu badge precedence (ADR-0017)", async () => {
+  const okSoloist = { state: "running", upstream: true, loggedIn: true };
+  const base = { appLive: true, dataConnected: true, soloist: okSoloist, relay: { enabled: false, connected: false }, webhookOk: null };
+  assert.equal(mBadge(base), "green", "all healthy is green");
+  assert.equal(mBadge({ ...base, appLive: false }), "red", "app-control stale/disconnected is red");
+  assert.equal(mBadge({ ...base, dataConnected: false }), "red", "data connection down is red");
+  for (const state of ["stopped", "backoff", "expired-reacquiring"]) {
+    assert.equal(mBadge({ ...base, soloist: { state, upstream: false, loggedIn: null } }), "red", `${state} is red`);
+  }
+  assert.equal(mBadge({ ...base, dataConnected: false, relay: { enabled: true, connected: false } }), "red", "red outranks amber");
+  assert.equal(mBadge({ ...base, soloist: { state: "running", upstream: true, loggedIn: false } }), "amber", "waiting for login is amber");
+  assert.equal(mBadge({ ...base, relay: { enabled: true, connected: false } }), "amber", "relay enabled+disconnected is amber");
+  assert.equal(mBadge({ ...base, webhookOk: false }), "amber", "failed webhook is amber");
+  assert.equal(mBadge({ ...base, relay: { enabled: true, connected: true }, webhookOk: true }), "green", "healthy relay + webhook is green");
+});
+
+await test("menu status lines are trustworthy only while app-control is live", async () => {
+  const soloist = { state: "running", upstream: true, loggedIn: true };
+  assert.equal(mSoloist(soloist, false, true), "red", "soloist line is red when app-control is stale");
+  assert.equal(mText(soloist, false, true), "Unknown", "soloist text is Unknown when stale");
+  assert.equal(mRelay({ enabled: true, connected: false }, false), "green", "relay amber is suppressed when stale");
+  assert.equal(mWebhook(false, false), "green", "webhook amber is suppressed when stale");
+  assert.equal(mText(soloist, true, true), "Logged in");
+  assert.equal(mText({ state: "running", upstream: true, loggedIn: false }, true, true), "Waiting for login");
+  assert.equal(mText({ state: "stopped", upstream: false, loggedIn: null }, true, true), "Down");
+  assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
+});
+
+await test("worstBadge picks the highest severity", async () => {
+  assert.equal(mWorst(["green", "green"]), "green");
+  assert.equal(mWorst(["green", "amber", "green"]), "amber");
+  assert.equal(mWorst(["amber", "red", "green"]), "red");
+  assert.equal(mWorst([]), "green", "no lines defaults to green");
+});
 
 console.log(`\nselftest: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
