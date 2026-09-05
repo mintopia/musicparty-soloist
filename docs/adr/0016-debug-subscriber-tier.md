@@ -30,10 +30,15 @@ the CSWSH defense for the ambient session cookie. `sameOrigin` stays **host-only
 scheme, and host-only already defeats CSWSH; hostname is compared case-insensitively and the
 default ports (none/80/443) are treated as equivalent.
 
-Auth is enforced past the handshake, not just at it. Each socket stores a one-way fingerprint
-of its session cookie; it has a bounded max lifetime and is re-validated periodically with
-`sessionUser`, so it closes on session expiry or password rotation. `POST /logout` closes
-every socket whose fingerprint matches the logging-out request before it clears the cookie.
+Auth is enforced past the handshake, not just at it. Each socket keeps its session cookie
+privately so a periodic `sessionUser` re-check can re-validate it against the live Config —
+closing the socket on session expiry or password rotation — and has a bounded max lifetime as
+a backstop. Separately, each socket stores a **one-way fingerprint** of that cookie, used
+only for logout matching: `POST /logout` closes every socket whose fingerprint matches the
+logging-out request before it clears the cookie, without comparing raw cookies across sockets.
+Keeping the cookie in memory for the socket's lifetime is an accepted, bounded exposure — it
+is the same bearer credential the operator's browser already holds — and is what re-running
+`sessionUser` (the single source of truth for session validity) requires.
 
 ## Backpressure
 

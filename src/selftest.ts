@@ -11,7 +11,8 @@ import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
 import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
-import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES } from "./appcontrol.js";
+import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
+import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
@@ -919,6 +920,49 @@ await test("AppControl refuses a cookieless registration", async () => {
   assert.equal(sessionFingerprint(""), null, "empty cookie has no fingerprint");
   assert.equal(DEBUG_STREAMS.includes("frame"), true, "fixed stream set includes frame");
   ac.stop();
+});
+
+
+// End-to-end over a real socket: the actual upgrade + subscribe + publish round-trip works,
+// and an oversized frame is closed safely by the server's maxPayload (not just by the fake
+// harness). Exercises the real ws frame parser the unit tests bypass.
+await test("AppControl real-socket round-trip + oversized frame closed safely", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  const server = createServer();
+  server.on("upgrade", (r, socket, head) => {
+    if (appControlAllowed(r, cfg)) ac.handleUpgrade(r, socket, head);
+    else socket.destroy();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+    headers: { cookie, origin: `http://127.0.0.1:${port}` },
+  });
+  await once(client, "open");
+  for (let i = 0; i < 100 && ac.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ac.count(), 1, "real upgrade registered a debug subscriber");
+
+  // subscribe + publish round-trip over the wire
+  client.send(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] }));
+  await new Promise((r) => setTimeout(r, 30)); // let the server process the subscribe
+  const gotMsg = once(client, "message");
+  ac.publish("proxy_status", { ok: true });
+  const [data] = (await gotMsg) as [RawData];
+  assert.deepEqual(JSON.parse(data.toString()), { stream: "proxy_status", data: { ok: true } }, "published frame arrives over the real socket");
+
+  // oversized frame: server enforces maxPayload and closes without crashing
+  const closed = once(client, "close");
+  client.send("x".repeat(APP_CONTROL_MAX_PAYLOAD + 100));
+  const [code] = (await closed) as [number];
+  assert.equal(code, 1009, "oversized frame closed with 1009 (message too big)");
+  for (let i = 0; i < 100 && ac.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ac.count(), 0, "subscriber removed after the oversized-frame close");
+
+  ac.stop();
+  server.close();
 });
 
 
