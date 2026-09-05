@@ -60,14 +60,14 @@ function addOverride() {
             <input class="field" v-model="webhooks.defaultUrl" placeholder="https://…" />
           </div>
           <div class="delay">
-            <label class="flabel">Delay (ms)</label>
+            <label class="flabel">Min interval (ms)</label>
             <input class="field" type="number" v-model="delayMs" />
           </div>
         </div>
 
         <SecretRow
           class="secret"
-          label="Shared secret"
+          label="Authorization Header"
           :is-set="secretSet['webhooks.secret']"
           v-model="webhooks.secret"
         />
