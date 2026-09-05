@@ -49,11 +49,14 @@ const { parseLRC, currentIndex } = engine as {
 // Wire-format decoders (ADR-0014 seam): framework-free, shared by the vanilla overlay
 // and — as lib/wire.ts — the Vue app. Imported headless here, same browser-ESM pattern.
 const landing = await import(new URL("./web/frame.js", import.meta.url).href);
-const { fmtTime, readTrack, readPlayback, readQueue } = landing as {
+const { fmtTime, readTrack, readPlayback, readQueue, entityToTrack, applyAnchor, nowMs } = landing as {
   fmtTime(ms: number): string;
   readTrack(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string } | null;
   readPlayback(msg: any): { positionMs: number | null; timestampMs: number | null; speed: number | null; playing?: boolean; volume: number | null };
   readQueue(msg: any): { title: string; artist: string; album: string; durationMs: number; art: string }[] | null;
+  entityToTrack(item: any): { uri: string; title: string; artist: string; album: string; durationMs: number; art: string } | null;
+  applyAnchor(anchor: { anchorMs: number; anchorAt: number; speed: number }, p: any): void;
+  nowMs(anchor: { anchorMs: number; anchorAt: number; speed: number }): number;
 };
 
 // Escape-safe JSON highlighter (ADR-0016). Unlike the ./web/*.js imports above (prebuilt
@@ -1750,15 +1753,6 @@ await test("reconcile no-delay topology unchanged", async () => {
 });
 
 
-// Landing-page view-model helpers.
-await test("Landing-page view-model helpers", async () => {
-assert.equal(fmtTime(0), "0:00");
-assert.equal(fmtTime(194000), "3:14");
-assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
-assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
-});
-
-
 // Sample built to the real Soloist Entity schema (decorations.identity/creators/
 // parent/visual_identity/playback).
 const entity = (name: string, artist: string, album: string, durationMs: number, covers: { url: string; size: string }[] = []) => ({
@@ -1772,30 +1766,91 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
     playback: { duration_ms: durationMs },
   },
 });
-await test("readTrack view-model", async () => {
+
+// frame.js wire decoders (ADR-0014 seam): the framework-free Soloist frame readers, plus
+// fmtTime and the playback-anchor math. One block over the shared `entity()` fixture.
+await test("frame.js wire decoders", async () => {
+  // fmtTime: mm:ss, seconds zero-padded, negatives/garbage clamp to zero.
+  assert.equal(fmtTime(0), "0:00");
+  assert.equal(fmtTime(194000), "3:14");
+  assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
+  assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
+  assert.equal(fmtTime("nope" as unknown as number), "0:00", "non-numeric clamps to zero");
+
+  // readTrack / entityToTrack: Entity decorations -> flat track.
   const item = entity("Blinding Lights", "The Weeknd", "After Hours", 200000, [
     { url: "https://img/small", size: "small" },
     { url: "https://img/large", size: "large" },
   ]);
-  const t = readTrack({ type: "track_changed", item });
-  assert.deepEqual(t, { uri: "spotify:track:x", title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", durationMs: 200000, art: "https://img/large" }, "readTrack: Entity decorations, prefers large cover");
+  assert.deepEqual(
+    readTrack({ type: "track_changed", item }),
+    { uri: "spotify:track:x", title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", durationMs: 200000, art: "https://img/large" },
+    "readTrack: Entity decorations, prefers large cover",
+  );
   assert.equal(readTrack({ type: "auth_state", logged_in: true }), null, "readTrack: no item -> null");
-});
+  assert.equal(entityToTrack(null), null, "entityToTrack: null item -> null");
+  assert.equal(entityToTrack(entity("", "", "", 0)), null, "entityToTrack: no title and no artist -> null");
 
-await test("readPlayback view-model", async () => {
-  const p = readPlayback({ type: "playback_state", status: "paused", position: { position_ms: 4200, timestamp_ms: 1788460353479, speed: 0 }, volume: 55 });
-  assert.deepEqual(p, { positionMs: 4200, timestampMs: 1788460353479, speed: 0, playing: false, volume: 55 }, "readPlayback: status/position anchor/volume");
+  // pickCover fallback chain (large > default > xlarge > small > covers[0]), exercised
+  // through entityToTrack.art.
+  const cover = (covers: { url: string; size: string }[]) => entityToTrack(entity("t", "a", "", 0, covers))!.art;
+  assert.equal(cover([{ url: "u-default", size: "default" }, { url: "u-xlarge", size: "xlarge" }]), "u-default", "pickCover: default beats xlarge");
+  assert.equal(cover([{ url: "u-xlarge", size: "xlarge" }, { url: "u-small", size: "small" }]), "u-xlarge", "pickCover: xlarge beats small");
+  assert.equal(cover([{ url: "u-small", size: "small" }]), "u-small", "pickCover: small when it's all that's sized");
+  assert.equal(cover([{ url: "u-first", size: "weird" }]), "u-first", "pickCover: unknown size falls back to covers[0].url");
+  assert.equal(cover([]), "", "pickCover: no covers -> empty string");
+
+  // readPlayback: status/anchor/volume, position_sync (no status), absent position -> nulls.
+  assert.deepEqual(
+    readPlayback({ type: "playback_state", status: "paused", position: { position_ms: 4200, timestamp_ms: 1788460353479, speed: 0 }, volume: 55 }),
+    { positionMs: 4200, timestampMs: 1788460353479, speed: 0, playing: false, volume: 55 },
+    "readPlayback: status/position anchor/volume",
+  );
   const ps = readPlayback({ type: "position_sync", position: { position_ms: 10, timestamp_ms: 1788460353480, speed: 1 } });
   assert.deepEqual({ t: ps.timestampMs, s: ps.speed, pl: ps.playing }, { t: 1788460353480, s: 1, pl: undefined }, "readPlayback: position_sync carries timestamp_ms + speed, no status");
   assert.equal(readPlayback({ type: "playback_changed", status: "playing" }).playing, true, "readPlayback: status playing -> true");
   assert.equal(readPlayback({}).positionMs, null, "readPlayback: absent position -> null");
   assert.equal(readPlayback({}).timestampMs, null, "readPlayback: absent position -> null timestamp");
-});
+  assert.equal(readPlayback({}).volume, null, "readPlayback: absent volume -> null");
+  assert.equal(readPlayback({ volume: "loud" }).volume, null, "readPlayback: non-number volume -> null");
+  assert.equal(readPlayback({ position: { position_ms: 1, timestamp_ms: 2, speed: "fast" } }).speed, null, "readPlayback: non-number speed -> null");
 
-await test("readQueue view-model", async () => {
-  const q = readQueue({ type: "queue_changed", upcoming: [{ uid: "a", source: "context", item: entity("Levitating", "Dua Lipa", "", 203000) }] });
-  assert.deepEqual(q, [{ uri: "spotify:track:x", title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }], "readQueue: reads upcoming list");
+  // readQueue: upcoming list, missing item -> placeholder track (not null), no upcoming -> null.
+  assert.deepEqual(
+    readQueue({ type: "queue_changed", upcoming: [{ uid: "a", source: "context", item: entity("Levitating", "Dua Lipa", "", 203000) }] }),
+    [{ uri: "spotify:track:x", title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }],
+    "readQueue: reads upcoming list",
+  );
+  assert.deepEqual(
+    readQueue({ type: "queue_changed", upcoming: [{ uid: "b", source: "context" }] }),
+    [{ uri: "", title: "", artist: "", album: "", durationMs: 0, art: "" }],
+    "readQueue: an upcoming entry with no item becomes a placeholder track, not null",
+  );
   assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no upcoming -> null");
+
+  // applyAnchor: a positioned frame re-anchors verbatim; a status-only frame re-anchors at
+  // the currently-extrapolated position; a position frame with no timestamp anchors to now.
+  const anchor = { anchorMs: 0, anchorAt: 0, speed: 0 };
+  applyAnchor(anchor, { positionMs: 5000, timestampMs: 111, speed: 1, playing: undefined, volume: null });
+  assert.deepEqual({ ms: anchor.anchorMs, at: anchor.anchorAt, s: anchor.speed }, { ms: 5000, at: 111, s: 1 }, "applyAnchor: positioned frame re-anchors verbatim");
+
+  const before = Date.now();
+  applyAnchor(anchor, { positionMs: 8000, timestampMs: null, speed: null, playing: undefined, volume: null });
+  assert.equal(anchor.anchorMs, 8000, "applyAnchor: positioned frame with no timestamp keeps its position");
+  assert.equal(anchor.speed, 1, "applyAnchor: absent speed leaves the prior speed untouched");
+  assert.ok(anchor.anchorAt >= before, "applyAnchor: absent timestamp anchors to now");
+
+  const paused = { anchorMs: 3000, anchorAt: Date.now() - 1000, speed: 1 };
+  const extrapolated = nowMs(paused);
+  applyAnchor(paused, { positionMs: null, timestampMs: null, speed: null, playing: false, volume: null });
+  assert.ok(paused.anchorMs >= extrapolated - 50 && paused.anchorMs <= extrapolated + 50, "applyAnchor: status-only frame re-anchors at the extrapolated position");
+  assert.equal(paused.speed, 0, "applyAnchor: status playing=false -> speed 0");
+  applyAnchor(paused, { positionMs: null, timestampMs: null, speed: null, playing: true, volume: null });
+  assert.equal(paused.speed, 1, "applyAnchor: status playing=true -> speed 1");
+
+  const untouched = { anchorMs: 42, anchorAt: 7, speed: 0 };
+  applyAnchor(untouched, { positionMs: null, timestampMs: null, speed: null, playing: undefined, volume: null });
+  assert.deepEqual(untouched, { anchorMs: 42, anchorAt: 7, speed: 0 }, "applyAnchor: a frame with neither position nor status is a no-op");
 });
 
 await test("hashPassword / verifyPassword", async () => {
@@ -2008,19 +2063,23 @@ await test("hljs + theme CSS live in the Debug async chunk, not any entry bundle
 });
 
 
-// useAppControl: opens /ws/app, always subscribes proxy_status app-wide, tracks status, and
-// never leaves status green while blind — a disconnect surfaces as stale immediately.
-await test("useAppControl subscribes proxy_status app-wide and tracks status/stale", async () => {
+// useAppControl synchronous lifecycle: idempotent start, always subscribes proxy_status
+// app-wide, tracks status/stale (never green while blind), ignores malformed frames, rings
+// the frame buffer, dumps-then-appends webhooks, and reseeds a reopened subscription from the
+// retained master buffers. No timers — driven entirely by the fake socket.
+await test("useAppControl sync lifecycle (status/stale/rings/reseed)", async () => {
   const { factory, sockets } = fakeSocketFactory();
-  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1 });
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1, frameRing: 3, webhookRing: 5 });
   ac.start();
   ac.start(); // idempotent: no second socket
   assert.equal(sockets.length, 1, "start opens exactly one socket");
   assert.equal(ac.connected.value, false, "not connected before open");
   assert.equal(ac.stale.value, true, "stale before any status arrives (never green while blind)");
+
+  const s = ac.subscribe(["frame", "webhooks"]);
   sockets[0].open();
   assert.equal(ac.connected.value, true, "connected on open");
-  assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "subscribe", streams: ["proxy_status"] }, "subscribes proxy_status even with zero consumers");
+  assert.deepEqual(new Set(JSON.parse(sockets[0].sent.at(-1)!).streams), new Set(["proxy_status", "frame", "webhooks"]), "subscribes proxy_status implicitly plus consumer streams");
 
   const st = { soloist: { state: "running", upstream: true, loggedIn: true }, clients: 2, relay: emptyRelay, webhook: null };
   sockets[0].deliver("proxy_status", st);
@@ -2033,6 +2092,25 @@ await test("useAppControl subscribes proxy_status app-wide and tracks status/sta
   sockets[0].deliver("proxy_status", { junk: true } as any);
   assert.deepEqual(ac.status.value, { junk: true }, "a well-formed proxy_status still applies; malformed frames were inert");
 
+  // frame ring: oldest evicted at cap.
+  for (let i = 0; i < 5; i++) sockets[0].deliver("frame", { n: i });
+  assert.deepEqual(s.frames.map((f: any) => f.n), [2, 3, 4], "frame ring keeps only the last frameRing items, oldest evicted");
+
+  // webhooks: on-subscribe history dump (array) replaces; the dump is itself ring-capped;
+  // subsequent single deliveries append.
+  sockets[0].deliver("webhooks", [{ at: 1 }, { at: 2 }]);
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2], "on-subscribe history dump replaces the webhooks buffer");
+  sockets[0].deliver("webhooks", { at: 3 });
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2, 3], "a live delivery appends to the buffer");
+  sockets[0].deliver("webhooks", [{ at: 10 }, { at: 11 }, { at: 12 }, { at: 13 }, { at: 14 }, { at: 15 }, { at: 16 }]);
+  assert.deepEqual(s.webhooks.map((w: any) => w.at), [12, 13, 14, 15, 16], "an oversized history dump is ring-capped to webhookRing (last N)");
+
+  // A reopened subscription seeds from the retained master buffers, so a Debug Page reopened
+  // via client-side nav paints from the last snapshot instead of blank.
+  const reopened = ac.subscribe(["frame", "webhooks"]);
+  assert.deepEqual(reopened.frames.map((f: any) => f.n), [2, 3, 4], "reopened subscription seeds frames from the master buffer");
+  assert.deepEqual(reopened.webhooks.map((w: any) => w.at), [12, 13, 14, 15, 16], "reopened subscription seeds webhooks from the master buffer");
+
   sockets[0].close();
   assert.equal(ac.connected.value, false, "connected=false after the socket closes");
   assert.equal(ac.stale.value, true, "connected=false surfaces as stale status to consumers");
@@ -2040,12 +2118,13 @@ await test("useAppControl subscribes proxy_status app-wide and tracks status/sta
 });
 
 
-// useAppControl: on reconnect it resubscribes only the still-live streams, buffers persist,
-// and a disposed subscription receives nothing afterwards (no listener leak). Disposer is
-// idempotent.
-await test("useAppControl resubscribes on reconnect; disposed subscriptions leak no listeners", async () => {
+// useAppControl timer-driven lifecycle: reconnect resubscribes only still-live streams,
+// buffers persist, a disposed subscription leaks no listener (disposer idempotent), and a
+// wedged-but-open socket ages status out to stale. Kept separate from the synchronous cases
+// because it drives real setTimeout/setInterval.
+await test("useAppControl reconnect & heartbeat age-out", async () => {
   const { factory, sockets } = fakeSocketFactory();
-  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1 });
+  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1, staleMs: 20 });
   const a = ac.subscribe(["frame"]);
   const b = ac.subscribe(["clients"]);
   sockets[0].open();
@@ -2074,36 +2153,9 @@ await test("useAppControl resubscribes on reconnect; disposed subscriptions leak
   sockets[1].deliver("clients", [{ id: "c1" }, { id: "c2" }]);
   assert.equal(a.frames.length, 1, "disposed A gets nothing after reconnect (no leaked listener)");
   assert.deepEqual(b.clients.map((c: any) => c.id), ["c1", "c2"], "B's buffer persists across reconnect and keeps updating");
-  ac.stop();
-});
 
-
-// useAppControl: frame buffer is a ring (oldest evicted at cap); webhooks takes the
-// on-subscribe history dump (an array, replaces) then appends live single deliveries.
-await test("useAppControl frame ring cap and webhooks dump-then-append", async () => {
-  const { factory, sockets } = fakeSocketFactory();
-  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, frameRing: 3, webhookRing: 5 });
-  const s = ac.subscribe(["frame", "webhooks"]);
-  sockets[0].open();
-  for (let i = 0; i < 5; i++) sockets[0].deliver("frame", { n: i });
-  assert.deepEqual(s.frames.map((f: any) => f.n), [2, 3, 4], "frame ring keeps only the last frameRing items, oldest evicted");
-
-  sockets[0].deliver("webhooks", [{ at: 1 }, { at: 2 }]);
-  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2], "on-subscribe history dump replaces the webhooks buffer");
-  sockets[0].deliver("webhooks", { at: 3 });
-  assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2, 3], "a live delivery appends to the buffer");
-  ac.stop();
-});
-
-
-// useAppControl: a wedged-but-open socket (heartbeat stops) ages status out to stale, so it
-// never lingers green while the connection is technically up.
-await test("useAppControl ages out status when the heartbeat stops", async () => {
-  const { factory, sockets } = fakeSocketFactory();
-  const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, staleMs: 20 });
-  ac.start();
-  sockets[0].open();
-  sockets[0].deliver("proxy_status", { soloist: { state: null, upstream: true, loggedIn: null }, clients: 0, relay: emptyRelay, webhook: null });
+  // Heartbeat age-out: a wedged-but-open socket never lingers green.
+  sockets[1].deliver("proxy_status", { soloist: { state: null, upstream: true, loggedIn: null }, clients: 0, relay: emptyRelay, webhook: null });
   assert.equal(ac.stale.value, false, "fresh status is not stale");
   assert.equal(ac.connected.value, true, "socket is connected");
   await new Promise((r) => setTimeout(r, 120)); // several watchdog ticks past staleMs, no new heartbeat
@@ -2113,7 +2165,16 @@ await test("useAppControl ages out status when the heartbeat stops", async () =>
 });
 
 
-await test("menu badge precedence (ADR-0017)", async () => {
+// menuStatus derivation (ADR-0017): worst-of badge precedence, per-line trust (lines are
+// only trustworthy while app-control is live), and the worstBadge primitive underneath.
+await test("menuStatus derivation & precedence (ADR-0017)", async () => {
+  // worstBadge primitive: highest severity wins, empty -> green.
+  assert.equal(mWorst(["green", "green"]), "green");
+  assert.equal(mWorst(["green", "amber", "green"]), "amber");
+  assert.equal(mWorst(["amber", "red", "green"]), "red");
+  assert.equal(mWorst([]), "green", "no lines defaults to green");
+
+  // Composite badge precedence.
   const okSoloist = { state: "running", upstream: true, loggedIn: true };
   const base = { appLive: true, dataConnected: true, soloist: okSoloist, relay: { enabled: false, connected: false }, webhookOk: null };
   assert.equal(mBadge(base), "green", "all healthy is green");
@@ -2127,9 +2188,8 @@ await test("menu badge precedence (ADR-0017)", async () => {
   assert.equal(mBadge({ ...base, relay: { enabled: true, connected: false } }), "amber", "relay enabled+disconnected is amber");
   assert.equal(mBadge({ ...base, webhookOk: false }), "amber", "failed webhook is amber");
   assert.equal(mBadge({ ...base, relay: { enabled: true, connected: true }, webhookOk: true }), "green", "healthy relay + webhook is green");
-});
 
-await test("menu status lines are trustworthy only while app-control is live", async () => {
+  // Per-line trust: while app-control is stale, lines read red/Unknown and amber is suppressed.
   const soloist = { state: "running", upstream: true, loggedIn: true };
   assert.equal(mSoloist(soloist, false, true), "red", "soloist line is red when app-control is stale");
   assert.equal(mText(soloist, false, true), "Unknown", "soloist text is Unknown when stale");
@@ -2139,13 +2199,6 @@ await test("menu status lines are trustworthy only while app-control is live", a
   assert.equal(mText({ state: "running", upstream: true, loggedIn: false }, true, true), "Waiting for login");
   assert.equal(mText({ state: "stopped", upstream: false, loggedIn: null }, true, true), "Down");
   assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
-});
-
-await test("worstBadge picks the highest severity", async () => {
-  assert.equal(mWorst(["green", "green"]), "green");
-  assert.equal(mWorst(["green", "amber", "green"]), "amber");
-  assert.equal(mWorst(["amber", "red", "green"]), "red");
-  assert.equal(mWorst([]), "green", "no lines defaults to green");
 });
 
 console.log(`\nselftest: ${passed} passed, ${failed} failed`);
