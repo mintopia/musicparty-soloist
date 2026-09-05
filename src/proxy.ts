@@ -12,7 +12,7 @@ import { attachWebhooks, STATE_EVENTS, WebhookHistory, type WebhookDelivery } fr
 import { SoloistRelay, type RelayStatus } from "./relay.js";
 import { handleWebRequest } from "./web.js";
 import { reconcileOutputs, startSinkPolling } from "./pipewire.js";
-import { isDockerMode } from "./supervisor.js";
+import { isDockerMode } from "./runtime.js";
 import { deferred } from "./util.js";
 import { makeLog } from "./log.js";
 
