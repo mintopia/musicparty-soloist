@@ -83,6 +83,7 @@ function addOverride() {
             <button class="btn" title="Remove" @click="removeOverride(key)">×</button>
           </div>
           <button class="btn" :disabled="!nextEvent" @click="addOverride">+ Add event override</button>
+          <div v-if="!nextEvent" class="dev-hint">Every event already has an override.</div>
         </div>
       </template>
     </SectionCard>
@@ -100,4 +101,5 @@ function addOverride() {
 .ov { display: flex; flex-direction: column; gap: 10px; max-width: 700px; }
 .ov-row { gap: 10px; }
 .sel { max-width: 210px; flex: 0 0 auto; }
+.dev-hint { font-size: 11.5px; color: var(--faint); margin-top: 4px; }
 </style>
