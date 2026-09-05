@@ -8,7 +8,7 @@ import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
 import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual } from "./util.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
-import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, type UpstreamFrame } from "./proxy.js";
+import { decodeFrame, shouldAutoplay, AUTOPLAY_FRAMES, SoloistHub, listenParts, makeServer, type UpstreamFrame } from "./proxy.js";
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
 import { AppControl, appControlAllowed, sessionFingerprint, DEBUG_STREAMS, BUFFER_DROP_BYTES, BUFFER_CLOSE_BYTES, APP_CONTROL_PATH, APP_CONTROL_MAX_PAYLOAD } from "./appcontrol.js";
@@ -16,7 +16,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { loadConfig, saveConfig, ensureSecrets, ConfigError, coerceBool, coerceInt, coerceFloat, maskConfig, configSummary, applyApiConfig, defaultConfig, soloistReady, hashPassword, verifyPassword, isPasswordHashed, DEFAULT_OVERLAY, type Config } from "./config.js";
-import { signSession, verifySession, parseCookies, sessionUser, webConfigured, webhooksView, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
+import { signSession, verifySession, parseCookies, sessionUser, webConfigured, relayView, overlayBootstrap, handleWebRequest, SESSION_COOKIE } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted, setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./supervisor.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
@@ -389,25 +389,6 @@ await test("WebhookHistory evicts oldest entries at cap 10", async () => {
   assert.equal(entries.length, 10, "ring buffer capped at 10");
   assert.equal(entries[0].url, "u2", "oldest surviving entry is the 3rd recorded");
   assert.equal(h.last()!.url, "u11", "last() returns the most recent entry");
-});
-
-
-// webhooksView: reports config + history, never the secret value.
-const viewCfg = { webhooks: { defaultUrl: "http://def", urls: { track_changed: "http://tc" }, secret: "topsecret", delayMs: 0 } } as unknown as Config;
-const viewHistory = new WebhookHistory();
-viewHistory.record({ at: 1, type: "track_changed", url: "http://a", status: 200, durationMs: 1, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
-const view = webhooksView(viewCfg, viewHistory) as { config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean }; history: WebhookDelivery[] };
-await test("webhooksView hides secret", async () => {
-assert.equal(view.config.hasSecret, true, "secret presence exposed as boolean");
-assertNoLeak("webhooksView", view, ["topsecret"]);
-assert.deepEqual(view.config.urls, { track_changed: "http://tc" }, "type->url overrides reported");
-assert.equal(view.config.defaultUrl, "http://def", "default url reported");
-assert.ok(Array.isArray(view.history) && view.history.some((d) => d.url === "http://a"), "live delivery history included");
-});
-
-const noSecretView = webhooksView({ webhooks: { defaultUrl: "", urls: {}, secret: "", delayMs: 0 } } as unknown as Config, new WebhookHistory()) as { config: { hasSecret: boolean } };
-await test("webhooksView empty secret", async () => {
-assert.equal(noSecretView.config.hasSecret, false, "empty secret -> hasSecret false");
 });
 
 
@@ -903,7 +884,7 @@ await test("AppControl Debug Subscriber tier", async () => {
   ac.recheck();
   assert.equal(c.closed?.code, 1008, "re-check closes a session revoked by password rotation");
 
-  ac.stop();
+  await ac.stop();
 });
 
 
@@ -919,7 +900,7 @@ await test("AppControl refuses a cookieless registration", async () => {
   assert.equal(closed, 1008, "cookieless socket closed 1008");
   assert.equal(sessionFingerprint(""), null, "empty cookie has no fingerprint");
   assert.equal(DEBUG_STREAMS.includes("frame"), true, "fixed stream set includes frame");
-  ac.stop();
+  await ac.stop();
 });
 
 
@@ -961,8 +942,72 @@ await test("AppControl real-socket round-trip + oversized frame closed safely", 
   for (let i = 0; i < 100 && ac.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(ac.count(), 0, "subscriber removed after the oversized-frame close");
 
-  ac.stop();
+  await ac.stop();
   server.close();
+});
+
+
+// close() lifecycle (unit): stop() clears the re-check interval, terminates every Debug
+// Subscriber socket, and resolves only once the WebSocketServer has finished closing.
+await test("AppControl.stop() clears the interval, terminates subscribers, and awaits server close", async () => {
+  const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  const ac = new AppControl(cfg);
+  let closed: { code: number; reason: string } | null = null;
+  const ws = {
+    readyState: WebSocket.OPEN,
+    on() { return this; },
+    close(code: number, reason: string) { closed = { code, reason }; },
+  };
+  ac.register(ws as unknown as WebSocket, cookie); // registering a subscriber arms the re-check interval
+  assert.equal(ac.count(), 1, "subscriber registered");
+  await ac.stop();
+  assert.deepEqual(closed, { code: 1001, reason: "shutting down" }, "subscriber socket terminated on stop");
+  assert.equal(ac.count(), 0, "no subscribers after stop");
+  await ac.stop(); // idempotent: a second stop (interval already cleared, no subscribers) still resolves
+});
+
+
+// close() lifecycle (integration): a live Debug Subscriber socket is torn down, the listener
+// stops accepting connections, and the returned Promise resolves once shutdown completes.
+await test("RunningProxy.close() tears down debug sockets and the App-Control server", async () => {
+  const prevDocker = isDockerMode();
+  setDockerMode(false); // no PipeWire fan-out / sink polling under test
+  const dir = mkdtempSync(join(tmpdir(), "close-"));
+  const cfgPath = join(dir, "config.yaml");
+  // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+  const cfg = defaultConfig();
+  cfg.web.username = "admin";
+  cfg.web.password = "pw";
+  cfg.web.sessionSecret = AUTH_SECRET;
+  cfg.proxy.listen = `127.0.0.1:${port}`;
+  cfg.soloistWs = "127.0.0.1:1"; // upstream is unreachable; the Hub retries until close() stops it
+  const running = await makeServer(cfg, cfgPath);
+  try {
+    const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+    const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+      headers: { cookie, origin: `http://127.0.0.1:${port}` },
+    });
+    await once(client, "open");
+    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 1, "debug subscriber connected before close");
+
+    const clientClosed = once(client, "close");
+    await running.close();
+    await clientClosed; // the subscriber socket was terminated by the teardown
+    assert.equal(running.appControl.count(), 0, "no debug subscribers after close");
+
+    // the listener is gone: a fresh connection is refused
+    const dead = new WebSocket(`ws://127.0.0.1:${port}/`);
+    await assert.rejects(once(dead, "open"), "server no longer accepts connections after close");
+  } finally {
+    setDockerMode(prevDocker);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 
@@ -1485,7 +1530,7 @@ await test("first-run setup gating", async () => {
   assert.equal(r.statusCode, 302, "root redirects in setup mode");
   assert.equal(r.headers.location, "/setup", "root redirects to /setup");
 
-  for (const p of ["/api/config", "/api/config-summary", "/api/webhooks", "/login"]) {
+  for (const p of ["/api/config", "/api/config-summary", "/api/relay", "/login"]) {
     r = fakeRes();
     call(r, setupReq("GET", p), scfg);
     assert.equal(r.statusCode, 503, `${p} fails closed in setup mode`);

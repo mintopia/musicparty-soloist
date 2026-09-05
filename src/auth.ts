@@ -45,6 +45,10 @@ function authority(value: string): { host: string; port: string } | null {
 // CSWSH defense for cookie-authenticated upgrades: a browser always sends Origin on a
 // WebSocket handshake, so require its host to match the Host we were reached on. Token
 // clients (presentedToken !== null) are exempt — they're not browsers and carry no cookie.
+//
+// Same-host, not same-origin in the full sense: it compares Origin.host against Host,
+// normalized (hostname lower-cased, default ports treated as equivalent). Scheme is never
+// derived or compared — see DEFAULT_PORTS above for why host-only is sufficient here.
 export function sameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers["origin"];
   const host = req.headers["host"];

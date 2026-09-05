@@ -162,7 +162,10 @@ export class AppControl {
     return this.subs.size;
   }
 
-  stop(): void {
+  // Full teardown: clear the re-check interval, close every Debug Subscriber socket, and
+  // resolve only once the WebSocketServer has finished closing, so a caller (RunningProxy.close)
+  // can await a clean shutdown with no lingering timer or open socket.
+  stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -171,7 +174,7 @@ export class AppControl {
       try { sub.ws.close(1001, "shutting down"); } catch { /* already closing */ }
     }
     this.subs.clear();
-    this.wss.close();
+    return new Promise((resolve) => this.wss.close(() => resolve()));
   }
 
   private ensureTimer(): void {

@@ -191,6 +191,9 @@ export class SoloistHub {
     this.stopped = true;
     this.conn?.close();
     this.signalWake();
+    // Drop every observer so the diagnostic and Relay subscriptions attached over this Hub's
+    // lifetime don't outlive it (nothing re-arms them after stop).
+    this.observers.clear();
   }
 
   async run(): Promise<void> {
@@ -275,7 +278,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
   attachAutoplay(hub, cfg);
-  const history = attachWebhooks(hub, cfg);
+  attachWebhooks(hub, cfg);
   const relay = new SoloistRelay(hub, cfg);
   const appControl = new AppControl(cfg);
   const wss = new WebSocketServer({ noServer: true });
@@ -287,7 +290,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     relay.apply();
   };
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg, configPath, history, control, onConfigChange, relay.status, (r) => appControl.closeForRequest(r))) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath, control, onConfigChange, relay.status, (r) => appControl.closeForRequest(r))) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
@@ -360,14 +363,17 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
         server,
         hub,
         appControl,
-        close: () =>
-          new Promise<void>((res) => {
-            hub.stop();
-            relay.stop();
-            appControl.stop();
-            wss.close();
-            server.close(() => res());
-          }),
+        close: async () => {
+          // Ordered teardown: stop the Hub (ends its reconnect loop and disposes every
+          // observer subscription), stop the Relay, then tear down the App-Control tier —
+          // clear its re-check interval, terminate every Debug Subscriber socket, and await
+          // its WebSocketServer close — before closing the Downstream WSS and HTTP server.
+          hub.stop();
+          relay.stop();
+          await appControl.stop();
+          wss.close();
+          await new Promise<void>((res) => server.close(() => res()));
+        },
       });
     });
   });
