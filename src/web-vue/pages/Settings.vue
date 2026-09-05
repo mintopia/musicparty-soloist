@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useConfig } from "../composables/useConfig";
 import SectionCard from "../components/SectionCard.vue";
 import TextField from "../components/TextField.vue";
@@ -10,6 +10,37 @@ const { config, summary, secretSet, loaded } = useConfig();
 // The working copy is a reactive Record; the typed accessors below are only for the
 // template's benefit. Writing through it auto-flips `dirty` — no markDirty needed.
 const c = config as any;
+
+// Standalone-only PipeWire output-device picker (ADR-0015). Soloist auto-connects to
+// some sink when none is pinned, which is often the wrong one (e.g. the Pi headphone
+// jack instead of a DAC HAT) — so let the operator choose from the host's real sinks.
+interface PwSink { name: string; description: string }
+const sinks = ref<PwSink[]>([]);
+const sinksLoading = ref(false);
+
+async function loadSinks() {
+  sinksLoading.value = true;
+  try {
+    const r = await fetch("/api/pipewire-sinks", { credentials: "same-origin" });
+    sinks.value = r.ok ? ((await r.json()).sinks ?? []) : [];
+  } catch {
+    sinks.value = [];
+  } finally {
+    sinksLoading.value = false;
+  }
+}
+
+// Load once the config summary says we're standalone (the picker is hidden in Docker).
+watch(loaded, (ok) => { if (ok && !summary.dockerMode) loadSinks(); }, { immediate: true });
+
+// Sink options plus, if the configured device isn't among them, the stored value itself
+// (labelled "not detected") so a manual/stale name is never silently dropped on save.
+const deviceOptions = computed(() => {
+  const opts = sinks.value.map((s) => ({ value: s.name, label: s.description || s.name }));
+  const cur = String(c.soloist?.pipewireDevice ?? "");
+  if (cur && !opts.some((o) => o.value === cur)) opts.push({ value: cur, label: `${cur} (not detected)` });
+  return opts;
+});
 
 interface RelayStatus { enabled: boolean; connected: boolean; lastError: string | null }
 const relay = ref<RelayStatus>({ enabled: false, connected: false, lastError: null });
@@ -41,7 +72,19 @@ const pill = computed(() => {
       <div class="grid2">
         <TextField label="Device name" v-model="c.soloist.deviceName" />
         <TextField v-if="!summary.dockerMode" label="Soloist WS" v-model="c.soloistWs" />
-        <TextField v-if="!summary.dockerMode" label="PipeWire output device" placeholder="Optional — Soloist's default if blank" v-model="c.soloist.pipewireDevice" />
+        <div v-if="!summary.dockerMode" class="tf">
+          <div class="dev-label">
+            <label class="flabel">PipeWire output device</label>
+            <button type="button" class="linkbtn" :disabled="sinksLoading" @click="loadSinks">
+              {{ sinksLoading ? "Refreshing…" : "Refresh" }}
+            </button>
+          </div>
+          <select class="field" v-model="c.soloist.pipewireDevice">
+            <option value="">Soloist default (auto)</option>
+            <option v-for="o in deviceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+          <div class="dev-hint">Restart Soloist to apply.</div>
+        </div>
         <SecretRow
           label="Spotify API key" section="soloist" field-key="apiKey" revealable
           :is-set="secretSet['soloist.apiKey']" v-model="c.soloist.apiKey"
@@ -96,6 +139,15 @@ const pill = computed(() => {
 <style scoped>
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; align-items: start; }
 @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+
+.tf .field { width: 100%; }
+.dev-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.linkbtn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--ind);
+}
+.linkbtn:disabled { color: var(--faint); cursor: default; }
+.dev-hint { font-size: 11.5px; color: var(--faint); margin-top: 4px; }
 
 .setrow {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
