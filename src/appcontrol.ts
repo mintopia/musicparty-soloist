@@ -66,6 +66,7 @@ export class AppControl {
   private subs = new Set<Subscriber>();
   private wss = new WebSocketServer({ noServer: true, maxPayload: APP_CONTROL_MAX_PAYLOAD });
   private timer: ReturnType<typeof setInterval> | null = null;
+  private subscribeHooks = new Set<(stream: DebugStream, send: (data: unknown) => void) => void>();
 
   // cfg is the live, mutated-in-place Config, so the re-check sees a rotated password.
   constructor(private cfg: Config) {}
@@ -108,9 +109,27 @@ export class AppControl {
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
     const m = msg as Record<string, unknown>;
     if (m.type !== "subscribe" || !Array.isArray(m.streams)) return;
-    // Idempotent: a Set dedupes, so a repeated subscribe adds no duplicate. Unknown stream
-    // names are ignored rather than rejected.
-    for (const s of m.streams) if (typeof s === "string" && VALID_STREAMS.has(s)) sub.streams.add(s);
+    // Idempotent: only a newly-added stream fires the subscribe hooks, so a repeated
+    // subscribe re-sends no snapshot. Unknown stream names are ignored rather than rejected.
+    for (const s of m.streams) {
+      if (typeof s !== "string" || !VALID_STREAMS.has(s) || sub.streams.has(s)) continue;
+      sub.streams.add(s);
+      const stream = s as DebugStream;
+      for (const hook of this.subscribeHooks) {
+        try {
+          hook(stream, (data) => this.deliver(sub, stream, JSON.stringify({ stream, data })));
+        } catch (err) {
+          log("subscribe hook threw: %s", (err as Error).message);
+        }
+      }
+    }
+  }
+
+  // Register a producer hook fired once per newly-subscribed stream, handed a `send` that
+  // pushes an initial snapshot to just that socket (buffer-gated like publish). Producers
+  // that only push on change live outside; this covers the on-subscribe dump.
+  onSubscribe(cb: (stream: DebugStream, send: (data: unknown) => void) => void): void {
+    this.subscribeHooks.add(cb);
   }
 
   // Fan a diagnostic frame out to every subscriber of `stream`, gated on each socket's
@@ -119,16 +138,23 @@ export class AppControl {
     if (this.subs.size === 0) return;
     const raw = JSON.stringify({ stream, data });
     for (const sub of this.subs) {
-      if (!sub.streams.has(stream) || sub.ws.readyState !== WebSocket.OPEN) continue;
-      const buffered = sub.ws.bufferedAmount;
-      if (buffered > BUFFER_CLOSE_BYTES) {
-        log("closing slow debug subscriber: %d bytes buffered", buffered);
-        this.close(sub, 1013, "slow consumer");
-        continue;
-      }
-      if (buffered > BUFFER_DROP_BYTES && stream === "frame") continue; // shed high-rate frames first
-      sub.ws.send(raw);
+      if (sub.streams.has(stream)) this.deliver(sub, stream, raw);
     }
+  }
+
+  // Buffer-gated send of an already-serialized `{stream,data}` payload to one subscriber:
+  // closes a hopelessly-behind socket, sheds high-rate `frame` updates past the drop
+  // threshold first, otherwise sends. Shared by publish (fan-out) and on-subscribe snapshots.
+  private deliver(sub: Subscriber, stream: DebugStream, raw: string): void {
+    if (sub.ws.readyState !== WebSocket.OPEN) return;
+    const buffered = sub.ws.bufferedAmount;
+    if (buffered > BUFFER_CLOSE_BYTES) {
+      log("closing slow debug subscriber: %d bytes buffered", buffered);
+      this.close(sub, 1013, "slow consumer");
+      return;
+    }
+    if (buffered > BUFFER_DROP_BYTES && stream === "frame") return; // shed high-rate frames first
+    sub.ws.send(raw);
   }
 
   // Close every Debug Subscriber whose session cookie matches this request's — POST /logout
