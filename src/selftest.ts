@@ -23,7 +23,8 @@ import { renderSnapserverConf, snapStreamSource, writeSnapserverConf, renderConf
 import { signSession, verifySession, parseCookies, sessionUser, webConfigured, SESSION_COOKIE } from "./session.js";
 import { relayView, overlayBootstrap, handleWebRequest } from "./web.js";
 import { buildArgv, supervise, SoloistControl, Aborted } from "./supervisor.js";
-import { setPipewireDeviceOverride, setDockerMode, isDockerMode } from "./runtime.js";
+import { setPipewireDeviceOverride, setDockerMode, isDockerMode, getPipewireDeviceOverride } from "./runtime.js";
+import { parseMainArgs, applyRuntimeFlags, installShutdownHandlers } from "./main.js";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
@@ -2190,6 +2191,80 @@ await test("menuStatus derivation & precedence (ADR-0017)", async () => {
   assert.equal(mText({ state: "running", upstream: true, loggedIn: false }, true, true), "Waiting for login");
   assert.equal(mText({ state: "stopped", upstream: false, loggedIn: null }, true, true), "Down");
   assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
+});
+
+// main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1): parseMainArgs
+// covers node:util parseArgs option shapes (bare/--config/--docker/--pipewire-device/
+// combined), applyRuntimeFlags covers the docker/pipewire-device -> runtime wiring
+// (including that docker:false never clears an already-set docker mode — it only ever
+// sets true), and installShutdownHandlers covers that both SIGINT and SIGTERM get wired
+// to the same shutdown callback.
+await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)", async () => {
+  // parseMainArgs
+  const none = parseMainArgs([]);
+  assert.equal(none.docker, false, "no args -> docker false");
+  assert.equal(none.config, undefined, "no args -> config undefined");
+  assert.equal(none.pipewireDevice, undefined, "no args -> pipewireDevice undefined");
+
+  assert.equal(parseMainArgs(["--config", "/tmp/x.yaml"]).config, "/tmp/x.yaml", "--config sets config");
+  assert.equal(parseMainArgs(["--docker"]).docker, true, "--docker sets docker true");
+  assert.equal(
+    parseMainArgs(["--pipewire-device", "alsa_out.foo"]).pipewireDevice,
+    "alsa_out.foo",
+    "--pipewire-device sets pipewireDevice",
+  );
+
+  const combined = parseMainArgs(["--config", "/tmp/y.yaml", "--docker", "--pipewire-device", "alsa_out.bar"]);
+  assert.deepEqual(
+    combined,
+    { config: "/tmp/y.yaml", docker: true, pipewireDevice: "alsa_out.bar" },
+    "combined argv parses all three flags together",
+  );
+
+  // applyRuntimeFlags: reset global runtime state first so this block is order-independent.
+  setDockerMode(false);
+  setPipewireDeviceOverride("");
+  assert.equal(isDockerMode(), false, "precondition: docker mode reset");
+
+  applyRuntimeFlags({ docker: true, pipewireDevice: "dev.x" });
+  assert.equal(isDockerMode(), true, "applyRuntimeFlags(docker:true) enables docker mode");
+  assert.equal(getPipewireDeviceOverride(), "dev.x", "applyRuntimeFlags sets the pipewire device override");
+
+  // docker:false never clears an already-set docker mode — applyRuntimeFlags only ever sets true.
+  applyRuntimeFlags({ docker: false });
+  assert.equal(isDockerMode(), true, "applyRuntimeFlags(docker:false) does not clear an already-set docker mode");
+
+  // Reset global runtime state so other tests (e.g. a pipewire test reading these) aren't polluted.
+  setDockerMode(false);
+  setPipewireDeviceOverride("");
+
+  // installShutdownHandlers
+  const handlers: Record<string, (...a: unknown[]) => void> = {};
+  const fakeProc = {
+    on(event: string, fn: (...a: unknown[]) => void) {
+      handlers[event] = fn;
+    },
+  } as unknown as Pick<NodeJS.Process, "on">;
+  const controller = new AbortController();
+  installShutdownHandlers(fakeProc, () => controller.abort());
+  assert.equal(typeof handlers.SIGINT, "function", "SIGINT handler registered");
+  assert.equal(typeof handlers.SIGTERM, "function", "SIGTERM handler registered");
+
+  assert.equal(controller.signal.aborted, false, "not aborted before signal");
+  handlers.SIGINT();
+  assert.equal(controller.signal.aborted, true, "invoking the SIGINT handler aborts the controller");
+
+  // SIGTERM handler is likewise present and callable (fresh controller, since the first is
+  // already aborted).
+  const controller2 = new AbortController();
+  const handlers2: Record<string, (...a: unknown[]) => void> = {};
+  installShutdownHandlers(
+    { on: (event: string, fn: (...a: unknown[]) => void) => { handlers2[event] = fn; } } as unknown as Pick<NodeJS.Process, "on">,
+    () => controller2.abort(),
+  );
+  assert.equal(typeof handlers2.SIGTERM, "function", "SIGTERM handler registered on a second install");
+  handlers2.SIGTERM();
+  assert.equal(controller2.signal.aborted, true, "invoking the SIGTERM handler aborts its controller");
 });
 
 console.log(`\nselftest: ${passed} passed, ${failed} failed`);

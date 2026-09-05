@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { pathToFileURL } from "node:url";
 import { ConfigError, DEFAULT_CONFIG_PATH, defaultConfig, ensureSecrets, loadConfig, soloistReady } from "./config.js";
 import { serveProxy } from "./proxy.js";
 import { supervise, Aborted, SoloistControl } from "./supervisor.js";
@@ -9,8 +10,15 @@ import { makeLog } from "./log.js";
 
 const log = makeLog("main");
 
-async function main(): Promise<number> {
+export interface MainArgs {
+  config?: string;
+  docker: boolean;
+  pipewireDevice?: string;
+}
+
+export function parseMainArgs(args: string[]): MainArgs {
   const { values } = parseArgs({
+    args,
     options: {
       config: { type: "string" },
       // Managed-audio deployment (ADR-0011/0015): enable the Proxy's Snapcast + hardware
@@ -22,11 +30,31 @@ async function main(): Promise<number> {
       "pipewire-device": { type: "string" },
     },
   });
+  return {
+    config: values.config,
+    docker: values.docker ?? false,
+    pipewireDevice: values["pipewire-device"],
+  };
+}
 
-  if (values.docker) setDockerMode(true);
-  if (values["pipewire-device"]) setPipewireDeviceOverride(values["pipewire-device"]);
+export function applyRuntimeFlags(a: MainArgs): void {
+  if (a.docker) setDockerMode(true);
+  if (a.pipewireDevice) setPipewireDeviceOverride(a.pipewireDevice);
+}
 
-  const configPath = values.config ?? DEFAULT_CONFIG_PATH;
+export function installShutdownHandlers(
+  proc: Pick<NodeJS.Process, "on">,
+  onShutdown: () => void,
+): void {
+  proc.on("SIGINT", onShutdown);
+  proc.on("SIGTERM", onShutdown);
+}
+
+async function main(): Promise<number> {
+  const args = parseMainArgs(process.argv.slice(2));
+  applyRuntimeFlags(args);
+
+  const configPath = args.config ?? DEFAULT_CONFIG_PATH;
   let cfg;
   try {
     // Missing file = fresh install: boot into setup mode from defaults rather than error.
@@ -42,8 +70,7 @@ async function main(): Promise<number> {
 
   const controller = new AbortController();
   const shutdown = () => controller.abort();
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  installShutdownHandlers(process, shutdown);
 
   // The Proxy HTTP/WS server always starts. The supervisor also always starts but
   // parks until the config is minimally valid (web creds + Soloist args): first-run
@@ -69,10 +96,12 @@ async function main(): Promise<number> {
   return 0;
 }
 
-main().then(
-  (code) => process.exit(code),
-  (err) => {
-    console.error(err);
-    process.exit(1);
-  },
-);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error(err);
+      process.exit(1);
+    },
+  );
+}
