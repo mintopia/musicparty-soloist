@@ -9,16 +9,16 @@ const WEBHOOK_EVENTS = [
   "context_changed", "device_changed", "playback_state", "auth_state", "position_sync",
 ];
 
-interface WebhookStat { lastStatus: number | null; ok: number; fail: number; lastError: string | null; }
+interface WebhookDelivery { at: number; type: string; url: string; status: number | null; durationMs: number; error: string | null; }
 interface WebhooksView {
   config: { defaultUrl: string; urls: Record<string, string>; hasSecret: boolean };
-  stats: Record<string, WebhookStat>;
+  history: WebhookDelivery[];
 }
 
 const { config, secretSet, loaded } = useConfig();
 
-// Delivery stats: a snapshot of the saved server view, fetched once (mirrors the legacy
-// view — reflects saved config, not unsaved edits).
+// Delivery history: a snapshot of the saved server view, fetched once (reflects saved
+// config, not unsaved edits).
 const wh = ref<WebhooksView | null>(null);
 onMounted(async () => {
   try {
@@ -63,20 +63,28 @@ function addOverride() {
   if (nextEvent.value) webhooks.value.urls[nextEvent.value] = "";
 }
 
+// Most recent history entry for a given url, searching from the end (newest first).
+function lastFor(history: WebhookDelivery[], url: string): WebhookDelivery | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].url === url) return history[i];
+  }
+  return undefined;
+}
+
 const deliveries = computed(() => {
   const w = wh.value;
   if (!w) return [];
-  const out: { name: string; url: string; stat: WebhookStat | undefined }[] = [];
-  if (w.config.defaultUrl) out.push({ name: "default", url: w.config.defaultUrl, stat: w.stats[w.config.defaultUrl] });
-  for (const [k, url] of Object.entries(w.config.urls || {})) out.push({ name: k, url, stat: w.stats[url] });
+  const out: { name: string; url: string; stat: WebhookDelivery | undefined }[] = [];
+  if (w.config.defaultUrl) out.push({ name: "default", url: w.config.defaultUrl, stat: lastFor(w.history, w.config.defaultUrl) });
+  for (const [k, url] of Object.entries(w.config.urls || {})) out.push({ name: k, url, stat: lastFor(w.history, url) });
   return out;
 });
 
-function statBad(s: WebhookStat): boolean {
-  return s.fail > 0 && (s.lastStatus === null || s.lastStatus >= 400);
+function statBad(s: WebhookDelivery): boolean {
+  return s.status === null || s.status >= 400;
 }
-function statLabel(s: WebhookStat): string {
-  return `${s.lastStatus ?? "err"} · ${s.ok}✓${s.fail ? " " + s.fail + "✗" : ""}`;
+function statLabel(s: WebhookDelivery): string {
+  return `${s.status ?? "err"}${s.error ? " · " + s.error : ""}`;
 }
 </script>
 

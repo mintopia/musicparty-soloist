@@ -8,7 +8,7 @@ import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ConfigError, applyApiConfig, configSummary, hashPassword, isPasswordHashed, maskConfig, saveConfig, verifyPassword, type Config } from "./config.js";
-import type { WebhookStats } from "./webhooks.js";
+import { WebhookHistory } from "./webhooks.js";
 import type { RelayStatus } from "./relay.js";
 import type { SoloistControl } from "./supervisor.js";
 import { getSinkCache, refreshSinkCache, reconcileOutputs } from "./pipewire.js";
@@ -155,12 +155,12 @@ function serveOverlay(res: ServerResponse, cfg: Config): void {
   res.writeHead(200, { "content-type": CONTENT_TYPES.html }).end(html);
 }
 
-// Configured webhook destinations (never the secret value) plus live delivery stats.
-export function webhooksView(cfg: Config, stats: WebhookStats): unknown {
+// Configured webhook destinations (never the secret value) plus recent delivery history.
+export function webhooksView(cfg: Config, history: WebhookHistory): unknown {
   const wh = cfg.webhooks;
   return {
     config: { defaultUrl: wh.defaultUrl, urls: wh.urls, hasSecret: wh.secret !== "" },
-    stats: Object.fromEntries(stats),
+    history: history.entries(),
   };
 }
 
@@ -361,7 +361,7 @@ export function handleWebRequest(
   res: ServerResponse,
   cfg: Config,
   configPath: string,
-  stats: WebhookStats = new Map(),
+  history: WebhookHistory = new WebhookHistory(),
   control?: SoloistControl,
   onConfigChange?: (cfg: Config) => void,
   relayStatus?: RelayStatus,
@@ -396,7 +396,7 @@ export function handleWebRequest(
   }
 
   if (path === "/api/webhooks" && method === "GET") {
-    if (apiAuthed(req, res, cfg)) json(res, 200, webhooksView(cfg, stats));
+    if (apiAuthed(req, res, cfg)) json(res, 200, webhooksView(cfg, history));
     return true;
   }
 

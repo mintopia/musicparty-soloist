@@ -247,7 +247,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
   attachAutoplay(hub, cfg);
-  const stats = attachWebhooks(hub, cfg);
+  const history = attachWebhooks(hub, cfg);
   const relay = new SoloistRelay(hub, cfg);
   const wss = new WebSocketServer({ noServer: true });
 
@@ -258,7 +258,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
     relay.apply();
   };
   const server = createServer((req, res) => {
-    if (!handleWebRequest(req, res, cfg, configPath, stats, control, onConfigChange, relay.status)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
+    if (!handleWebRequest(req, res, cfg, configPath, history, control, onConfigChange, relay.status)) res.writeHead(404, { "content-type": "text/plain" }).end("Not found\n");
   });
 
   server.on("upgrade", (req, socket, head) => {
