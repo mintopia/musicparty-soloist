@@ -72,6 +72,7 @@ function addOverride() {
           label="Authorization Header"
           :is-set="secretSet['webhooks.secret']"
           v-model="webhooks.secret"
+          hint="Sent as a Bearer token in the Authorization header on every webhook request. Optional."
         />
 
         <div class="ov-label"><span class="lbl">Per-Event Overrides</span></div>

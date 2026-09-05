@@ -51,6 +51,7 @@ const pill = computed(() => {
       <SecretRow
         label="Authorization Header" section="relay" field-key="authorization" revealable
         :is-set="secretSet['relay.authorization']" v-model="c.relay.authorization"
+        hint="Sent as the Authorization header when connecting to the relay server. Optional — leave blank if the relay needs no auth."
       />
     </div>
   </SectionCard>
