@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, useId, watch } from "vue";
 import { useConfig } from "../../composables/useConfig";
 import SectionCard from "../../components/SectionCard.vue";
 import LoadingState from "../../components/LoadingState.vue";
@@ -35,6 +35,8 @@ const deviceOptions = computed(() => {
   if (cur && !opts.some((o) => o.value === cur)) opts.push({ value: cur, label: `${cur} (not detected)` });
   return opts;
 });
+
+const pipewireDeviceId = useId();
 </script>
 
 <template>
@@ -44,12 +46,12 @@ const deviceOptions = computed(() => {
       <TextField label="Device name" v-model="c.soloist.deviceName" />
       <div v-if="!summary.dockerMode" class="tf">
         <div class="dev-label">
-          <label class="flabel">PipeWire output device</label>
+          <label class="flabel" :for="pipewireDeviceId">PipeWire output device</label>
           <button type="button" class="linkbtn" :disabled="sinksLoading" @click="loadSinks">
             {{ sinksLoading ? "Refreshing…" : "Refresh" }}
           </button>
         </div>
-        <select class="field" v-model="c.soloist.pipewireDevice">
+        <select :id="pipewireDeviceId" class="field" v-model="c.soloist.pipewireDevice">
           <option value="">Soloist default (auto)</option>
           <option v-for="o in deviceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>

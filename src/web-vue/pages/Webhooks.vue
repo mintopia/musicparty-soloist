@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import { PhX } from "@phosphor-icons/vue";
 import { useConfig } from "../composables/useConfig";
 import SecretRow from "../components/SecretRow.vue";
@@ -45,6 +45,9 @@ function removeOverride(key: string) {
   delete webhooks.value.urls[key];
 }
 
+const defaultUrlId = useId();
+const delayId = useId();
+
 const nextEvent = computed(() => WEBHOOK_EVENTS.find((e) => !(e in webhooks.value.urls)));
 function addOverride() {
   if (nextEvent.value) webhooks.value.urls[nextEvent.value] = "";
@@ -58,12 +61,12 @@ function addOverride() {
       <template v-else>
         <div class="top">
           <div class="grow">
-            <label class="flabel">Default URL</label>
-            <input class="field" v-model="webhooks.defaultUrl" placeholder="https://…" />
+            <label class="flabel" :for="defaultUrlId">Default URL</label>
+            <input :id="defaultUrlId" class="field" v-model="webhooks.defaultUrl" placeholder="https://…" />
           </div>
           <div class="delay">
-            <label class="flabel">Min Interval (ms)</label>
-            <input class="field" type="number" v-model="delayMs" />
+            <label class="flabel" :for="delayId">Min Interval (ms)</label>
+            <input :id="delayId" class="field" type="number" v-model="delayMs" />
           </div>
         </div>
 

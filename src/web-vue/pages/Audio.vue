@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, useId } from "vue";
 import { useConfig } from "../composables/useConfig";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import SectionCard from "../components/SectionCard.vue";
@@ -62,6 +62,9 @@ function toggle(s: PwSink) {
   else outs.push(s.name);
 }
 
+const uid = useId();
+const fieldId = (name: string) => `${uid}-${name}`;
+
 const delayOf = (name: string) => c.audio.outputDelays[name] || 0;
 function setDelay(name: string, v: string) {
   c.audio.outputDelays[name] = Math.min(MAX_DELAY_MS, Math.max(0, Math.floor(Number(v) || 0)));
@@ -93,12 +96,13 @@ function setDelay(name: string, v: string) {
         </div>
 
         <div v-if="isSnap(s) && isOn(s)" class="sub">
-          <label class="flabel">Stream name</label>
-          <input class="field stream" v-model="c.streamName" />
+          <label class="flabel" :for="fieldId(s.name)">Stream name</label>
+          <input :id="fieldId(s.name)" class="field stream" v-model="c.streamName" />
         </div>
         <div v-else-if="!isSnap(s) && isOn(s)" class="sub">
-          <label class="flabel">Delay (ms)</label>
+          <label class="flabel" :for="fieldId(s.name)">Delay (ms)</label>
           <input
+            :id="fieldId(s.name)"
             class="field delay"
             type="number"
             min="0"
