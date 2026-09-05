@@ -11,7 +11,7 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { Config } from "./config.js";
 import { sameOrigin } from "./auth.js";
-import { parseCookies, sessionUser, SESSION_COOKIE } from "./web.js";
+import { parseCookies, sessionUser, SESSION_COOKIE } from "./session.js";
 import { makeLog } from "./log.js";
 import { DEBUG_STREAMS, type DebugStream } from "./wire-contract.js";
 

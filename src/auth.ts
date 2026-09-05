@@ -3,7 +3,7 @@
 
 import type { IncomingMessage } from "node:http";
 import type { Config } from "./config.js";
-import { sessionUser } from "./web.js";
+import { sessionUser } from "./session.js";
 import { safeStrEqual } from "./util.js";
 import type { ClientAuth } from "./wire-contract.js";
 
