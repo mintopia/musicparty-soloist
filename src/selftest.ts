@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { detectArch, AcquisitionError, tarballUrl } from "./acquire.js";
+import { detectArch, AcquisitionError, tarballUrl, binaryIsFresh, MAX_AGE_DAYS } from "./acquire.js";
 import { checkAuth, sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual, deferred } from "./util.js";
 import { makeLog } from "./log.js";
@@ -169,6 +169,35 @@ assert.equal(detectArch("arm64"), "arm64");
 assert.equal(detectArch("arm"), "arm32");
 assert.throws(() => detectArch("sparc"), AcquisitionError);
 assert.equal(tarballUrl("arm64", "https://x/y/"), "https://x/y/soloist_release_arm64.tar.gz");
+});
+
+
+await test("binaryIsFresh", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "soloist-fresh-"));
+  try {
+    const fresh = join(dir, "fresh");
+    writeFileSync(fresh, "x");
+    assert.equal(binaryIsFresh(fresh), true);
+
+    const old = join(dir, "old");
+    writeFileSync(old, "x");
+    const oldSecs = (Date.now() - (MAX_AGE_DAYS + 10) * 86_400_000) / 1000;
+    utimesSync(old, oldSecs, oldSecs);
+    assert.equal(binaryIsFresh(old), false);
+    assert.equal(binaryIsFresh(old, MAX_AGE_DAYS + 20), true);
+
+    assert.equal(binaryIsFresh(join(dir, "missing")), false);
+    assert.equal(binaryIsFresh(dir), false);
+
+    const borderline = join(dir, "borderline");
+    writeFileSync(borderline, "x");
+    const borderlineSecs = (Date.now() - 10 * 86_400_000) / 1000;
+    utimesSync(borderline, borderlineSecs, borderlineSecs);
+    assert.equal(binaryIsFresh(borderline, 5), false);
+    assert.equal(binaryIsFresh(borderline, 30), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 
