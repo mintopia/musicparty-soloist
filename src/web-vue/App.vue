@@ -110,8 +110,14 @@ onMounted(() => {
 /* Docked, full-bleed top bar (vanilla #topbar). */
 .topbar {
   position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 14px;
-  padding: 9px 20px; background: var(--bar); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line);
+  padding: 9px 20px; background: var(--bar);
+  backdrop-filter: blur(20px) saturate(1.6); -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border-bottom: 1px solid var(--line2);
+  box-shadow: 0 6px 22px rgba(30, 30, 40, .06), inset 0 1px 0 rgba(255, 255, 255, .55);
+}
+:root[data-theme="dark"] .topbar {
+  border-bottom-color: rgba(255, 255, 255, .06);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .brandmark {
@@ -142,8 +148,13 @@ onMounted(() => {
 /* Docked, full-bleed save bar (vanilla #saveBar). */
 .savebar {
   position: sticky; bottom: 0; z-index: 30; display: flex; align-items: center; justify-content: flex-end; gap: 18px;
-  padding: 12px 22px; background: var(--savebar); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  border-top: 1px solid var(--line);
+  padding: 12px 22px; background: var(--savebar);
+  backdrop-filter: blur(16px) saturate(1.5); -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  border-top: 1px solid var(--line2);
+  box-shadow: 0 -6px 22px rgba(30, 30, 40, .06), inset 0 1px 0 rgba(255, 255, 255, .5);
+}
+:root[data-theme="dark"] .savebar {
+  box-shadow: 0 -8px 26px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .05);
 }
 .save-label { font-weight: 600; font-size: 13px; color: var(--dim); }
 .save-actions { display: flex; gap: 8px; }
