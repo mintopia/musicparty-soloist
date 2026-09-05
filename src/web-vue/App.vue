@@ -55,7 +55,7 @@ const showSaveBar = computed(() => saveLabel.value !== "");
 onMounted(() => {
   playback.start();
   useAppControl().start();
-  cfg.load().catch(() => { /* boot errors surface in later view tickets */ });
+  cfg.load().catch(() => {});
 });
 </script>
 

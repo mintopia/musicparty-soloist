@@ -21,7 +21,7 @@ function cacheSet(key: string, obj: unknown): void {
     try {
       for (const k of Object.keys(localStorage)) if (k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k);
       localStorage.setItem(CACHE_PREFIX + key, json);
-    } catch { /* ignore */ }
+    } catch {}
   }
 }
 

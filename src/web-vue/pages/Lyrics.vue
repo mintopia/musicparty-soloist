@@ -80,7 +80,6 @@ const STATUS_TEXT: Record<Status, string> = {
   idle: "Checking lyrics…",
 };
 
-// ---- preview (imperative engine) ----------------------------------------------------
 const previewEl = ref<HTMLElement>();
 let previewRender: ((lines: LyricLine[], idx: number) => void) | null = null;
 let pvLastIdx = -2;
@@ -118,7 +117,6 @@ function tickPreview() {
   previewRender(lines, idx);
 }
 
-// ---- effect gallery -----------------------------------------------------------------
 const galleryStages = reactive<Record<string, HTMLElement | null>>({});
 function setGalleryStage(eff: string, el: unknown) { galleryStages[eff] = (el as HTMLElement) || null; }
 
@@ -132,7 +130,6 @@ function remountGallery() {
   }
 }
 
-// ---- lyrics fetch -------------------------------------------------------------------
 async function ensurePreviewLyrics() {
   const t = state.track;
   if (!t) { previewLyrics.uri = null; previewLyrics.lines = []; previewLyrics.status = "notrack"; remountPreview(); return; }

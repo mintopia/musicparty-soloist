@@ -166,8 +166,6 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
   // First-run setup / incomplete config: don't spawn until minimally valid. The
   // Setup Page and PUT /api/config mutate cfg in place, so poll it — readiness
   // flips at most once and config edits are human-driven.
-  // ponytail: 1s poll, no event bus; upgrade to a notifier only if this ever needs
-  // to be instant.
   for (let logged = false; !soloistReady(cfg); ) {
     if (signal.aborted) throw new Aborted();
     if (!logged) { log("waiting for config: web creds + Soloist args (device name, API key)"); logged = true; }

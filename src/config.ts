@@ -89,21 +89,26 @@ export interface AudioConfig {
   outputDelays: Record<string, number>; // node.name -> ms, hardware sinks only; 0/absent = none
 }
 
+export const OVERLAY_MOTIONS = ["slide", "crossfade", "pop", "instant"] as const;
+export const OVERLAY_EFFECTS = ["none", "glow", "shimmer", "rainbow", "sparkles", "wipe", "neon", "glitch", "pulse"] as const;
+export const OVERLAY_ALIGNMENTS = ["left", "center", "right"] as const;
+export const OVERLAY_ANCHORS = ["top", "center", "bottom"] as const;
+
 export interface OverlayConfig {
   font: string;            // CSS font stack
   fontSize: number;        // px (1080p reference)
   color: string;           // current line
   neighbourColor: string;  // other lines
   dimOpacity: number;      // other-line opacity, 0..1
-  motion: string;          // slide | crossfade | pop | instant
+  motion: (typeof OVERLAY_MOTIONS)[number];
   easing: string;          // CSS timing function
   transitionMs: number;    // line-advance duration
-  effect: string;          // none | glow | shimmer | rainbow | sparkles | wipe | neon | glitch | pulse
+  effect: (typeof OVERLAY_EFFECTS)[number];
   fxColor: string;
   fxIntensity: number;     // 0..100
   fxDurMs: number;         // effect period
-  alignment: string;       // left | center | right
-  anchor: string;          // top | center | bottom
+  alignment: (typeof OVERLAY_ALIGNMENTS)[number];
+  anchor: (typeof OVERLAY_ANCHORS)[number];
   lineCount: number;       // visible lines (odd)
   timingOffsetMs: number;
 }
@@ -147,6 +152,9 @@ function stringField(v: unknown, def: string): string {
   return String(v ?? def);
 }
 
+const enumField = (allowed: readonly string[]) => (v: unknown, def: string): string =>
+  allowed.includes(String(v)) ? String(v) : def;
+
 // Overlay fields are ~1:1 scalar mappings (camelCase key <-> snake_case yaml key,
 // a default, a coercer) — one table drives DEFAULT_OVERLAY, parseConfig, and
 // configToRaw instead of hand-restating each field three times (mirrors SECRETS below).
@@ -163,15 +171,15 @@ const OVERLAY_FIELDS: OverlayFieldDef[] = [
   { key: "color", yaml: "color", default: "#ffffff", coerce: stringField },
   { key: "neighbourColor", yaml: "neighbour_color", default: "#ffffff", coerce: stringField },
   { key: "dimOpacity", yaml: "dim_opacity", default: 0.35, coerce: coerceFloat },
-  { key: "motion", yaml: "motion", default: "slide", coerce: stringField },
+  { key: "motion", yaml: "motion", default: "slide", coerce: enumField(OVERLAY_MOTIONS) },
   { key: "easing", yaml: "easing", default: "cubic-bezier(.16,1,.3,1)", coerce: stringField },
   { key: "transitionMs", yaml: "transition_ms", default: 350, coerce: coerceInt },
-  { key: "effect", yaml: "effect", default: "none", coerce: stringField },
+  { key: "effect", yaml: "effect", default: "none", coerce: enumField(OVERLAY_EFFECTS) },
   { key: "fxColor", yaml: "fx_color", default: "#ffd24a", coerce: stringField },
   { key: "fxIntensity", yaml: "fx_intensity", default: 50, coerce: coerceInt },
   { key: "fxDurMs", yaml: "fx_dur_ms", default: 1600, coerce: coerceInt },
-  { key: "alignment", yaml: "alignment", default: "center", coerce: stringField },
-  { key: "anchor", yaml: "anchor", default: "bottom", coerce: stringField },
+  { key: "alignment", yaml: "alignment", default: "center", coerce: enumField(OVERLAY_ALIGNMENTS) },
+  { key: "anchor", yaml: "anchor", default: "bottom", coerce: enumField(OVERLAY_ANCHORS) },
   { key: "lineCount", yaml: "line_count", default: 3, coerce: coerceInt },
   { key: "timingOffsetMs", yaml: "timing_offset_ms", default: 0, coerce: coerceInt },
 ];

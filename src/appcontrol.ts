@@ -30,14 +30,14 @@ const VALID_STREAMS = new Set<string>(DEBUG_STREAMS);
 
 // Post-upgrade auth lifecycle: a socket authed once at handshake must not live forever on
 // a since-revoked session. Bound its max lifetime and re-validate the session periodically.
-export const MAX_LIFETIME_MS = 12 * 60 * 60 * 1000; // 12h
-export const RECHECK_INTERVAL_MS = 60 * 1000; // 1m
+export const MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
+export const RECHECK_INTERVAL_MS = 60 * 1000;
 
 // Backpressure: a slow consumer must never grow the Proxy's memory unbounded. Past the drop
 // threshold we shed the high-rate `frame` stream first; past the hard threshold the socket
 // is hopeless and gets closed.
-export const BUFFER_DROP_BYTES = 1024 * 1024; // 1 MiB
-export const BUFFER_CLOSE_BYTES = 8 * 1024 * 1024; // 8 MiB
+export const BUFFER_DROP_BYTES = 1024 * 1024;
+export const BUFFER_CLOSE_BYTES = 8 * 1024 * 1024;
 
 // The single gate for an App-Control upgrade: a valid Web Session cookie AND same-host
 // origin. Tokens are deliberately not accepted here (this tier is browser-only), and the

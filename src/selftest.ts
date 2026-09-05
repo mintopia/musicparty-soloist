@@ -353,7 +353,6 @@ function fakeFetch(status: number, headers: Record<string, string>, body: string
   return (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
 }
 
-// a) Capture shape: a successful delivery records type/url/status/timing/body.
 await test("postWebhook records delivery capture shape", async () => {
   const h = new WebhookHistory();
   await postWebhook(h, "track_changed", "http://t", "{}", "sek", fakeFetch(200, { "content-type": "application/json" }, "ok"));
@@ -400,8 +399,6 @@ await test("postWebhook redaction (request secret + response allowlist)", async 
   assertNoLeak("postWebhook respHeaders", dResp.respHeaders, ["leak", "sig"]);
 });
 
-// d) Streamed body cap + truncation: an oversized body is capped and marked truncated;
-// a short body records verbatim with no marker.
 // postWebhook response-body cap boundaries: an oversized body is capped + marked truncated;
 // a short body and a body sized exactly to the cap are recorded verbatim with no marker.
 await test("postWebhook response-body cap boundaries", async () => {
@@ -746,7 +743,6 @@ await test("applyApiConfig rejects prototype pollution", async () => {
 });
 
 
-// Web Session cookie: sign/verify round-trip, tamper rejection, fail-closed, expiry.
 const SECRET = "sessionsecret";
 const signed = signSession("admin", SECRET);
 // Web Session cookie (web.ts): sign/verify round-trip, tamper rejection (signature + forged

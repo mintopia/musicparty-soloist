@@ -23,7 +23,6 @@ async function ensureHl(key: string, src: string): Promise<void> {
   if (hlStore[key] === undefined) hlStore[key] = await highlightJson(src);
 }
 
-// ---- Frame stream ------------------------------------------------------------------------
 // The server publishes each frame verbatim with no receipt time (only a native `type`), so a
 // stable id and arrival time are stamped client-side, once per frame object, in a WeakMap that
 // GCs with the ring. The id-keyed expansion and highlight caches don't self-evict, so the
@@ -87,7 +86,6 @@ watch(
   },
 );
 
-// ---- Webhook delivery history ------------------------------------------------------------
 let nextWhId = 0;
 const whMeta = new WeakMap<WebhookDelivery, number>();
 function whIdFor(d: WebhookDelivery): number {
@@ -151,7 +149,6 @@ function tryPrettyJson(src: string): string | null {
   }
 }
 
-// ---- Formatting --------------------------------------------------------------------------
 function pad(n: number, len = 2): string {
   return String(n).padStart(len, "0");
 }

@@ -79,7 +79,7 @@ export class WebhookQueue {
 }
 
 export const WEBHOOK_HISTORY_CAP = 10;
-export const WEBHOOK_RESP_BODY_CAP = 8192; // ~8KB byte cap
+export const WEBHOOK_RESP_BODY_CAP = 8192;
 
 export const WEBHOOK_RESP_HEADER_ALLOWLIST = new Set([
   "content-type", "content-length", "date", "server", "content-encoding", "etag", "cache-control", "age", "vary",
