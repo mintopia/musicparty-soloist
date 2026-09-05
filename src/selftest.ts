@@ -400,6 +400,22 @@ await test("postWebhook allowlists response headers", async () => {
   assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak", "sig"]);
 });
 
+// Response-header allowlist also drops Set-Cookie (a session-fixation vector) and x-api-key:
+// neither reaches the recorded delivery a Debug Subscriber later sees (ADR-0016).
+await test("postWebhook drops set-cookie and x-api-key response headers", async () => {
+  const h = new WebhookHistory();
+  await postWebhook(h, "track_changed", "http://t", "{}", "", fakeFetch(200, {
+    "content-type": "application/json",
+    "set-cookie": "sid=leak; HttpOnly",
+    "x-api-key": "leak",
+  }, "ok"));
+  const d = h.last()!;
+  assert.ok(d.respHeaders["content-type"], "allowlisted content-type kept");
+  assert.ok(!("set-cookie" in d.respHeaders), "non-allowlisted set-cookie dropped");
+  assert.ok(!("x-api-key" in d.respHeaders), "non-allowlisted x-api-key dropped");
+  assertNoLeak("postWebhook respHeaders", d.respHeaders, ["leak"]);
+});
+
 // d) Streamed body cap + truncation: an oversized body is capped and marked truncated;
 // a short body records verbatim with no marker.
 await test("postWebhook caps and truncates an oversized streamed body", async () => {
@@ -729,7 +745,9 @@ const signed = signSession("admin", SECRET);
 await test("verifySession", async () => {
 assert.equal(verifySession(signed, SECRET), "admin", "cookie round-trips the username");
 assert.equal(verifySession(signed, "othersecret"), null, "wrong secret rejected");
-assert.equal(verifySession(signed.slice(0, -1) + "x", SECRET), null, "tampered signature rejected");
+// Flip the last MAC char to a guaranteed-different one — a fixed "x" is a no-op when the
+// (timestamped, per-run) MAC already ends in "x", which would leave the token untampered.
+assert.equal(verifySession(signed.slice(0, -1) + (signed.at(-1) === "a" ? "b" : "a"), SECRET), null, "tampered signature rejected");
 });
 
 await test("session tamper rejection", async () => {
@@ -1149,6 +1167,159 @@ await test("RunningProxy.close() tears down debug sockets and the App-Control se
     const dead = new WebSocket(`ws://127.0.0.1:${port}/`);
     await assert.rejects(once(dead, "open"), "server no longer accepts connections after close");
   } finally {
+    setDockerMode(prevDocker);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+// Integration purity (ADR-0016): a Downstream Client on `/`, a Debug Subscriber on /ws/app, and
+// a fake Relay all wired through one real makeServer. A genuine Soloist frame reaches `/` and the
+// Relay byte-for-byte, while every diagnostic (proxy_status, frame, clients, webhooks) stays on the
+// App-Control socket and never leaks to `/` or the Relay.
+await test("integration purity: diagnostics stay on App-Control; genuine frames reach / and Relay verbatim", async () => {
+  const prevDocker = isDockerMode();
+  setDockerMode(false);
+  const dir = mkdtempSync(join(tmpdir(), "purity-"));
+  const cfgPath = join(dir, "config.yaml");
+
+  const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await Promise.all([once(upstream, "listening"), once(relaySrv, "listening")]);
+  const upPort = (upstream.address() as { port: number }).port;
+  const relayPort = (relaySrv.address() as { port: number }).port;
+
+  const gotRelay: string[] = [];
+  // makeServer's Hub/Relay dial these during construction, so capture the connections with
+  // listeners armed up front — an `await once(...)` after makeServer would miss the event.
+  const upReady = new Promise<WebSocket>((res) => upstream.once("connection", res));
+  const relayReady = new Promise<void>((res) => relaySrv.once("connection", () => res()));
+  relaySrv.on("connection", (ws) => ws.on("message", (d: RawData) => gotRelay.push(d.toString())));
+
+  let hookHit = false;
+  const hookSrv = createServer((_req, res) => { hookHit = true; res.writeHead(200, { "content-type": "text/plain" }).end("ok"); });
+  await new Promise<void>((r) => hookSrv.listen(0, "127.0.0.1", () => r()));
+  const hookPort = (hookSrv.address() as { port: number }).port;
+
+  // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+
+  const cfg = defaultConfig();
+  cfg.web.username = "admin";
+  cfg.web.password = "pw";
+  cfg.web.sessionSecret = AUTH_SECRET;
+  cfg.proxy.token = CT;
+  cfg.proxy.listen = `127.0.0.1:${port}`;
+  cfg.soloistWs = `127.0.0.1:${upPort}`;
+  cfg.relay.url = `ws://127.0.0.1:${relayPort}`;
+  cfg.relay.authorization = "";
+  cfg.webhooks.defaultUrl = `http://127.0.0.1:${hookPort}/hook`;
+  cfg.webhooks.delayMs = 0;
+
+  const running = await makeServer(cfg, cfgPath);
+  const upConn = await upReady;
+  await relayReady;
+
+  const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+  // Debug Subscriber (App-Control) + Downstream Client (`/`); closed in finally before
+  // running.close(), since server.close() blocks on any still-open inbound socket.
+  const debug = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+    headers: { cookie, origin: `http://127.0.0.1:${port}` },
+  });
+  const down = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { authorization: `Bearer ${CT}` } });
+  try {
+    const debugMsgs: { stream: string; data: unknown }[] = [];
+    debug.on("message", (d: RawData) => debugMsgs.push(JSON.parse(d.toString())));
+    await once(debug, "open");
+    debug.send(JSON.stringify({ type: "subscribe", streams: [...DEBUG_STREAMS] }));
+    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+
+    // Downstream Client on `/` (control tier via token) connected before any frame, so it
+    // receives exactly what is broadcast afterwards (no cached-state replay in play).
+    const gotDownstream: string[] = [];
+    down.on("message", (d: RawData) => gotDownstream.push(d.toString()));
+    await once(down, "open");
+    for (let i = 0; i < 100 && running.hub.clientCount() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+
+    const streamsSeen = () => new Set(debugMsgs.map((m) => m.stream));
+    const liveWebhook = () => debugMsgs.some((m) => m.stream === "webhooks" && !Array.isArray(m.data));
+    // The outbound mirror drops frames while the proxy's Relay socket isn't OPEN, so wait for a
+    // proxy_status showing the Relay connected before emitting the frame (bounded, like the rest).
+    const relayUp = () => debugMsgs.some((m) => m.stream === "proxy_status" && (m.data as { relay?: { connected?: boolean } }).relay?.connected === true);
+    for (let i = 0; i < 200 && !relayUp(); i++) await new Promise((r) => setTimeout(r, 10));
+
+    // A genuine Soloist frame: broadcast raw to `/` + Relay, mirrored as a `frame` diagnostic, and
+    // (track_changed is a state event with a configured URL) fires a webhook delivery.
+    const GENUINE = '{"type":"track_changed","item":{"uri":"spotify:x"}}';
+    upConn.send(GENUINE);
+
+    for (let i = 0; i < 300; i++) {
+      if (gotDownstream.length && gotRelay.length && DEBUG_STREAMS.every((s) => streamsSeen().has(s)) && liveWebhook()) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    assert.deepEqual(gotDownstream, [GENUINE], "Downstream `/` client receives only the genuine frame, verbatim");
+    assert.deepEqual(gotRelay, [GENUINE], "Relay Server receives only the genuine frame, verbatim");
+    for (const raw of [...gotDownstream, ...gotRelay]) {
+      assert.ok(!("stream" in JSON.parse(raw)), `no diagnostic envelope leaked to / or Relay: ${raw}`);
+    }
+
+    for (const s of DEBUG_STREAMS) assert.ok(streamsSeen().has(s), `Debug Subscriber received the ${s} diagnostic`);
+    assert.ok(hookHit, "the genuine frame fired the webhook");
+    assert.ok(liveWebhook(), "a live webhook delivery reached the App-Control socket");
+  } finally {
+    debug.terminate();
+    down.terminate();
+    await running.close();
+    upstream.close();
+    relaySrv.close();
+    hookSrv.close();
+    setDockerMode(prevDocker);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+// Logout revokes the diagnostics channel: a POST /logout closes every App-Control socket opened
+// under that session (ADR-0016).
+await test("integration: POST /logout closes the session's App-Control socket", async () => {
+  const prevDocker = isDockerMode();
+  setDockerMode(false);
+  const dir = mkdtempSync(join(tmpdir(), "logout-"));
+  const cfgPath = join(dir, "config.yaml");
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+
+  const cfg = defaultConfig();
+  cfg.web.username = "admin";
+  cfg.web.password = "pw";
+  cfg.web.sessionSecret = AUTH_SECRET;
+  cfg.proxy.listen = `127.0.0.1:${port}`;
+  cfg.soloistWs = "127.0.0.1:1"; // upstream unreachable; irrelevant to this test
+  const running = await makeServer(cfg, cfgPath);
+  try {
+    const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
+    const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
+      headers: { cookie, origin: `http://127.0.0.1:${port}` },
+    });
+    await once(client, "open");
+    for (let i = 0; i < 100 && running.appControl.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 1, "debug subscriber connected");
+
+    const closed = once(client, "close");
+    const res = await fetch(`http://127.0.0.1:${port}/logout`, { method: "POST", headers: { cookie }, redirect: "manual" });
+    assert.equal(res.status, 302, "logout redirects to /login");
+    const [code] = (await closed) as [number];
+    assert.equal(code, 1008, "App-Control socket closed with 1008 (logged out)");
+    for (let i = 0; i < 100 && running.appControl.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(running.appControl.count(), 0, "no debug subscribers after logout");
+  } finally {
+    await running.close();
     setDockerMode(prevDocker);
     rmSync(dir, { recursive: true, force: true });
   }
