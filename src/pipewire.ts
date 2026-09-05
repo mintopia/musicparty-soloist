@@ -362,8 +362,8 @@ async function runReconcile(cfg: Config, opts: ReconcileOptions): Promise<Reconc
 // Enumerate selectable Audio Outputs for the UI: the synthetic Snapcast toggle
 // plus real Audio/Sink nodes (minus soloist-sink and the Snapserver capture node,
 // which registers as an Audio/Sink named after stream_name).
-export async function listPipewireSinks(cfg: Config): Promise<PwSink[]> {
-  const dump = await defaultRun("pw-dump", []);
+export async function listPipewireSinks(cfg: Config, run: Runner = defaultRun): Promise<PwSink[]> {
+  const dump = await run("pw-dump", []);
   return pipewireSinksResponse(parseSinks(dump, [cfg.streamName]));
 }
 
@@ -387,8 +387,8 @@ export interface SinkCache {
 let sinkCache: SinkCache = { sinks: [], refreshedAt: 0 };
 let sinkPollTimer: ReturnType<typeof setInterval> | null = null;
 
-export async function refreshSinkCache(cfg: Config): Promise<SinkCache> {
-  sinkCache = { sinks: await listPipewireSinks(cfg), refreshedAt: Date.now() };
+export async function refreshSinkCache(cfg: Config, run: Runner = defaultRun): Promise<SinkCache> {
+  sinkCache = { sinks: await listPipewireSinks(cfg, run), refreshedAt: Date.now() };
   return sinkCache;
 }
 
@@ -398,9 +398,9 @@ export function getSinkCache(): SinkCache {
 
 // Kick one refresh immediately, then poll on an interval. Idempotent: a second call
 // is a no-op. The timer is unref'd so it never keeps the process alive on shutdown.
-export function startSinkPolling(cfg: Config, intervalMs = 30_000): void {
+export function startSinkPolling(cfg: Config, intervalMs = 30_000, run: Runner = defaultRun): void {
   if (sinkPollTimer) return;
-  const tick = () => void refreshSinkCache(cfg).catch((e) => log.warn("sink poll failed: %s", (e as Error).message));
+  const tick = () => void refreshSinkCache(cfg, run).catch((e) => log.warn("sink poll failed: %s", (e as Error).message));
   tick();
   sinkPollTimer = setInterval(tick, intervalMs);
   sinkPollTimer.unref?.();

@@ -41,6 +41,7 @@ import {
   SNAPCAST_KEY,
   DELAY_PREFIX,
   getSinkCache,
+  refreshSinkCache,
   type Runner,
   type Spawner,
 } from "./pipewire.js";
@@ -174,10 +175,48 @@ function req(headers: Record<string, string>, url = "/"): IncomingMessage {
   return { headers, url, socket: { remoteAddress: "test" } } as unknown as IncomingMessage;
 }
 
+// listenParts rejects port 0, so makeServer can't bind an OS-assigned ephemeral port directly.
+// Claiming a free port with a throwaway listener then handing it to makeServer is a TOCTOU another
+// process can win between close() and listen() (EADDRINUSE). Retry on a fresh port instead of
+// failing flakily (TEST-H3). Sets cfg.proxy.listen and returns the port the caller connects to.
+async function freeEphemeralPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+  return port;
+}
+async function makeServerOnFreePort(
+  cfg: Config,
+  cfgPath: string,
+): Promise<{ running: Awaited<ReturnType<typeof makeServer>>; port: number }> {
+  for (let attempt = 0; ; attempt++) {
+    const port = await freeEphemeralPort();
+    cfg.proxy.listen = `127.0.0.1:${port}`;
+    try {
+      return { running: await makeServer(cfg, cfgPath), port };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EADDRINUSE" && attempt < 20) continue;
+      throw e;
+    }
+  }
+}
+
 let passed = 0, failed = 0, skipped = 0;
+
+// Per-test timeout (TEST-H2). Integration tests await real socket events; a WS that
+// never opens would leave the await pending forever and hang the whole run silently
+// until the outer CI job timeout kills it with no failing-test diagnostic. Racing each
+// test against a timer makes a stuck test fail loudly by name instead.
+const TEST_TIMEOUT_MS = 15_000;
 async function test(name: string, fn: () => void | Promise<void>) {
-  try { await fn(); passed++; }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`test timed out after ${TEST_TIMEOUT_MS}ms`)), TEST_TIMEOUT_MS);
+  });
+  try { await Promise.race([Promise.resolve().then(fn), timeout]); passed++; }
   catch (e) { failed++; console.error(`FAIL  ${name}\n      ${(e as Error).stack ?? (e as Error).message}`); }
+  finally { clearTimeout(timer); }
 }
 
 // Fire-and-forget work in the harness (e.g. `void hub.run()`) detaches promises whose
@@ -694,6 +733,31 @@ await test("loadConfig: literals, section defaults, missing file", async () => {
 });
 
 
+// Overlay enum coercion (TEST-M1): enumField coerces motion/effect/alignment/anchor against
+// their allowlists, falling back to the default for an unknown value. A broken allowlist would
+// let an arbitrary string reach the overlay renderer unnoticed — assert each out-of-range value
+// is coerced back to its default, and that a valid value is preserved (so it isn't always-default).
+await test("overlay enum values coerce to defaults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "enum-"));
+  const badPath = join(dir, "config.yaml");
+  writeFileSync(badPath, ["overlay:", "  motion: nonsense", "  effect: bogus", "  alignment: sideways", "  anchor: middle"].join("\n"));
+  const bad = loadConfig(badPath);
+  assert.equal(bad.overlay.motion, DEFAULT_OVERLAY.motion, "unknown motion -> default");
+  assert.equal(bad.overlay.effect, DEFAULT_OVERLAY.effect, "unknown effect -> default");
+  assert.equal(bad.overlay.alignment, DEFAULT_OVERLAY.alignment, "unknown alignment -> default");
+  assert.equal(bad.overlay.anchor, DEFAULT_OVERLAY.anchor, "unknown anchor -> default");
+
+  const okPath = join(dir, "ok.yaml");
+  writeFileSync(okPath, ["overlay:", "  motion: pop", "  effect: glow", "  alignment: left", "  anchor: top"].join("\n"));
+  const ok = loadConfig(okPath);
+  assert.equal(ok.overlay.motion, "pop", "valid motion preserved (coercion isn't always-default)");
+  assert.equal(ok.overlay.effect, "glow", "valid effect preserved");
+  assert.equal(ok.overlay.alignment, "left", "valid alignment preserved");
+  assert.equal(ok.overlay.anchor, "top", "valid anchor preserved");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+
 // Snapserver.conf rendering (ADR-0020): {{stream}} -> capture source line, {{snapweb}} ->
 // the enable flag, empty template -> built-in default; and the two render-to-file entry
 // points emit exactly renderSnapserverConf(cfg) (the "restart-to-apply matches" invariant).
@@ -951,8 +1015,13 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
   void hub.run();
   const [upstreamConn] = (await once(upstream, "connection")) as [WebSocket];
 
+  // Wait until the hub has cached the frame before registering a client to read the replay,
+  // rather than betting a fixed sleep is long enough (TEST-H3). onUpstream caches into
+  // latestState before invoking observers, so an observer firing proves the frame is cached.
+  let cached = false;
+  hub.observe(() => { cached = true; });
   upstreamConn.send('{"type":"playback_state","playing":true}');
-  await new Promise((r) => setTimeout(r, 50)); // let the frame reach the hub and cache
+  for (let i = 0; i < 400 && !cached; i++) await new Promise((r) => setTimeout(r, 5));
 
   const fake = () => ({ readyState: WebSocket.OPEN, sent: [] as unknown[], send(d: unknown) { this.sent.push(d); } });
 
@@ -966,7 +1035,8 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
   hub.register(ctrl as unknown as WebSocket, meta());
   assert.deepEqual(ctrl.sent, ['{"type":"playback_state","playing":true}'], "control client gets state replay on connect");
   await hub.forward(ctrl as unknown as WebSocket, Buffer.from('{"type":"command","command":"play"}') as unknown as RawData, false);
-  await new Promise((r) => setTimeout(r, 30));
+  // Poll until the forwarded frame lands upstream instead of a fixed settle sleep (TEST-H3).
+  for (let i = 0; i < 400 && gotUpstream.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(gotUpstream, ['{"type":"command","command":"play"}'], "control client frames forwarded upstream");
 
   hub.stop();
@@ -1208,13 +1278,21 @@ await test("AppControl real-socket round-trip + oversized frame closed safely", 
   for (let i = 0; i < 100 && ac.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(ac.count(), 1, "real upgrade registered a debug subscriber");
 
-  // subscribe + publish round-trip over the wire
+  // subscribe + publish round-trip over the wire. Poll-publish until the frame arrives rather
+  // than betting a fixed sleep covers the server processing the subscribe (TEST-H3): publishes
+  // before the subscribe registers reach no subscriber and are harmless.
   client.send(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] }));
-  await new Promise((r) => setTimeout(r, 30)); // let the server process the subscribe
   const gotMsg = once(client, "message");
-  ac.publish("proxy_status", { ok: true });
-  const [data] = (await gotMsg) as [RawData];
-  assert.deepEqual(JSON.parse(data.toString()), { stream: "proxy_status", data: { ok: true } }, "published frame arrives over the real socket");
+  let received: RawData | undefined;
+  for (let i = 0; i < 400 && !received; i++) {
+    ac.publish("proxy_status", { ok: true });
+    received = await Promise.race([
+      gotMsg.then((m) => (m as [RawData])[0]),
+      new Promise<undefined>((r) => setTimeout(() => r(undefined), 5)),
+    ]);
+  }
+  assert.ok(received, "subscribed client received a published frame");
+  assert.deepEqual(JSON.parse(received.toString()), { stream: "proxy_status", data: { ok: true } }, "published frame arrives over the real socket");
 
   // oversized frame: server enforces maxPayload and closes without crashing
   const closed = once(client, "close");
@@ -1259,18 +1337,12 @@ await test("makeServer App-Control lifecycle: logout-close + close teardown", as
   setDockerMode(false); // no PipeWire fan-out / sink polling under test
   const dir = mkdtempSync(join(tmpdir(), "lifecycle-"));
   const cfgPath = join(dir, "config.yaml");
-  // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
-  const probe = createServer();
-  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
-  const port = (probe.address() as { port: number }).port;
-  await new Promise<void>((r) => probe.close(() => r()));
   const cfg = defaultConfig();
   cfg.web.username = "admin";
   cfg.web.password = "pw";
   cfg.web.sessionSecret = AUTH_SECRET;
-  cfg.proxy.listen = `127.0.0.1:${port}`;
   cfg.soloistWs = "127.0.0.1:1"; // upstream is unreachable; the Hub retries until close() stops it
-  const running = await makeServer(cfg, cfgPath);
+  const { running, port } = await makeServerOnFreePort(cfg, cfgPath);
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
   const connect = async () => {
     const client = new WebSocket(`ws://127.0.0.1:${port}${APP_CONTROL_PATH}`, {
@@ -1336,25 +1408,18 @@ await test("integration purity: diagnostics stay on App-Control; genuine frames 
   await new Promise<void>((r) => hookSrv.listen(0, "127.0.0.1", () => r()));
   const hookPort = (hookSrv.address() as { port: number }).port;
 
-  // listenParts rejects port 0, so claim a free ephemeral port with a throwaway listener.
-  const probe = createServer();
-  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
-  const port = (probe.address() as { port: number }).port;
-  await new Promise<void>((r) => probe.close(() => r()));
-
   const cfg = defaultConfig();
   cfg.web.username = "admin";
   cfg.web.password = "pw";
   cfg.web.sessionSecret = AUTH_SECRET;
   cfg.proxy.token = CT;
-  cfg.proxy.listen = `127.0.0.1:${port}`;
   cfg.soloistWs = `127.0.0.1:${upPort}`;
   cfg.relay.url = `ws://127.0.0.1:${relayPort}`;
   cfg.relay.authorization = "";
   cfg.webhooks.defaultUrl = `http://127.0.0.1:${hookPort}/hook`;
   cfg.webhooks.delayMs = 0;
 
-  const running = await makeServer(cfg, cfgPath);
+  const { running, port } = await makeServerOnFreePort(cfg, cfgPath);
   const upConn = await upReady;
   await relayReady;
 
@@ -1441,7 +1506,8 @@ await test("Relay bridge republishes frames", async () => {
   const relay = new SoloistRelay(hub, relayCfg);
   void relay.run();
   await once(relaySrv, "connection");
-  await new Promise((r) => setTimeout(r, 30)); // let the relay socket reach OPEN
+  // Poll until the relay socket reports OPEN before sending, rather than a fixed settle (TEST-H3).
+  for (let i = 0; i < 400 && !relay.status.connected; i++) await new Promise((r) => setTimeout(r, 5));
 
   // Outbound: a genuine Soloist frame is mirrored verbatim to the Relay Server.
   upConn.send('{"type":"track_changed","item":{"uri":"x"}}');
@@ -1473,30 +1539,38 @@ await test("buildArgv Soloist command line", async () => {
   );
 
   // Docker pin (main.js --pipewire-device) appends when config has no explicit device.
-  setPipewireDeviceOverride("soloist-sink");
-  assert.ok(
-    buildArgv(base).join(" ").endsWith("--pipewire-device soloist-sink"),
-    "buildArgv appends the Docker pipewire pin when config leaves it empty",
-  );
-  // An explicit config value wins over the pin.
-  const pinned = { ...base, soloist: { ...(base as any).soloist, pipewireDevice: "alsa_x" } } as unknown as Config;
-  assert.ok(buildArgv(pinned).includes("alsa_x") && !buildArgv(pinned).includes("soloist-sink"),
-    "explicit pipewire_device overrides the Docker pin");
-  setPipewireDeviceOverride(""); // reset so later assertions see no pin
+  // try/finally so a failed assertion can't leak the process-global pin into later tests (TEST-M2).
+  try {
+    setPipewireDeviceOverride("soloist-sink");
+    assert.ok(
+      buildArgv(base).join(" ").endsWith("--pipewire-device soloist-sink"),
+      "buildArgv appends the Docker pipewire pin when config leaves it empty",
+    );
+    // An explicit config value wins over the pin.
+    const pinned = { ...base, soloist: { ...(base as any).soloist, pipewireDevice: "alsa_x" } } as unknown as Config;
+    assert.ok(buildArgv(pinned).includes("alsa_x") && !buildArgv(pinned).includes("soloist-sink"),
+      "explicit pipewire_device overrides the Docker pin");
+  } finally {
+    setPipewireDeviceOverride(""); // reset so later assertions see no pin
+  }
 });
 
 // Run mode is explicit (--docker), never inferred from --pipewire-device — so a standalone
 // user can pin Soloist's output device without turning on the Docker fan-out (ADR-0015).
 await test("run mode is explicit, not inferred from --pipewire-device", async () => {
   assert.equal(isDockerMode(), false, "default is standalone");
-  setPipewireDeviceOverride("hw:0");
-  assert.equal(isDockerMode(), false, "a --pipewire-device (standalone output pin) does not imply Docker mode");
-  const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "x" } as unknown as Config;
-  assert.ok(buildArgv(cfg).join(" ").endsWith("--pipewire-device hw:0"), "standalone --pipewire-device still flows to Soloist argv");
-  setDockerMode(true);
-  assert.equal(isDockerMode(), true, "--docker turns on Docker mode");
-  setDockerMode(false);
-  setPipewireDeviceOverride("");
+  // try/finally so a failed assertion can't leak the docker-mode / pipewire-pin globals (TEST-M2).
+  try {
+    setPipewireDeviceOverride("hw:0");
+    assert.equal(isDockerMode(), false, "a --pipewire-device (standalone output pin) does not imply Docker mode");
+    const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "x" } as unknown as Config;
+    assert.ok(buildArgv(cfg).join(" ").endsWith("--pipewire-device hw:0"), "standalone --pipewire-device still flows to Soloist argv");
+    setDockerMode(true);
+    assert.equal(isDockerMode(), true, "--docker turns on Docker mode");
+  } finally {
+    setDockerMode(false);
+    setPipewireDeviceOverride("");
+  }
   assert.equal(isDockerMode(), false, "reset to standalone");
 });
 
@@ -1819,6 +1893,32 @@ await test("pipewire sink listing + cache", async () => {
   assert.ok(standalone.some((s) => s.name === "alsa_output.hw_0"), "standalone list includes real hardware sinks");
 
   assert.deepEqual(getSinkCache(), { sinks: [], refreshedAt: 0 }, "getSinkCache: empty until first poll, refreshedAt 0 = never");
+});
+
+
+// Sink-cache refresh (TEST-M3): with the Runner seam threaded through refreshSinkCache, drive
+// cache population + refreshedAt stamping against a fake runner instead of a real pw-dump. Runs
+// after the empty-cache assertion above so it doesn't pollute it.
+await test("refreshSinkCache: populates the cache and stamps refreshedAt via an injected runner", async () => {
+  const cfg = defaultConfig();
+  cfg.streamName = "Party"; // the Snapserver capture node registers under the stream name; excluded
+  const dump = JSON.stringify([
+    { info: { props: { "media.class": "Audio/Sink", "node.name": "alsa_output.hw_0", "alsa.card_name": "Card Zero" } } },
+    { info: { props: { "media.class": "Audio/Sink", "node.name": "soloist-sink" } } }, // internal, filtered
+    { info: { props: { "media.class": "Audio/Sink", "node.name": "Party" } } },        // capture node, excluded
+  ]);
+  let calls = 0;
+  const fakeRun: Runner = async (cmd) => { calls++; assert.equal(cmd, "pw-dump", "cache refresh shells pw-dump"); return dump; };
+
+  const before = Date.now();
+  const cache = await refreshSinkCache(cfg, fakeRun);
+  assert.equal(calls, 1, "refreshSinkCache invokes the injected runner exactly once");
+  assert.ok(cache.refreshedAt >= before, "refreshedAt stamped to the dump time (no longer 0)");
+  assert.deepEqual(cache.sinks, [
+    { name: SNAPCAST_KEY, description: "Snapcast" },
+    { name: "alsa_output.hw_0", description: "Card Zero" },
+  ], "cache holds the synthetic Snapcast toggle + real sinks, minus soloist-sink and the capture node");
+  assert.deepEqual(getSinkCache(), cache, "getSinkCache returns the freshly populated cache");
 });
 
 
@@ -2211,6 +2311,96 @@ await test("setup TOCTOU guard", async () => {
   assert.equal(webConfigured(raceCfg), true, "the winner's creds were applied");
   assert.equal(loadConfig(racePath).web.username, "dj", "exactly one save persisted, uncorrupted");
   rmSync(raceDir, { recursive: true, force: true });
+});
+
+
+// POST /login (TEST-H1): the primary interactive auth path — password verify, error redirect,
+// cookie issuance. Setup and logout are covered elsewhere; a regression here (accepting any
+// password, or not binding the cookie to the password) would otherwise ship green.
+await test("POST /login: valid creds issue a bound session cookie; bad creds rejected", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "login-"));
+  const cfgPath = join(dir, "config.yaml");
+  const cfg = defaultConfig();
+  cfg.web.username = "dj";
+  cfg.web.password = hashPassword("hunter2x");
+  cfg.web.sessionSecret = "sess";
+
+  const login = (body: string) => {
+    const r = fakeRes();
+    handleWebRequest(setupReq("POST", "/login", body), r as unknown as ServerResponse, cfg, cfgPath);
+    return r;
+  };
+
+  // Valid creds: 302 to / plus a Set-Cookie that verifySession accepts for this user.
+  let r = login("username=dj&password=hunter2x");
+  await r.done;
+  assert.equal(r.statusCode, 302, "valid login redirects");
+  assert.equal(r.headers.location, "/", "valid login -> /");
+  const cookie = r.headers["set-cookie"];
+  assert.match(String(cookie), new RegExp(`^${SESSION_COOKIE}=[^;]+;`), "valid login issues a session cookie");
+  const token = String(cookie).slice(SESSION_COOKIE.length + 1).split(";")[0];
+  assert.equal(verifySession(token, cfg.web.sessionSecret, cfg.web.password), "dj", "issued cookie authenticates the user");
+
+  // Wrong password: error redirect, no cookie.
+  r = login("username=dj&password=wrong");
+  await r.done;
+  assert.equal(r.statusCode, 302, "bad password redirects");
+  assert.equal(r.headers.location, "/login?error=1", "bad password -> /login?error=1");
+  assert.equal(r.headers["set-cookie"], undefined, "bad password issues no cookie");
+
+  // Wrong username: same rejection, no cookie.
+  r = login("username=mallory&password=hunter2x");
+  await r.done;
+  assert.equal(r.headers.location, "/login?error=1", "wrong username -> /login?error=1");
+  assert.equal(r.headers["set-cookie"], undefined, "wrong username issues no cookie");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+
+// HTTP /api/* route wrapping (TEST-M4): the auth gate, body parsing, save-on-PUT and status
+// codes around the (separately unit-tested) pure functions. A regression in the authed PUT path
+// (e.g. saving without an auth check) would otherwise slip past the fail-closed-only coverage.
+await test("HTTP /api/* routes: authed PUT /api/config persists, unauth 401, GET /api/secret", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "api-"));
+  const cfgPath = join(dir, "config.yaml");
+  const cfg = defaultConfig();
+  cfg.web.username = "dj";
+  cfg.web.password = hashPassword("hunter2x");
+  cfg.web.sessionSecret = "sess";
+  cfg.proxy.token = "proxytok";
+  saveConfig(cfgPath, cfg);
+  const cookie = `${SESSION_COOKIE}=${signSession("dj", "sess", cfg.web.password)}`;
+
+  const call = (method: string, url: string, opts: { cookie?: string; body?: string } = {}) => {
+    const rq = setupReq(method, url, opts.body ?? "");
+    if (opts.cookie) (rq as { headers: Record<string, string> }).headers.cookie = opts.cookie;
+    const r = fakeRes();
+    handleWebRequest(rq, r as unknown as ServerResponse, cfg, cfgPath);
+    return r;
+  };
+
+  // Authed PUT /api/config: validates, persists, applies live, returns the masked config.
+  let r = call("PUT", "/api/config", { cookie, body: JSON.stringify({ autoplay: true }) });
+  await r.done;
+  assert.equal(r.statusCode, 200, "authed PUT /api/config -> 200");
+  assert.equal(JSON.parse(r.body).autoplay, true, "PUT response reflects the change");
+  assert.equal(cfg.autoplay, true, "PUT applied to the live config in place");
+  assert.equal(loadConfig(cfgPath).autoplay, true, "PUT persisted to disk");
+
+  // Unauthenticated PUT: no session cookie -> 401, and the live config is untouched.
+  r = call("PUT", "/api/config", { body: JSON.stringify({ autoplay: false }) });
+  await r.done;
+  assert.equal(r.statusCode, 401, "unauth PUT /api/config -> 401");
+  assert.equal(cfg.autoplay, true, "unauth PUT did not mutate the live config");
+
+  // GET /api/secret (session-gated): authed reveal returns the allowlisted plaintext; a
+  // non-revealable key 404s. Synchronous route, so the body is set before call() returns.
+  r = call("GET", "/api/secret?section=proxy&key=token", { cookie });
+  assert.equal(r.statusCode, 200, "authed GET /api/secret -> 200");
+  assert.equal(JSON.parse(r.body).value, "proxytok", "reveals the requested allowlisted secret");
+  r = call("GET", "/api/secret?section=web&key=password", { cookie });
+  assert.equal(r.statusCode, 404, "non-revealable key -> 404");
+  rmSync(dir, { recursive: true, force: true });
 });
 
 
