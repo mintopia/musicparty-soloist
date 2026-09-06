@@ -60,17 +60,32 @@ export const AUTOPLAY_FRAMES: Record<string, unknown>[] = [
   { type: "command", command: "play" },
 ];
 
+// activate makes this the active Connect device, which resets its volume to 100%. If
+// Soloist has reported a volume, append a set_volume so autoplay restores what the user
+// was listening at instead of jumping to full volume.
+export function autoplayFrames(preservedVolume: number | null): Record<string, unknown>[] {
+  return preservedVolume === null
+    ? AUTOPLAY_FRAMES
+    : [...AUTOPLAY_FRAMES, { type: "command", command: "set_volume", volume: preservedVolume }];
+}
+
 // Reads cfg.autoplay live so a PUT /api/config toggle applies without a restart.
 function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   const state: AutoplayState = { fired: false };
+  // Track the last volume Soloist reported (playback_state + volume_changed carry it) so
+  // the post-activate set_volume can restore it. Captured regardless of cfg.autoplay so a
+  // live toggle-on has a value ready.
+  let lastVolume: number | null = null;
   hub.onConnect(() => (state.fired = false));
   hub.observe((frame) => {
+    const vol = frame.message.volume;
+    if (typeof vol === "number") lastVolume = vol;
     if (!cfg.autoplay) return;
     if (frame.type === "error") log.error("autoplay: upstream error frame: %s", frame.raw);
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
-    log("autoplay: logged in, injecting activate then play");
-    for (const autoplayFrame of AUTOPLAY_FRAMES) hub.inject(autoplayFrame);
+    log("autoplay: logged in, injecting activate then play (volume %s)", lastVolume ?? "unchanged");
+    for (const autoplayFrame of autoplayFrames(lastVolume)) hub.inject(autoplayFrame);
   });
 }
 

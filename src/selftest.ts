@@ -9,7 +9,7 @@ import { sameOrigin, resolveAuth } from "./auth.js";
 import { safeStrEqual, deferred } from "./util.js";
 import { makeLog } from "./log.js";
 import { backoffStep, BACKOFF_BASE, BACKOFF_MAX } from "./supervisor.js";
-import { shouldAutoplay, AUTOPLAY_FRAMES, listenParts, buildProxyStatus, makeServer } from "./proxy.js";
+import { shouldAutoplay, AUTOPLAY_FRAMES, autoplayFrames, listenParts, buildProxyStatus, makeServer } from "./proxy.js";
 import { decodeFrame, SoloistHub, type UpstreamFrame } from "./hub.js";
 import { resolveWebhookUrl, WebhookQueue, WebhookHistory, postWebhook, WEBHOOK_RESP_BODY_CAP, WEBHOOK_RESP_HEADER_ALLOWLIST, type WebhookDelivery } from "./webhooks.js";
 import { SoloistRelay } from "./relay.js";
@@ -453,6 +453,29 @@ assert.deepEqual(
   AUTOPLAY_FRAMES,
   [{ type: "command", command: "activate" }, { type: "command", command: "play" }],
   "autoplay injects Soloist command envelopes (activate then play)",
+);
+assert.deepEqual(
+  autoplayFrames(null),
+  [{ type: "command", command: "activate" }, { type: "command", command: "play" }],
+  "unknown volume: activate then play only",
+);
+assert.deepEqual(
+  autoplayFrames(40),
+  [
+    { type: "command", command: "activate" },
+    { type: "command", command: "play" },
+    { type: "command", command: "set_volume", volume: 40 },
+  ],
+  "known volume: restore it after play (activate resets to 100%)",
+);
+assert.deepEqual(
+  autoplayFrames(0),
+  [
+    { type: "command", command: "activate" },
+    { type: "command", command: "play" },
+    { type: "command", command: "set_volume", volume: 0 },
+  ],
+  "volume 0 is preserved, not treated as unknown",
 );
 });
 

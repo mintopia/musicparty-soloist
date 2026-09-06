@@ -33,6 +33,8 @@ web:
 
 # When true, once Soloist logs in the Hub makes this device the active Connect
 # player and starts playing (injects activate then play, once per connection).
+# The last volume Soloist reported is restored afterwards, since activating the
+# device would otherwise reset it to 100%.
 autoplay: false
 
 # Outbound HTTP POST per Soloist event (raw event JSON, Content-Type application/json).
