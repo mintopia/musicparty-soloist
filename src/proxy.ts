@@ -72,20 +72,32 @@ export function autoplayFrames(preservedVolume: number | null): Record<string, u
 // Reads cfg.autoplay live so a PUT /api/config toggle applies without a restart.
 function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   const state: AutoplayState = { fired: false };
-  // Track the last volume Soloist reported (playback_state + volume_changed carry it) so
-  // the post-activate set_volume can restore it. Captured regardless of cfg.autoplay so a
-  // live toggle-on has a value ready.
-  let lastVolume: number | null = null;
-  hub.onConnect(() => (state.fired = false));
+  // Two-step: on login, ask Soloist for the current playback_state, then activate off the
+  // volume it reports. activate resets the device to 100%, so reading the volume *before*
+  // activating is the only way to restore what was playing. get_state is a query with no
+  // side effects; its playback_state reply (or the one Soloist sends on connect) satisfies
+  // this wait.
+  let awaitingState = false;
+  hub.onConnect(() => {
+    state.fired = false;
+    awaitingState = false;
+  });
   hub.observe((frame) => {
-    const vol = frame.message.volume;
-    if (typeof vol === "number") lastVolume = vol;
     if (!cfg.autoplay) return;
     if (frame.type === "error") log.error("autoplay: upstream error frame: %s", frame.raw);
+    if (awaitingState && frame.type === "playback_state") {
+      awaitingState = false;
+      const vol = frame.message.volume;
+      const preserved = typeof vol === "number" ? vol : null;
+      log("autoplay: activating, restoring volume %s", preserved ?? "unchanged");
+      for (const autoplayFrame of autoplayFrames(preserved)) hub.inject(autoplayFrame);
+      return;
+    }
     if (!shouldAutoplay(state, frame)) return;
     state.fired = true;
-    log("autoplay: logged in, injecting activate then play (volume %s)", lastVolume ?? "unchanged");
-    for (const autoplayFrame of autoplayFrames(lastVolume)) hub.inject(autoplayFrame);
+    awaitingState = true;
+    log("autoplay: logged in, requesting playback state before activating");
+    hub.inject({ type: "command", command: "get_state" });
   });
 }
 
