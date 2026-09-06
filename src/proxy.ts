@@ -69,28 +69,60 @@ export function autoplayFrames(preservedVolume: number | null): Record<string, u
     : [...AUTOPLAY_FRAMES, { type: "command", command: "set_volume", volume: preservedVolume }];
 }
 
+// How long after activating to keep re-asserting the preserved volume. Soloist applies its
+// initial volume (the audio system default, ~100%) when the stream *starts playing*, which
+// lands a second or two after activate — so a single up-front set_volume gets clobbered.
+const AUTOPLAY_VOLUME_RESTORE_MS = 8000;
+
 // Reads cfg.autoplay live so a PUT /api/config toggle applies without a restart.
 function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   const state: AutoplayState = { fired: false };
-  // Two-step: on login, ask Soloist for the current playback_state, then activate off the
-  // volume it reports. activate resets the device to 100%, so reading the volume *before*
-  // activating is the only way to restore what was playing. get_state is a query with no
-  // side effects; its playback_state reply (or the one Soloist sends on connect) satisfies
-  // this wait.
+  // Login -> get_state (side-effect-free) -> activate off the volume it reports, then hold
+  // that volume against Soloist's delayed initial-volume reset for a short window.
   let awaitingState = false;
+  let target: number | null = null; // volume to hold after activation, null once settled
+  let corrected = false; // have we pushed back against a reset yet
+  let deadline = 0;
+  const stopRestore = () => {
+    target = null;
+    corrected = false;
+    deadline = 0;
+  };
   hub.onConnect(() => {
     state.fired = false;
     awaitingState = false;
+    stopRestore();
   });
   hub.observe((frame) => {
     if (!cfg.autoplay) return;
     if (frame.type === "error") log.error("autoplay: upstream error frame: %s", frame.raw);
+    // Hold the preserved volume: correct any off-target value the reset introduces, and stop
+    // once we've corrected and seen it settle back (or the window closes).
+    if (target !== null) {
+      if (Date.now() > deadline) {
+        stopRestore();
+      } else if (typeof frame.message.volume === "number") {
+        const v = frame.message.volume;
+        if (v !== target) {
+          log("autoplay: volume reset to %d, restoring %d", v, target);
+          hub.inject({ type: "command", command: "set_volume", volume: target });
+          corrected = true;
+        } else if (corrected) {
+          stopRestore();
+        }
+      }
+    }
     if (awaitingState && frame.type === "playback_state") {
       awaitingState = false;
       const vol = frame.message.volume;
       const preserved = typeof vol === "number" ? vol : null;
       log("autoplay: activating, restoring volume %s", preserved ?? "unchanged");
       for (const autoplayFrame of autoplayFrames(preserved)) hub.inject(autoplayFrame);
+      if (preserved !== null) {
+        target = preserved;
+        corrected = false;
+        deadline = Date.now() + AUTOPLAY_VOLUME_RESTORE_MS;
+      }
       return;
     }
     if (!shouldAutoplay(state, frame)) return;
