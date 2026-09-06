@@ -96,9 +96,9 @@ onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
         </div>
       </div>
     </div>
-    <!-- Kept mounted (collapsed to sr-only when connected) so the role="status" region
-         announces on the connect→disconnect change; absolute-collapse avoids a stray
-         flex gap while hidden. Amber cue mirrors Landing's .disc strip. -->
+    <!-- Full-cover overlay when disconnected; kept mounted and collapsed to sr-only
+         when connected so the role="status" region announces on the connect→disconnect
+         change. Amber cue mirrors Landing's .disc strip. -->
     <div class="mpDisc" :class="{ off: connected }" role="status" aria-live="polite">
       <template v-if="!connected">
         <span class="mpDiscDot"></span>
@@ -127,8 +127,8 @@ onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 .mpb:disabled { opacity: .4; cursor: not-allowed; }
 .mpb:disabled:hover { border-color: var(--line2); color: var(--txt); }
 .mpplay:disabled:hover { background: var(--ind); color: #fff; border-color: var(--ind); }
-.mpDisc { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 10px; background: rgba(245, 158, 11, .14); color: #fcd34d; border: 1px solid rgba(245, 158, 11, .28); font-size: 11px; font-weight: 600; white-space: nowrap; }
-.mpDisc.off { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+.mpDisc { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 14px; background: rgba(245, 158, 11, .16); backdrop-filter: blur(6px); color: #fcd34d; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.mpDisc.off { width: 1px; height: 1px; inset: auto; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; backdrop-filter: none; }
 .mpDiscDot { width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; flex: 0 0 auto; animation: mpDisc-pulse 1.4s ease-in-out infinite; }
 @keyframes mpDisc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 .mpplay { background: var(--ind); color: #fff; border-color: var(--ind); }
