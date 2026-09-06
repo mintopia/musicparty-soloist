@@ -1,193 +1,86 @@
-# Musicparty Soloist
+# Soloist Proxy
 
-A wrapper around [Spotify Soloist](https://developer.spotify.com/documentation/soloist),
-the headless Linux Spotify Connect client. It adds authenticated remote access to
-Soloist's control WebSocket, and in its Docker form it pipes Soloist's audio into a
-[Snapcast](https://github.com/badaix/snapcast) server for multi-room playback.
+This project provides a wrapper around
+[Spotify Soloist](https://developer.spotify.com/documentation/soloist), the official headless
+Linux Spotify Connect client. It adds authentication, webhook support, basic web interface and lyric support.
 
-Two jobs:
+It can be run standalone using `npx` or it can be run through docker which will also provide audio device management and a snapcast server for streaming synchronised audio.
 
-1. **Supervisor.** Downloads the Soloist binary at runtime, launches it with your
-   settings, and keeps it running. When a build expires it re-downloads and restarts.
-2. **Proxy.** A WebSocket server in front of Soloist's own control WS, which is
-   unauthenticated and bound to localhost. The proxy gates every connection on a shared
-   token, then relays frames unchanged. Many clients share one upstream connection.
+This was originally built to accompany [Music Party](https://github.com/mintopia/musicparty), which works better with a websocket providing Spotify playback events.
 
-The Docker image also routes Soloist's audio through a PipeWire null-sink into a
-pipewire-enabled Snapserver, so LAN Snapclients can play it.
+## Features
 
-## Requirements
+* **Web Console** - A web console allows you to configure Soloist Proxy, view now playing status with playback controls and provides a lyrics overlay and debug information.
+* **Websocket Authorisation** - The websocket provided by Soloist doesn't have any authentication, so Soloist Proxy allows you to specify a required query parameter or auth header.
+* **Websocket Relay** - Soloist Proxy can be configured to make an outbound websocket connection with optional authorisation. It will then relay all communications.
+* **Webhooks** - You can configure webhooks, with a minimum interval, webhook secret and hooks for particular events.
+* **Lyrics** - Uses [LRCLIB](https://lrclib.net/) to fetch lyrics for the currently playing song and provides an unauthenticated HTML overlay for use with OBS or anything else that can overlay a webpage.
+* **Snapcast** - The docker version has a [Snapcast](https://github.com/badaix/snapcast) server you can use for streaming audio around your network.
+* **Autoplay** - Set Soloist Proxy to automatically start playback in Soloist when it has authenticated with Spotify.
+* **PipeWire Included** - Soloist requires PipeWire for audio, which is generally not included in most headless linux distributions. If you use the docker version, it's handled for you - you just need to map the sound devices through.
 
-- A Spotify Premium account and a Soloist API Key from the Spotify for Developers
-  dashboard.
-- Docker on a Linux host for the full audio deployment. This will not work under Docker
-  Desktop on macOS or Windows. The networking note below explains why.
-- Node.js 24+ if you only want the standalone proxy. The self-check suite additionally
-  relies on Node's TypeScript type-stripping (default-on from Node 22.18 / 24), so run it
-  on Node 24.
+## Installation
 
-The Soloist binary is downloaded at runtime and never committed or baked into the image,
-because redistributing it is prohibited. Builds expire about 90 days after they are cut.
-The supervisor watches for that and re-downloads on its own.
+### Docker (Linux)
 
-## Quick start (Docker, Linux)
+The easiest way, it means you don't have to worry about PipeWire and you get the benefits of it. Use a `docker-compose.yml` like this one for running it.
 
-There is no `.env` and no environment configuration. Everything is set through the web
-UI, which writes a single Config File (`./config/config.yaml`, bind-mounted into the
-container). See [Configuration](#configuration) for the full model.
+```yml
+services:
+  soloist:
+    image: ghcr.io/mintopia/musicparty-soloist:latest
+    network_mode: host
+    restart: unless-stopped
+    devices:
+      - /dev/snd:/dev/snd
+    volumes:
+      - /run/udev:/run/udev:ro
+      - ./config:/config
+      - soloist-data:/data
+      - soloist-cache:/cache
+
+volumes:
+  soloist-data:
+  soloist-cache:
+```
+
+The data volume is used for Soloist's data and the cache volume hosts the download of Soloist (which isn't bundled into the docker image).
+
+`/run/udev` and and `/dev/snd` are passed through to the container so that it can enumerate and use ALSA audio devices in pipewire. If you're using Snapcast, you don't need to pass those through.
+
+`host` network mode is needed for Spotify to auto-discover the Soloist instance and authenticate it.
+
+You can bring it up by running:
 
 ```bash
-mkdir -p config              # bind-mounted at /config; the file is seeded on first boot
-docker compose up -d         # pulls ghcr.io/mintopia/musicparty-soloist:latest
-docker compose logs -f soloist
+docker compose up -d
 ```
 
-To upgrade later, pull the new image and recreate: `docker compose pull && docker compose up -d`.
+And now you can visit `http://<host>:8687` to access Soloist and begin setup.
 
-Now open the web UI at **`http://<host>:8687`** and finish setup in the browser:
+### Standalone (npx)
 
-1. **Set up login.** On a fresh install the UI shows a **Setup Page** that only asks you
-   to choose a web username and password. Everything else is locked until you do this.
-2. **Log in** with those credentials. You land on the **Landing Page**.
-3. **Fill in the config.** Set the Soloist **API Key** and **device name**, pick your
-   **Audio Outputs**, toggle **autoplay**/webhooks as you like, and **Save**. Changing
-   Soloist arguments (like the API key or device name) shows a *"restart soloist to
-   apply"* banner with a button — click it once you're done so playback is never
-   interrupted without your say-so.
-4. **Pair with Spotify.** Once Soloist is running, open Spotify on any device on the same
-   LAN and pick your device from the Connect menu (the speaker icon). Soloist logs in and
-   writes the session into the `/data` volume, so it stays logged in across restarts.
+To use this, you will need to have Node.js 24+ and configure your own PipeWire devices for audio output and there's no Snapcast server provided. Soloist will use the default PipeWire device but can be overridden in Soloist Proxy configuration.
 
-After pairing:
-
-- Web UI (Landing Page) at `http://<host>:8687`
-- Lyrics Overlay at `http://<host>:8687/overlay` (unauthenticated — see below)
-- Snapcast web UI at `http://<host>:1780`
-- Snapclients connect to `<host>:1704`
-- Control WebSocket at `ws://<host>:8687/?token=<Auth Token>`
-
-### Host networking is required
-
-This is the part that trips people up. The first Spotify login runs over Spotify
-Connect, which is zeroconf/mDNS on the LAN. That traffic does not cross Docker's bridge
-network, so the device never shows up in your Spotify app and you can never log in. So
-`docker-compose.yml` uses `network_mode: host`, and that is why you need a Linux host.
-Docker Desktop runs containers in a VM that isn't on your physical LAN, so it cannot
-complete the login no matter how you wire it. The compose file keeps a commented
-bridge/`ports:` block, but that is only good for poking at the proxy in isolation.
-
-### No TLS here
-
-The Proxy serves plain HTTP/WS and there is no built-in TLS, ACME, or certificate
-handling — that was deliberately dropped. If you want HTTPS (e.g. to expose the web UI
-or overlay beyond the LAN), put your own reverse proxy (Caddy, nginx, Traefik) in front
-and terminate TLS there. Note the Snapcast web UI links to `<host>:1780` by hostname,
-which assumes host networking; a front proxy that remaps ports will get that link wrong.
-
-## Credentials
-
-Five things get confused constantly, so they each get a row. All of them live in the
-Config File now (in cleartext) and are set through the web UI — there are no environment
-variables.
-
-| Name | What it is | Where it lives |
-|------|-----------|----------------|
-| Web login | Username + password for the web UI itself. | `web.username` / `web.password`; set on the Setup Page. |
-| API Key | Authorizes the Soloist app. It does **not** log a user in. | `soloist.api_key`; passed to Soloist as `--api-key`. |
-| Spotify Login | The user session, obtained by pairing over Connect. | Not a config value — tap the device in Spotify; stored in `/data`. |
-| Auth Token | Gates the Proxy WebSocket. Nothing to do with Spotify. | `proxy.token`; clients send `Bearer` or `?token=`. Autogenerated on first boot if empty. |
-| Read-only Token | Observe-only WS access for the Lyrics Overlay. | `proxy.readonly_token`; autogenerated on first boot. Embedded into the overlay page for you. |
-
-A valid API Key with no Spotify Login gives you `logged_in: false` and "Authentication
-required" on control commands. That means pair the device. It does not mean the key is
-wrong.
-
-## The web UI
-
-The Proxy serves the web UI on the same port as the control WebSocket (8687).
-
-- **Setup Page** (`/setup`) — shown only on a fresh install with no web credentials. It
-  sets the web username and password and nothing else; every other route fails closed
-  until it's done.
-- **Landing Page** (`/`) — the authenticated console. Edit every config value here
-  (secrets are masked on read and preserved unless you type a new one), see live
-  playback and webhook delivery status, manage Audio Outputs, and restart Soloist. Saves
-  apply hot fields (tokens, webhooks, autoplay, overlay styling, Audio Output links)
-  live; Soloist-argument changes are persisted but wait behind the restart banner.
-- **Lyrics Overlay** (`/overlay`) — an unauthenticated page for OBS/browser sources. It
-  uses the Read-only Token (embedded server-side, so the URL carries no secret) and
-  observes playback only — it can never send control frames. Style it from the `overlay`
-  config section (font, colours, effect, alignment, line count, anchor, timing offset).
-
-## Configuration
-
-Config is one YAML file — the single source of truth (ADR-0010). No environment
-variables, no `${VAR}` interpolation: every value is used literally. Edit it by hand or
-through the Landing Page, which writes it back **preserving your comments** and validates
-before saving (it never persists a file that wouldn't boot). Autogenerated secrets
-(`session_secret`, `proxy.token`, `readonly_token`) are minted and written back on first
-boot if left empty.
-
-In Docker the file is bind-mounted at `/config/config.yaml` (host `./config/config.yaml`)
-and seeded from `config.example.yaml` on first boot. Standalone, the path is the
-`--config` flag (default `./config.yaml`). See `config.example.yaml` for the fully
-commented template; the sections are:
-
-- `soloist` — `device_name`, `api_key`, `data_dir`, `extra_args`, `pipewire_device`.
-- `proxy` — `listen`, `token` (Auth Token), `readonly_token`.
-- `soloist_ws` — address of Soloist's own control WS.
-- `web` — `username`, `password`, `session_secret`.
-- `autoplay` — when on, the first time Soloist reports `logged_in: true` on each upstream
-  connection the Hub injects `activate` then `play`, so the device becomes the active
-  Connect player and starts playing without a client command. Off by default.
-- `webhooks` — outbound POST of raw event JSON per Soloist event. `default_url` catches
-  the ten state events (`auth_state`, `playback_state`, `track_changed`,
-  `playback_changed`, `volume_changed`, `device_changed`, `context_changed`,
-  `options_changed`, `position_sync`, `queue_changed`); entries under `urls` replace the
-  default for that `type`, so each event hits exactly one URL. `command_result`/`error`
-  fire only with an explicit `urls` entry. `secret`, if set, is sent as
-  `Authorization: Bearer <secret>`. `delay_ms` enforces a global minimum interval via a
-  bounded (1000) drop-oldest FIFO queue. Best-effort: fire-and-forget, ~5s timeout,
-  non-2xx/timeout logged, never retried, never blocks relay. Omit to disable.
-- `snapcast.stream_name` — Snapcast stream name (Docker audio path only).
-- `audio` — Audio Outputs (see below).
-- `overlay` — Lyrics Overlay styling embedded into the overlay page.
-
-A few structural fields are shown **read-only** in the UI (they can lock you out or break
-the container if changed live) and remain hand-edit-only: `proxy.listen`,
-`soloist.extra_args`, and `soloist.data_dir`.
-
-Two paths are still read from the environment (infrastructure, not app config, so they
-survived the env removal): `SOLOIST_CACHE_DIR` (where the downloaded Soloist binary is
-cached; `/cache` in the image) and `SOLOIST_DOWNLOAD_BASE` (base URL the binary is
-fetched from).
-
-### Audio Outputs (Docker only)
-
-Soloist plays into a PipeWire null-sink, and the Proxy fans that audio out to the outputs
-you enable — it owns every `pw-link` (ADR-0011). Two kinds of output:
-
-- **Snapcast** (`audio.snapcast`, on by default) — a synthetic toggle in the UI. When on,
-  the captured stream is served to LAN Snapclients (ports 1704/1705, web UI on 1780).
-- **Hardware sinks** (`audio.outputs`) — a list of PipeWire `node.name`s. The UI lists the
-  real sinks it can see so you can tick them. A configured output whose node never appears
-  is skipped and flagged, not fatal.
-
-**Hardware output needs device passthrough.** Out of the box the container sees no host
-audio devices, so Snapcast is the only output available. To play to real speakers you
-must map the host's audio devices into the container — for ALSA, add the device and
-(optionally) the group to `docker-compose.yml`:
-
-```yaml
-    devices:
-      - /dev/snd:/dev/snd     # expose ALSA devices to the container
-    group_add:
-      - audio                 # so the container user may open them
+```bash
+npx @mintopia/musicparty-soloist
 ```
 
-Then recreate the container; the new sinks appear in the Audio Outputs list to enable.
+You can now visit `http://<host>:8687` and begin first-time setup.
 
-## Ports
+## Usage
+
+### Soloist API Key
+
+The API Key authorizes the Soloist. Obtain it from the [Spotify for Developers](https://developer.spotify.com) dashboard; it needs a Spotify Premium account. It does **not** log a user in — pairing over Spotify Connect is a separate step. It is stored as `soloist.api_key` in the Config File, passed to Soloist as `--api-key`, and masked in the UI.
+
+### First Run
+
+1. **Authentication** - On a fresh install the panel shows a setup page for you to enter a username and password.
+3. **Set Soloist API Key** - Set the Soloist API Key and Device Name. For the standalone version, you can optionally choose your audio device here. When done, hit **save** and Soloist will start.
+3. **Pair with Spotify.** - Once Soloist is running, open Spotify on any device on the same LAN and pick your device from the Connect menu (the speaker icon).
+
+### Ports
 
 | Port | Service |
 |------|---------|
@@ -196,82 +89,46 @@ Then recreate the container; the new sinks appear in the Audio Outputs list to e
 | 1705 | Snapcast control (TCP JSON-RPC) |
 | 1780 | Snapcast web UI |
 
-## Standalone (npx, no Snapcast)
+### Configuration
 
-Runs everything except the Snapcast fan-out: Soloist itself (supervised, auto-reacquired),
-the web UI with synced lyrics, the webhooks, the authenticated control WebSocket, and the
-WebSocket relay. There is no Snapserver and no multi-output PipeWire routing — Soloist plays
-straight to a PipeWire device on the host. Point it at a specific device if you don't want
-Soloist's default.
+Most of the configuration can be done from the web panel, but you can also edit the `config.yaml` directly.
 
-Once published you can run it with no checkout:
+## FAQs
 
-```bash
-npx @mintopia/musicparty-soloist --config config.yaml
-```
+### Can I run this on Windows or Mac?
 
-Or build from source:
+Not easily. The Spotify login uses Spotify Connect which requires zeroconf/mDNS on your LAN. The discovery traffic doesn't cross docker's bridge network so you need to use host networking, macvlan or ipvlan.
 
-```bash
-npm install
-npm run build
-cp config.example.yaml config.yaml   # then set data_dir to ./.soloist-data
-node dist/main.js --config config.yaml
-```
+These aren't available on Docker Desktop for Mac or Windows which uses VMs/WSL2. If you can get the mdns broadcasts forwarded to the container, it could work. You can also try copying the session data from another deployment and it might work.
 
-Flags:
+### Do I need PipeWire on a headless Linux box, and how do I run it?
 
-- `--config <path>` — Config File location (default `./config.yaml`).
-- `--pipewire-device <name>` — optional; the PipeWire node Soloist outputs to. Equivalent to
-  setting `soloist.pipewire_device` in the Config File or the **PipeWire output device** field
-  on the Settings page (a change there needs a Soloist restart, which the UI prompts for).
-  Leave it unset to use Soloist's default sink. `--docker` is reserved for the container image
-  and turns on the Snapcast fan-out — do not pass it in standalone.
+Yes and No - Spotify Soloist requires PipeWire, so you need to have it on the host, which is honestly a pain on a headless system. If you don't want to bother with it - run the docker version here, it'll take care of it for you as long as you pass through the sound devices as per the `docker-compose.yml` example above.
 
-On first run, with no web credentials in the file, the Proxy serves the Setup Page at
-`http://localhost:8687/setup` to set them; then log in and edit the rest in the browser.
-`SIGINT` and `SIGTERM` shut it down cleanly — Soloist is terminated first, then the process
-exits.
+### Is there HTTPS/TLS?
 
-Audio out needs PipeWire running on the host (Linux). And the one-time Spotify login still
-needs LAN zeroconf, so run it on a host that sits on the LAN, not inside an isolated container.
+I've not included it as it was extra configuration and more services inside the container, but if you do want to do this, I'd suggest using [Caddy](https://caddyserver.com/) as a reverse proxy for it and just forwarding traffic through. Caddy supports auto-HTTPS using ACME HTTP and DNS challenges with LetsEncrypt.
 
-## Development
+### I have a valid API key, but playback says "Authentication required" and reports `logged_in: false`. What's wrong?
 
-```bash
-npm run build      # tsc + vite build -> dist/
-npm test           # full build, then the assert-based self-check (auth gate, arch map, config, webhook routing/throttle)
-npm run test:backend  # fast path: tsc only (skips vite build + the web-layer tests) for backend-only changes
-npm start          # node dist/main.js
-```
+The API key authorizes the app but doesn't log you into Spotify. To log you into Spotify and auth, you need to open Spotify on a device on the same network (or can do mdns broadcast to the Soloist instance). It will then show up as a standard device you can select in Spotify.
 
-`npm test` runs a full `tsc && vite build` and exercises the web layer (raw Vue-app `.ts`
-imported via Node type-stripping, plus the vite manifest). When your change is backend-only,
-`npm run test:backend` skips the vite build and those web tests for a much faster loop.
+### Is there HTTPS or TLS?
+No. The proxy serves plain HTTP and WebSocket with no built-in TLS. If you want HTTPS — for example to expose the console or overlay beyond your LAN — put your own reverse proxy (Caddy, nginx, Traefik) in front and terminate TLS there.
 
-TypeScript on Node 24. The only runtime dependencies are `ws` and `yaml`. Tar extraction
-shells out to the system `tar`. The constant-time token compare and the HTTPS download
-are Node built-ins.
+### Why does it download Soloist on startup?
 
-## How the pieces fit
+The Soloist license from Spotify doesn't allow distribution of Soloist, and builds are only valid for 90 days, so Soloist Proxy manages this by downloading it on first run and keeping it up to date.
 
-```
-Downstream clients ──ws (token)──> Proxy(8687) ──ws──> Soloist WS(127.0.0.1:3678)
-                                     │ Hub: broadcast + observe/inject frames
-                                     ├─ autoplay ─> injects activate/play on login
-                                     └─ webhooks ─> POST each event to configured URLs
-Supervisor ── spawns/restarts ──> soloist ── audio ──> PipeWire null-sink
-                                                          │
-                                              Snapserver (pipewire capture)
-                                                          │
-                                          Snapclients(1704) + web UI(1780)
-```
+### What is Music Party?
 
-Inside the Proxy, the Hub holds the single upstream connection: it broadcasts every
-Soloist frame to all clients, and (when enabled) decodes each frame once to drive
-autoplay and webhooks. It never rewrites relayed client traffic. See ADR-0006.
+[Music Party](https://github.com/mintopia/musicparty) is my collaborative jukebox intended for LAN parties. It uses Discord to authenticate users and then allows people to upvote and downvote music. It's always needed to either poll the Spotify API or used various hacky methods to get live updates from Spotify - and this solves it.
 
-See `CONTEXT.md` for the domain glossary and `docs/adr/` for the recorded decisions.
+## Links
+
+- Spotify Soloist — https://developer.spotify.com/documentation/soloist
+- Snapcast — https://github.com/badaix/snapcast
+- LRCLIB - https://lrclib.net
 
 ## License
 
