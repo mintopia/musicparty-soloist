@@ -19,6 +19,14 @@ This was originally built to accompany [Music Party](https://github.com/mintopia
 * **Autoplay** - Set Soloist Proxy to automatically start playback in Soloist when it has authenticated with Spotify.
 * **PipeWire Included** - Soloist requires PipeWire for audio, which is generally not included in most headless linux distributions. If you use the docker version, it's handled for you - you just need to map the sound devices through.
 
+## Screenshots
+
+![Now Playing Page Screenshot](docs/screenshots/landing.png "Now Playing")
+![Lyrics Settings Page Screenshot](docs/screenshots/lyrics.png "Lyrics Settings")
+![Soloist Settings Screenshot](docs/screenshots/debug.png "Soloist Settings (Docker)")
+![Audio Settings Screenshot](docs/screenshots/debug.png "Audio Settings (Docker)")
+![Debug Page Screenshot](docs/screenshots/debug.png "Debug")
+
 ## Installation
 
 ### Docker (Linux)
@@ -124,12 +132,34 @@ The Soloist license from Spotify doesn't allow distribution of Soloist, and buil
 
 [Music Party](https://github.com/mintopia/musicparty) is my collaborative jukebox intended for LAN parties. It uses Discord to authenticate users and then allows people to upvote and downvote music. It's always needed to either poll the Spotify API or used various hacky methods to get live updates from Spotify - and this solves it.
 
+### I found a bug, what should I do?
+
+If you find an issue with it, please raise it on the issue tracker so I can triage it and investigate it.
+
+## AI Disclosure
+
+AI tools (Claude, Codex) were used for writing this application.
+
 ## Links
 
 - Spotify Soloist — https://developer.spotify.com/documentation/soloist
 - Snapcast — https://github.com/badaix/snapcast
 - LRCLIB - https://lrclib.net
 
+## Donations
+
+If you find this useful and want to show your thanks then [I'd appreciate it](https://github.com/sponsors/mintopia)!
+
+If you're using the lyrics integration and finding it useful, please [check out their donations section](https://github.com/tranxuanthang/lrclib#donation) and throw them some money!
+
 ## License
 
-[MIT](LICENSE) © 2026 Jessica Smith
+The MIT License (MIT)
+
+Copyright (c) 2026 Jessica Smith
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
