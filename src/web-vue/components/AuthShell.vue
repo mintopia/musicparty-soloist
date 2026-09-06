@@ -2,9 +2,6 @@
 import { PhMusicNotesSimple } from "@phosphor-icons/vue";
 import SiteFooter from "./SiteFooter.vue";
 
-// Shared chrome for the standalone auth entries (Login, Setup): centered card column,
-// brand mark, title, and footer. The page slots its own <form class="card glass">; the
-// form's fields are styled here via :slotted so both pages stay in sync (ADR-0014).
 defineProps<{ title: string }>();
 </script>
 

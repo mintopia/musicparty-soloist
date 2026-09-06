@@ -16,15 +16,8 @@ export const TERM_TIMEOUT = 10.0;
 
 export class Aborted extends Error {}
 
-// The supervisor loop's transient phase, surfaced for the Menu's Soloist status.
-// Mirrors the loop boundaries: waiting-for-config → acquire → start → run → on exit
-// either re-acquire (exit 10) or backoff+restart; `stopped` is terminal (shutdown/crash).
 export type { SoloistState } from "./wire-contract.js";
 
-// Crash-loop backoff arithmetic, pure so it can be table-tested without fake timers.
-// `sleep` is how long to wait before the next restart; `next` is the backoff to carry
-// forward. A run that stayed up past HEALTHY_SECONDS resets to BACKOFF_BASE; otherwise it
-// doubles, capped at BACKOFF_MAX.
 export function backoffStep(current: number, ranSeconds: number): { sleep: number; next: number } {
   const wait = ranSeconds >= HEALTHY_SECONDS ? BACKOFF_BASE : current;
   return { sleep: wait, next: Math.min(wait * 2, BACKOFF_MAX) };
@@ -39,16 +32,12 @@ export function buildArgv(cfg: Config): string[] {
     "--api-key", cfg.soloist.apiKey,
     "--data-dir", cfg.soloist.dataDir,
   ];
-  // An explicit config value wins; otherwise fall back to the Docker pin.
   const device = cfg.soloist.pipewireDevice || getPipewireDeviceOverride();
   if (device) argv.push("--pipewire-device", device);
   argv.push(...cfg.soloist.extraArgs);
   return argv;
 }
 
-// Shared handle between the supervisor loop and the web API: tracks what Soloist
-// was last spawned with (so the UI can show a "restart to apply" banner) and lets
-// POST /api/restart-soloist abort just the current iteration (Proxy stays up).
 export class SoloistControl {
   private appliedArgv: string | null = null;
   private iter: AbortController | null = null;
@@ -79,8 +68,6 @@ export class SoloistControl {
     this.wake = deferred();
   }
 
-  // Supervisor-internal: the loop calls this at each phase boundary. Read-only
-  // consumers (the Menu's Soloist status) go through soloistStatus().
   setState(state: SoloistState): void {
     this.state = state;
   }
@@ -93,14 +80,10 @@ export class SoloistControl {
     this.appliedArgv = JSON.stringify(buildArgv(cfg));
   }
 
-  // True once Soloist is running and the live config's Soloist args (device name,
-  // API Key, soloist_ws, ...) differ from what that process was started with.
   pendingRestart(cfg: Config): boolean {
     return this.appliedArgv !== null && this.appliedArgv !== JSON.stringify(buildArgv(cfg));
   }
 
-  // Abort the current supervise iteration so the loop re-spawns Soloist with the
-  // live config; optimistically clears pending since the respawn uses this cfg.
   restart(cfg: Config): void {
     this.markApplied(cfg);
     this.iter?.abort();

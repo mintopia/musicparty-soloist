@@ -1,7 +1,3 @@
-// Web Session auth + HTTP router for the Landing Page (ADR-0009, ADR-0010).
-// Login form -> signed HttpOnly cookie; middleware gates the Landing Page and,
-// in proxy.ts, the control-tier WS upgrade. Fails closed when web creds unset.
-
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,13 +16,9 @@ const log = makeLog("web");
 
 const MAX_BODY = 8 * 1024;
 
-// dist/web/, sibling of the compiled dist/web.js — Vite emits the hashed Vue assets
-// here (ADR-0014) and the build copies the vanilla Lyrics Overlay alongside them.
 const WEB_DIR = fileURLToPath(new URL("./web/", import.meta.url));
 const WEB_ROOT = resolve(WEB_DIR);
 
-// Client-routed view paths (History API). Each serves the same authed Vue SPA shell
-// (index.html); vue-router reads location.pathname to pick the tab. "/" is Now Playing.
 const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/debug", "/lyrics", "/settings"]);
 
 // Secrets the Landing Page may reveal on demand (eye toggle), each with a typed
@@ -44,10 +36,8 @@ const CONTENT_TYPES: Record<string, string> = {
   js: "text/javascript; charset=utf-8",
 };
 
-// Serve a request-path file from under WEB_ROOT: Vite's hashed /assets/*, the vanilla
-// overlay modules, and the built page shells (index/login/setup.html). The resolved
-// path is confined to WEB_ROOT so a crafted "/assets/../.." can't escape it — path
-// traversal is impossible.
+// The resolved path is confined to WEB_ROOT so a crafted "/assets/../.." can't escape
+// it — path traversal is impossible.
 function serveAsset(res: ServerResponse, urlPath: string): void {
   const full = resolve(WEB_ROOT, "." + urlPath);
   if (full !== WEB_ROOT && !full.startsWith(WEB_ROOT + sep)) {
@@ -73,9 +63,8 @@ function json(res: ServerResponse, status: number, obj: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" }).end(JSON.stringify(obj));
 }
 
-// Inline bootstrap embedded server-side into the Lyrics Overlay: only the
-// Read-only Token and the Overlay Config subset — never the whole Config File.
-// `<` is escaped so the JSON can't break out of the <script> element.
+// Embeds only the Read-only Token and the Overlay Config subset — never the whole
+// Config File. `<` is escaped so the JSON can't break out of the <script> element.
 export function overlayBootstrap(cfg: Config): string {
   const data = { token: cfg.proxy.readonlyToken, overlay: cfg.overlay };
   const payload = JSON.stringify(data).replace(/</g, "\\u003c");
@@ -136,17 +125,12 @@ function setSession(res: ServerResponse, cfg: Config): void {
   res.setHeader("set-cookie", `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`);
 }
 
-// Gate the config/control API behind a valid Web Session. Writes the response and
-// returns false when unauthorized; returns true to proceed.
 function apiAuthed(req: IncomingMessage, res: ServerResponse, cfg: Config): boolean {
   if (!webConfigured(cfg)) return failClosed(res), false;
   if (!sessionUser(req, cfg)) return json(res, 401, { error: "unauthenticated" }), false;
   return true;
 }
 
-// Validate → persist → apply. Hot fields apply by mutating the shared Config in place
-// (never reassigning — see the Config contract); callback fields go through onConfigChange;
-// restart fields surface a banner. Per-field strategy: APPLY_STRATEGY (ADR-0022).
 async function handlePutConfig(
   req: IncomingMessage,
   res: ServerResponse,
@@ -179,18 +163,12 @@ async function handlePutConfig(
   }
   Object.assign(cfg, next);
   log("config saved and applied live");
-  // Re-link the PipeWire fan-out to the (possibly changed) Audio Outputs. Docker only
-  // (ADR-0015); runtime, idempotent, and fire-and-forget so the save isn't held on pw-link.
+  // Docker only; fire-and-forget so the save isn't held on pw-link.
   if (isDockerMode()) void reconcileOutputs(cfg).catch((err) => log.error("reconcile after save failed: %s", (err as Error).message));
-  // Push the new Overlay Config to any open overlays so they restyle immediately.
   onConfigChange?.(cfg);
   json(res, 200, maskConfig(cfg));
 }
 
-// Sink list for the UI. Docker serves the warm cache (kept fresh by the background
-// poll; Snapcast toggle included). Standalone has no fan-out cache — it lists the
-// host's real sinks on demand for the Settings device picker (ADR-0015). ?refresh=1
-// (the manual "Refresh" button) forces a fresh pw-dump; an empty docker cache also does.
 async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cfg: Config): Promise<void> {
   const force = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
   try {
@@ -206,17 +184,16 @@ async function handlePipewireSinks(req: IncomingMessage, res: ServerResponse, cf
   }
 }
 
-// TOCTOU guard (item D): two concurrent POST /setup can both observe webConfigured()
-// === false before either has saved. One claim per config path — this app targets
-// exactly one, but the latch is keyed so tests covering several don't collide.
+// TOCTOU guard: two concurrent POST /setup can both observe webConfigured() === false
+// before either has saved. One claim per config path — this app targets exactly one,
+// but the latch is keyed so tests covering several don't collide.
 const setupClaimed = new Set<string>();
 
-// Minimum admin-password length (UX-M8). The client mirrors this; the server is the
-// authority since form JS can be bypassed.
+// The client mirrors this; the server is the authority since form JS can be bypassed.
 export const MIN_PASSWORD_LENGTH = 8;
 
-// First-run setup: set web creds only, persist, log the operator in. Runs only while
-// web creds are unset (gated in handleWebRequest), so it never overwrites live creds.
+// Runs only while web creds are unset (gated in handleWebRequest), so it never
+// overwrites live creds.
 async function handleSetup(
   req: IncomingMessage,
   res: ServerResponse,
@@ -261,8 +238,6 @@ async function handleSetup(
   }
   Object.assign(cfg, next);
   log("first-run setup complete: web creds set for %s", username);
-  // Log the operator straight in with the creds they just set, rather than bouncing
-  // them to /login to retype them.
   setSession(res, cfg);
   redirect(res, "/");
 }
@@ -316,22 +291,16 @@ export function handleWebRequest(
   const path = url.pathname;
   const method = req.method ?? "GET";
 
-  // Setup mode: no web creds yet. Serve only the (self-contained) Setup Page, point
-  // the root at it, and fail everything else closed (ADR-0009/0010, T3).
   if (!webConfigured(cfg)) {
     if (path === "/setup" && method === "GET") return serveAsset(res, "/setup.html"), true;
     if (path === "/setup" && method === "POST") return void handleSetup(req, res, cfg, configPath), true;
-    // The Vite-built Setup Page pulls its module + styles from /assets/.
     if (method === "GET" && path.startsWith("/assets/")) return serveAsset(res, path), true;
-    // Any page navigation lands on the Setup Page rather than a dead-end "go to setup"
-    // notice. API calls (and non-GET) still fail closed so machine clients get a real error.
     if (method === "GET" && !path.startsWith("/api/")) return redirect(res, "/setup"), true;
     return failClosed(res), true;
   }
   if (path === "/setup") return redirect(res, "/"), true;
 
-  // Hashed Vue assets and the vanilla overlay modules. Unauthenticated, like the
-  // static UI was before — no secrets ship in these files.
+  // Unauthenticated: no secrets ship in these files.
   if (method === "GET" && (path.startsWith("/assets/") || path === "/overlay.js" || path === "/frame.js")) {
     serveAsset(res, path);
     return true;
@@ -370,8 +339,7 @@ export function handleWebRequest(
     return true;
   }
 
-  // Reveal one allowlisted secret's plaintext (item 10 eye toggle). Session-gated like
-  // the rest of the config API; returns 404 for any path outside REVEALABLE.
+  // Session-gated; returns 404 for any path outside the REVEALABLE allowlist.
   if (path === "/api/secret" && method === "GET") {
     if (!apiAuthed(req, res, cfg)) return true;
     const reveal = REVEALABLE.get(`${url.searchParams.get("section")}.${url.searchParams.get("key")}`);
@@ -389,8 +357,6 @@ export function handleWebRequest(
     return true;
   }
 
-  // Re-render snapserver.conf from the current config and bounce the s6 snapserver service
-  // (Docker only). Applies edits to the Snapcast Server Config / Snapweb toggle (ADR-0020).
   if (path === "/api/restart-snapcast" && method === "POST") {
     if (apiAuthed(req, res, cfg)) {
       if (!isDockerMode()) return json(res, 400, { error: "not in docker mode" }), true;
@@ -403,8 +369,6 @@ export function handleWebRequest(
   }
 
   if (path === "/api/pipewire-sinks" && method === "GET") {
-    // Docker: the fan-out's sink list (with the Snapcast toggle) for the Audio Route UI.
-    // Standalone: the host's real sinks for the Settings device picker (ADR-0015).
     if (apiAuthed(req, res, cfg)) void handlePipewireSinks(req, res, cfg);
     return true;
   }
@@ -422,15 +386,13 @@ export function handleWebRequest(
 
   if (path === "/logout" && method === "POST") {
     // Close any live App-Control sockets on this session before the cookie is cleared, so a
-    // logout revokes the diagnostics channel too (ADR-0016).
+    // logout revokes the diagnostics channel too.
     onLogout?.(req);
     res.setHeader("set-cookie", `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
     redirect(res, "/login");
     return true;
   }
 
-  // Serve the SPA shell for top-level app paths and any Settings detail deep-link
-  // (master-detail nests /settings/<section>), so a hard reload or bookmark resolves.
   if ((APP_PATHS.has(path) || path.startsWith("/settings/")) && method === "GET") {
     if (!sessionUser(req, cfg)) return redirect(res, "/login"), true;
     serveAsset(res, "/index.html");

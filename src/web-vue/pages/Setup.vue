@@ -6,9 +6,8 @@ import AuthShell from "../components/AuthShell.vue";
 // Must match MIN_PASSWORD_LENGTH in web.ts — the server is the authority (UX-M8).
 const MIN_PASSWORD_LENGTH = 8;
 
-// Standalone first-run entry (ADR-0014): native form POST to /setup — the server owns
-// the 302 and re-serves /setup?error=1 on a mismatch. Mirror the password guards
-// client-side so the obvious cases fail fast without a round-trip.
+// Native form POST to /setup — the server owns the 302 and re-serves /setup?error=1 on a
+// mismatch. Mirror the password guards client-side so the obvious cases fail fast.
 const showError = ref(false);
 const clientError = ref(false);
 const password = ref("");

@@ -17,7 +17,6 @@ const { theme, toggle } = useTheme();
 const ctl = useAppControl();
 const playback = usePlayback();
 
-// Icons for the mobile nav rows (top-nav is hidden < 860px, so the menu carries it).
 const NAV_ICONS: Record<string, Component> = {
   "/": PhPlayCircle,
   "/lyrics": PhMicrophoneStage,
@@ -222,7 +221,6 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
 .item:hover svg { color: var(--ind); }
 .logout-form { margin: 0; }
 
-/* Section nav lives in the menu only on mobile (< 860px); desktop uses the top bar. */
 .menu-nav { display: none; }
 @media (max-width: 860px) { .menu-nav { display: block; } }
 .nav-item.cur { background: var(--ind-s); color: var(--link); }

@@ -124,10 +124,6 @@ async function fetchSyncedLyricsUncached(track, key) {
   return synced ? parseLRC(synced) : null;
 }
 
-// Rendering engine + effects ported from the soloist-docker overlay prototype,
-// adapted to read the server-embedded Overlay Config instead of URL params. The
-// scrolling track, the nine current-line effects, and the reduced-motion fallbacks
-// are that prototype's; only style plumbing (applyStyle/mount*) is new here.
 const OVERLAY_CSS = `
 .lyric-viewport{position:relative;width:100%;overflow:hidden;--fade:9%;
   -webkit-mask-image:linear-gradient(to bottom,transparent,#000 var(--fade),#000 calc(100% - var(--fade)),transparent);
@@ -214,7 +210,6 @@ function injectCss() {
   cssInjected = true;
 }
 
-// Google-font families the overlay offers; loaded on demand when selected.
 const GOOGLE_FONTS = { Inter: "Inter:wght@400;700;800", Roboto: "Roboto:wght@400;700;900", Montserrat: "Montserrat:wght@600;800", "Bebas Neue": "Bebas+Neue" };
 const loadedFonts = new Set();
 function ensureFont(stack) {
@@ -232,7 +227,6 @@ function ensureFont(stack) {
 
 const prefersReduce = typeof matchMedia !== "undefined" ? matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 
-// Overlay Config -> CSS custom properties on the stage host.
 function applyStyle(host, cfg) {
   const set = (k, v) => host.style.setProperty(k, v);
   set("--font", cfg.font || "system-ui, sans-serif");
@@ -435,9 +429,6 @@ export function mountPreview(container, cfg, { refW = 1280, checker = true } = {
   return mountOverlay(stage, cfg).render;
 }
 
-// Browser entry (overlay page): connect read-only, follow the current track, fetch
-// its synced lyrics, and drive the renderer off the extrapolated playback position.
-// Lyrics only — no track-name chip.
 export function startOverlay(boot) {
   const cfg = boot.overlay || {};
   const root = document.getElementById("overlay") || document.body;

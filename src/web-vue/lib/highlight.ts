@@ -1,8 +1,8 @@
-// Escape-safe JSON syntax highlighter (ADR-0016 XSS boundary). hljs core + the JSON
-// grammar are both dynamically imported so they code-split into the lazy Debug chunk
-// instead of the main bundle (ADR-0018). Rendering goes solely through hljs.highlight,
-// which HTML-escapes its input — there is no highlightAuto fallback, so the string this
-// returns is the only thing allowed to reach v-html.
+// Escape-safe JSON syntax highlighter (XSS boundary). hljs core + the JSON grammar are
+// dynamically imported so they code-split into the lazy Debug chunk, not the main bundle.
+// Rendering goes solely through hljs.highlight, which HTML-escapes its input — no
+// highlightAuto fallback — so the string this returns is the only thing allowed past
+// this point to v-html.
 export async function highlightJson(src: string): Promise<string> {
   const { default: hljs } = await import("highlight.js/lib/core");
   const { default: json } = await import("highlight.js/lib/languages/json");

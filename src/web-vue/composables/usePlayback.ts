@@ -1,8 +1,6 @@
 import { reactive, ref } from "vue";
 import { readTrack, readPlayback, readQueue, applyAnchor, nowMs, type Track } from "../lib/wire";
 
-// Reactive playback state fed by the control WebSocket. Decoding is delegated to the
-// framework-free wire module (ADR-0014) — nothing here parses the Soloist frame shape.
 interface PlaybackState {
   track: Track | null;
   queue: Track[];

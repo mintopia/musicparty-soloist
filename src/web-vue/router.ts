@@ -10,9 +10,7 @@ import SettingsSnapcast from "./pages/settings/SettingsSnapcast.vue";
 import SettingsRelay from "./pages/settings/SettingsRelay.vue";
 import SettingsWeb from "./pages/settings/SettingsWeb.vue";
 
-// Top-level surfaces: Now Playing · Lyrics · Settings · Debug. Audio and Webhooks moved
-// under Settings as detail pages (master-detail); Snapweb lives in the menu. Paths mirror
-// web.ts APP_PATHS; unknown paths fall back to Now. History mode preserves deep-links.
+// Paths mirror web.ts APP_PATHS.
 const routes: RouteRecordRaw[] = [
   { path: "/", name: "now", component: Landing },
   { path: "/lyrics", name: "lyrics", component: Lyrics },
@@ -29,8 +27,7 @@ const routes: RouteRecordRaw[] = [
       { path: "web", name: "settings-web", component: SettingsWeb },
     ],
   },
-  // Lazy so hljs + its theme CSS split into a Debug-only async chunk (ADR-0018), never
-  // the main bundle.
+  // Lazy so hljs + its theme CSS split into a Debug-only async chunk, never the main bundle.
   { path: "/debug", name: "debug", component: () => import("./pages/Debug.vue") },
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];

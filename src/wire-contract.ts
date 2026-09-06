@@ -1,11 +1,3 @@
-// Single source of truth for the JSON shapes crossing the Proxy↔browser boundary
-// (App-Control diagnostics + downstream status). ADR-0014's buildless split gives the
-// server and web-vue client separate tsconfigs, so a hand-copied type on either side can
-// drift silently. Keeping the wire contract here — type/const only, no runtime imports —
-// lets both the NodeNext server config and the Bundler web-vue config compile it unchanged,
-// so a field rename or a new stream breaks the build instead of the wire.
-
-// The supervisor loop's transient phase, surfaced for the Menu's Soloist status.
 export type SoloistState =
   | "waiting"
   | "acquiring"
@@ -18,7 +10,7 @@ export type SoloistState =
 export type ClientAuth = "auth-token" | "readonly-token" | "session-cookie";
 
 export interface RelayStatus {
-  enabled: boolean; // url configured
+  enabled: boolean;
   connected: boolean;
   lastConnectAt: number | null;
   lastError: string | null;
@@ -54,8 +46,6 @@ export interface WebhookDelivery {
   error: string | null;
 }
 
-// The fixed set of App-Control diagnostic streams a Debug Subscriber may subscribe to.
-// proxy_status is subscribed implicitly; the rest are opt-in. Client and server both
-// derive DebugStream from this one list.
+// proxy_status is subscribed implicitly; the rest are opt-in.
 export const DEBUG_STREAMS = ["frame", "clients", "webhooks", "proxy_status"] as const;
 export type DebugStream = (typeof DEBUG_STREAMS)[number];

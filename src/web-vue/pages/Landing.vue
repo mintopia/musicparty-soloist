@@ -5,9 +5,6 @@ import { fmtTime } from "../lib/wire";
 import Marquee from "../components/Marquee.vue";
 import { PhShuffle, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhRepeat, PhRepeatOnce, PhSpeakerSimpleHigh, PhVinylRecord } from "@phosphor-icons/vue";
 
-// Now-playing hero + up-next queue, driven live by usePlayback (control WS). Ported from
-// buildNow/renderNowPlaying/renderQueue in src/web/app.js — every control sends the same
-// command as the vanilla UI; the hero is a dark card in both themes by design (ADR-0014).
 const { state, positionMs, isStale, sendCommand } = usePlayback();
 
 const stale = computed(() => isStale());
@@ -47,7 +44,6 @@ const repeatTitle = computed(() =>
 
 <template>
   <div class="now">
-    <!-- now-playing hero -->
     <div class="hero">
       <div class="bloom bloom-a"></div>
       <div class="bloom bloom-b"></div>
@@ -118,7 +114,6 @@ const repeatTitle = computed(() =>
       </div>
     </div>
 
-    <!-- up next / queue -->
     <div class="queue">
       <div class="bloom bloom-q"></div>
       <div class="row qhead">
@@ -208,8 +203,7 @@ const repeatTitle = computed(() =>
 
 .stale { opacity: .55; }
 
-/* Disconnected strip: the data socket is down and reconnect backoff is running. Amber tint
-   tuned for the dark hero (the global --warn tokens are light-surface). */
+/* Amber tint tuned for the dark hero — the global --warn tokens are light-surface. */
 .disc {
   display: flex; align-items: center; gap: 8px; margin-bottom: 18px;
   background: rgba(245, 158, 11, .14); color: #fcd34d;
@@ -221,7 +215,6 @@ const repeatTitle = computed(() =>
 .disc-dot { width: 8px; height: 8px; border-radius: 50%; background: #fbbf24; animation: disc-pulse 1.4s ease-in-out infinite; }
 @keyframes disc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
-/* Transport is dead while the socket is down — controls read as disabled, not merely dim. */
 .hbtn:disabled, .hplay:disabled { opacity: .4; cursor: not-allowed; }
 .hbtn:disabled:hover { background: transparent; color: var(--h-fg2); }
 .hplay:disabled:hover { filter: none; }
@@ -243,8 +236,6 @@ const repeatTitle = computed(() =>
 .qartist { font-size: 12px; color: rgba(255,255,255,.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qdur { font-size: 11.5px; color: rgba(255,255,255,.52); font-variant-numeric: tabular-nums; }
 
-/* Dark theme: swap the hero/queue from warm plum to a cold deep-ocean gradient so they sit
-   in the same cold family as the rest of the dark UI. Light theme keeps the plum. */
 :root[data-theme="dark"] .hero {
   background: linear-gradient(140deg, #0c1a2c 0%, #0b2233 54%, #0a2531 100%);
   box-shadow: 0 22px 54px rgba(4, 18, 30, .5);

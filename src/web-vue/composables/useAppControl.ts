@@ -1,23 +1,10 @@
 import { reactive, ref, type Ref } from "vue";
 import type { DebugStream, ProxyStatus, ClientMeta, WebhookDelivery } from "../../wire-contract";
 
-// App-Control WebSocket client (ADR-0017): the operator-only diagnostics channel that rides
-// `/ws/app`, kept entirely off the pure `/` Soloist data path. It always subscribes to
-// `proxy_status` so app-wide status is live even with no Debug Page open; consumers add the
-// higher-rate diagnostic streams (frame/clients/webhooks) via subscribe() and drop them via
-// the returned disposer. Nothing here parses Soloist frames — those ride through verbatim.
-
-// The App-Control wire types (DebugStream, ProxyStatus, ClientMeta, WebhookDelivery) come
-// from the shared wire contract so this client and the server can't drift. Re-exported here
-// because existing consumers (e.g. Debug.vue) import them from this composable.
 export type { DebugStream, ProxyStatus, ClientMeta, WebhookDelivery };
 
 export type Frame = Record<string, unknown>;
 
-// Per-consumer reactive buffers (seeded from the retained master on subscribe) plus an
-// idempotent disposer. frames is a ring; clients is a full snapshot (server always publishes
-// the whole list); webhooks is the on-subscribe dump (an array, replaces) followed by live
-// single deliveries (appended to a ring).
 export interface AppControlSubscription {
   frames: Frame[];
   clients: ClientMeta[];
@@ -268,8 +255,6 @@ export function createAppControl(opts: AppControlOptions = {}) {
 
 export type AppControl = ReturnType<typeof createAppControl>;
 
-// Module-singleton (no Pinia, ADR-0014): the shell, Menu, and Debug Page share one socket
-// and one status. Tests use createAppControl() directly for isolated instances.
 let shared: AppControl | null = null;
 
 export function useAppControl(): AppControl {

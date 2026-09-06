@@ -4,8 +4,6 @@ import { useAppControl, type Frame, type WebhookDelivery } from "../composables/
 import { highlightJson } from "../lib/highlight";
 import "highlight.js/styles/github.css";
 
-// Operator diagnostics view (ADR-0016). It rides the App-Control WS, never the pure Soloist
-// data path: subscribe to the three diagnostic streams on mount, drop them on unmount.
 const ctl = useAppControl();
 const sub = ctl.subscribe(["frame", "clients", "webhooks"]);
 onUnmounted(() => sub.dispose());
@@ -282,7 +280,6 @@ function compact(f: Frame): string {
 
 .empty { font-size: 13px; color: var(--faint); padding: 20px 0; text-align: center; margin: 0; }
 
-/* Frame stream log. */
 .log { max-height: 340px; overflow-y: auto; border: 1px solid var(--line2); border-radius: 12px; background: var(--sub); padding: 8px; }
 .frow { border-bottom: 1px solid var(--line); }
 .frow:last-child { border-bottom: none; }
@@ -297,7 +294,6 @@ function compact(f: Frame): string {
 .json { margin: 4px 6px 10px; border: 1px solid var(--line2); border-radius: 10px; padding: 12px; overflow: auto; font-size: 12.5px; }
 .raw { margin: 4px 0 0; border: 1px solid var(--line2); border-radius: 10px; padding: 12px; overflow: auto; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; color: var(--txt); background: var(--sub); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-/* Client table. */
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .tbl td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -305,7 +301,6 @@ function compact(f: Frame): string {
 .ua-col { width: 40%; }
 .ua { color: var(--dim); word-break: break-word; }
 
-/* Webhook history. */
 .wlist { display: flex; flex-direction: column; gap: 10px; }
 .wrow { border: 1px solid var(--line); border-radius: 12px; background: var(--sub); overflow: hidden; }
 .wline { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; font-size: 13px; width: 100%; text-align: left; background: none; border: none; color: inherit; font-family: inherit; }

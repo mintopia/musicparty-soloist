@@ -21,12 +21,7 @@ export function parseMainArgs(args: string[]): MainArgs {
     args,
     options: {
       config: { type: "string" },
-      // Managed-audio deployment (ADR-0011/0015): enable the Proxy's Snapcast + hardware
-      // fan-out and the Audio Route UI. Set by the container's s6 run script; absent in
-      // standalone (npx), which runs Soloist with no fan-out.
       docker: { type: "boolean" },
-      // Pin Soloist's output node. Docker passes the soloist-sink null-sink; standalone
-      // users may pass their own PipeWire device (optional). Not env, not persisted config.
       "pipewire-device": { type: "string" },
     },
   });
@@ -50,7 +45,6 @@ export function installShutdownHandlers(
   proc.on("SIGTERM", onShutdown);
 }
 
-// Bound on graceful teardown before the watchdog forces exit (ARCH-L3).
 export const SHUTDOWN_TIMEOUT_MS = 15_000;
 
 export interface WatchdogDeps {

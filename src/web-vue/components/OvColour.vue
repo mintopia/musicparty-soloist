@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
-// Colour picker ported from widgets.js ovColour: HSL sliders (tracks tinted to preview
-// the value) + a swatch that opens the native picker. Value is emitted as hex. Slider
-// edits round-trip through integer HSL (a slight, expected quantisation); a native-picker
-// hex is stored verbatim.
+// Value is emitted as hex. Slider edits round-trip through integer HSL — a slight,
+// expected quantisation; a native-picker hex is stored verbatim.
 defineProps<{ label: string }>();
 const hex = defineModel<string>({ required: true });
 

@@ -10,9 +10,6 @@ export const DEFAULT_SOLOIST_WS = "127.0.0.1:3678";
 export const DEFAULT_STREAM_NAME = "Spotify";
 export const DEFAULT_DATA_DIR = "./.soloist-data";
 
-// Docker-only snapserver.conf template (ADR-0020). {{stream}} expands to the pipewire
-// capture source line (derived from streamName), {{snapweb}} to the Snapweb enable flag
-// (true/false). Operator-editable in Settings; rendered by src/snapserver.ts.
 export const DEFAULT_SNAPSERVER_CONFIG = `[stream]
 {{stream}}
 
@@ -95,18 +92,18 @@ export const OVERLAY_ALIGNMENTS = ["left", "center", "right"] as const;
 export const OVERLAY_ANCHORS = ["top", "center", "bottom"] as const;
 
 export interface OverlayConfig {
-  font: string;            // CSS font stack
-  fontSize: number;        // px (1080p reference)
-  color: string;           // current line
-  neighbourColor: string;  // other lines
-  dimOpacity: number;      // other-line opacity, 0..1
+  font: string;
+  fontSize: number;
+  color: string;
+  neighbourColor: string;
+  dimOpacity: number;
   motion: (typeof OVERLAY_MOTIONS)[number];
-  easing: string;          // CSS timing function
-  transitionMs: number;    // line-advance duration
+  easing: string;
+  transitionMs: number;
   effect: (typeof OVERLAY_EFFECTS)[number];
   fxColor: string;
-  fxIntensity: number;     // 0..100
-  fxDurMs: number;         // effect period
+  fxIntensity: number;
+  fxDurMs: number;
   alignment: (typeof OVERLAY_ALIGNMENTS)[number];
   anchor: (typeof OVERLAY_ANCHORS)[number];
   lineCount: number;       // visible lines (odd)
@@ -162,9 +159,6 @@ const enumField =
   (v: unknown, def: T): T =>
     allowed.includes(String(v) as T) ? (String(v) as T) : def;
 
-// Overlay fields are ~1:1 scalar mappings (camelCase key <-> snake_case yaml key,
-// a default, a coercer) — one table drives DEFAULT_OVERLAY, parseConfig, and
-// configToRaw instead of hand-restating each field three times (mirrors SECRETS below).
 interface OverlayFieldDef<K extends keyof OverlayConfig> {
   key: K;
   yaml: string;
@@ -201,7 +195,6 @@ export const DEFAULT_OVERLAY: OverlayConfig = Object.fromEntries(
   OVERLAY_FIELDS.map((f) => [f.key, f.default]),
 ) as unknown as OverlayConfig;
 
-// ── Apply strategy (ADR-0022) ────────────────────────────────────────────────
 // How each config field takes effect after a save. Single source of truth: the
 // `satisfies Record<keyof …>` lines make TypeScript reject any section that adds a
 // field without classifying it, so a new field can no longer silently fail to apply.

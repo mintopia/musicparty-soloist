@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 
-// Ping-pong marquee for a single line of text that clips: scrolls to the overflow and
-// back, pausing at each end. Ported from src/web/app.js (setScrollingText/animateMarquee).
 // Idempotent per text so the 500ms position tick never restarts an in-flight scroll.
 const props = defineProps<{ text: string }>();
 
@@ -54,7 +52,6 @@ onBeforeUnmount(() => window.removeEventListener("resize", onResize));
 <style scoped>
 .mq-clip { display: block; overflow: hidden; white-space: nowrap; }
 .mq { display: inline-block; will-change: transform; }
-/* Fade both clipped edges only while overflowing — a soft "more text here" cue. */
 .mq-clip.over {
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 18px), transparent 100%);
   mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 18px), transparent 100%);

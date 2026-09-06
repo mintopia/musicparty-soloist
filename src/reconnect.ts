@@ -1,8 +1,3 @@
-// Reconnect-with-backoff driver shared by SoloistHub.run and SoloistRelay.run: both dial
-// a WebSocket, wait out open/message/error/close, then sleep-with-early-wake and grow the
-// backoff. The owner keeps its own stopped/wake/conn state; this only drives the loop shape,
-// so each caller's connect/lifecycle specifics stay in its own class.
-
 import { setTimeout as sleep } from "node:timers/promises";
 import type { WebSocket, RawData } from "ws";
 

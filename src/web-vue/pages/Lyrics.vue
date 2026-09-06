@@ -7,12 +7,6 @@ import OvColour from "../components/OvColour.vue";
 import LoadingState from "../components/LoadingState.vue";
 import { PhTextAlignLeft, PhTextAlignCenter, PhTextAlignRight, PhAlignTop, PhAlignCenterHorizontal, PhAlignBottom, PhArrowUpRight } from "@phosphor-icons/vue";
 
-// Lyrics tab: the authenticated Overlay Config editor + live preview. Ported from the
-// vanilla overlay-panel.js (ADR-0014). Every edit mutates config.overlay, which the
-// shared useConfig `dirty` computed picks up; Save (topbar) persists and the server
-// pushes overlay_config to any open overlays. The renderer + lrclib fetch are reused
-// from the vanilla engine — this file only owns the Vue-side controls and wiring.
-
 // Mirrors config.ts OverlayConfig (camelCase, as the /api/config passthrough serves it).
 interface OverlayCfg {
   font: string; fontSize: number; color: string; neighbourColor: string; dimOpacity: number;
@@ -153,11 +147,8 @@ async function copyUrl() {
 }
 const openUrl = () => window.open(overlayUrl, "_blank");
 
-// Any Overlay Config change re-mounts the preview and the gallery (style-dependent).
 watch(o, () => { remountPreview(); nextTick(remountGallery); }, { deep: true });
-// Switching to Motion & FX mounts the gallery once its stages exist.
 watch(ovTab, () => nextTick(remountGallery));
-// Track change re-probes lrclib.
 watch(() => state.track, ensurePreviewLyrics, { immediate: true });
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -185,7 +176,6 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
       </div>
 
       <template v-if="o">
-      <!-- Layout -->
       <div v-if="ovTab === 'layout'" class="grid2">
         <div>
           <label class="flabel">Visible lines</label>
@@ -215,7 +205,6 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         </div>
       </div>
 
-      <!-- Text -->
       <div v-else-if="ovTab === 'text'" class="grid2">
         <div>
           <label class="flabel">Font</label>
@@ -235,7 +224,6 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
         </div>
       </div>
 
-      <!-- Motion & FX -->
       <div v-else class="motion">
         <div class="grid2">
           <div>
@@ -283,7 +271,6 @@ const numInput = (e: Event) => Number((e.target as HTMLInputElement).value) || 0
       </template>
       <LoadingState v-else />
 
-      <!-- OBS output -->
       <div class="obs">
         <div class="flabel obs-lbl">OBS browser source URL</div>
         <input class="field ro url" readonly :value="overlayUrl" />

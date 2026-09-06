@@ -9,7 +9,7 @@ import { PhBroadcast, PhSpeakerHifi } from "@phosphor-icons/vue";
 // Synthetic sentinel node.name for the Snapcast toggle (mirrors SNAPCAST_KEY in
 // src/pipewire.ts). Real PipeWire nodes never use it.
 const SNAPCAST_KEY = "snapcast";
-const MAX_DELAY_MS = 5000; // ADR-0013
+const MAX_DELAY_MS = 5000;
 
 interface PwSink { name: string; description: string }
 

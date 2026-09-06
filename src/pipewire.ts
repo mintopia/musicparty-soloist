@@ -1,11 +1,3 @@
-// Proxy-owned PipeWire fan-out (ADR-0011). Soloist plays into the `soloist-sink`
-// null-sink; the Proxy links that sink's monitor ports to every enabled Audio
-// Output on boot and on config save, and unlinks deselected ones. Snapcast is a
-// synthetic output special-cased to the Snapserver capture node (named after
-// snapcast.stream_name); hardware sinks link generically to <sink>:playback_{FL,FR}.
-// Shells pw-link/pw-dump against the session's XDG_RUNTIME_DIR (Docker's ENV
-// sets /run/pipewire; a native run inherits its own).
-
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -33,7 +25,6 @@ export const DELAY_PREFIX = "soloist-delay-";
 export const DELAY_INPUT_PORTS = ["input_FL", "input_FR"] as const;
 export const DELAY_OUTPUT_PORTS = ["output_FL", "output_FR"] as const;
 
-// Runs a command and resolves its stdout; rejects on non-zero exit.
 export type Runner = (cmd: string, args: string[]) => Promise<string>;
 
 // PipeWire socket dir: inherit the session's XDG_RUNTIME_DIR (native run), else
@@ -83,13 +74,10 @@ export function parseSinks(pwDumpJson: string, exclude: string[] = []): PwSink[]
   return sinks;
 }
 
-// /api/pipewire-sinks payload: the synthetic Snapcast toggle first, then real sinks.
 export function pipewireSinksResponse(sinks: PwSink[]): PwSink[] {
   return [{ name: SNAPCAST_KEY, description: "Snapcast" }, ...sinks];
 }
 
-// PipeWire node names the monitor should currently be linked to, per config.
-// Snapcast → the Snapserver capture node (stream_name); plus each hardware output.
 export function desiredTargets(cfg: Config): string[] {
   const targets: string[] = [];
   if (cfg.audio.snapcast) targets.push(cfg.streamName);
@@ -100,7 +88,6 @@ export function desiredTargets(cfg: Config): string[] {
   return [...new Set(targets)];
 }
 
-// Hardware outputs (never Snapcast) that are enabled and have a >0ms delay.
 export function desiredDelays(cfg: Config): Record<string, number> {
   const delays: Record<string, number> = {};
   for (const name of cfg.audio.outputs) {
@@ -192,8 +179,6 @@ export function parseMonitorTargets(pwLinkOutput: string): string[] {
   return [...targets];
 }
 
-// Spawns a long-lived child (the filter-chain delay process); resolves immediately,
-// the caller keeps the handle to kill it later. Swappable for tests.
 export type Spawner = (cmd: string, args: string[]) => ChildProcess;
 
 const defaultSpawn: Spawner = (cmd, args) =>
@@ -212,7 +197,6 @@ export interface ReconcileResult {
   missing: string[];
 }
 
-// Bounded wait for a full "node:port" to appear on the input (destination) port list.
 async function waitForPort(port: string, run: Runner, retries: number, intervalMs: number): Promise<boolean> {
   for (let i = 0; i < retries; i++) {
     try {
@@ -226,13 +210,11 @@ async function waitForPort(port: string, run: Runner, retries: number, intervalM
   return false;
 }
 
-// Bounded wait for a target node's playback input port to appear.
 async function waitForNode(node: string, run: Runner, retries: number, intervalMs: number): Promise<boolean> {
   return waitForPort(`${node}:${PLAYBACK_PORTS[0]}`, run, retries, intervalMs);
 }
 
-// Link (or, with remove, `pw-link -d` unlink) both channels src:srcPorts[i] -> dst:dstPorts[i].
-// Failures are ignored: an existing/absent link exits non-zero.
+// Failures are ignored: linking an already-linked or unlinking an absent port exits non-zero.
 async function linkPorts(
   srcNode: string,
   srcPorts: readonly string[],
@@ -247,7 +229,6 @@ async function linkPorts(
   }
 }
 
-// soloist-sink:monitor -> node:playback (the direct, no-delay route).
 async function linkPair(node: string, run: Runner, remove = false): Promise<void> {
   await linkPorts(SINK_NODE, MONITOR_PORTS, node, PLAYBACK_PORTS, run, remove);
 }
@@ -287,9 +268,6 @@ async function ensureDelayChild(delays: Record<string, number>, tokens: Map<stri
   delayChildKey = key;
 }
 
-// Reconcile the live fan-out to match config: link every enabled output (waiting
-// for its node to appear), unlink deselected ones. A configured output whose node
-// never appears is skipped and flagged (missing), not treated as an error.
 export function reconcileOutputs(cfg: Config, opts: ReconcileOptions = {}): Promise<ReconcileResult> {
   const task = reconcileChain.then(() => runReconcile(cfg, opts));
   reconcileChain = task.catch(() => {});
@@ -361,9 +339,6 @@ async function runReconcile(cfg: Config, opts: ReconcileOptions): Promise<Reconc
   return result;
 }
 
-// Enumerate selectable Audio Outputs for the UI: the synthetic Snapcast toggle
-// plus real Audio/Sink nodes (minus soloist-sink and the Snapserver capture node,
-// which registers as an Audio/Sink named after stream_name).
 export async function listPipewireSinks(cfg: Config, run: Runner = defaultRun): Promise<PwSink[]> {
   const dump = await run("pw-dump", []);
   return pipewireSinksResponse(parseSinks(dump, [cfg.streamName]));
@@ -377,10 +352,6 @@ export async function listStandaloneSinks(): Promise<PwSink[]> {
   return parseSinks(dump);
 }
 
-// Server-side sink cache (ADR-0011 UI path): a background timer runs pw-dump on an
-// interval so /api/pipewire-sinks answers from a warm cache — the Audio page is
-// populated on first paint instead of waiting on a per-request pw-dump. `refreshedAt`
-// is 0 until the first dump lands; the endpoint forces one synchronously in that case.
 export interface SinkCache {
   sinks: PwSink[];
   refreshedAt: number; // epoch ms of the dump; 0 = never

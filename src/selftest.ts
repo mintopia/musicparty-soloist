@@ -54,8 +54,6 @@ const { parseLRC, currentIndex } = engine as {
   currentIndex(lines: { time: number }[], t: number): number;
 };
 
-// Wire-format decoders (ADR-0014 seam): framework-free, shared by the vanilla overlay
-// and — as lib/wire.ts — the Vue app. Imported headless here, same browser-ESM pattern.
 const landing = await import(new URL("./web/frame.js", import.meta.url).href);
 const { fmtTime, readTrack, readPlayback, readQueue, entityToTrack, applyAnchor, nowMs } = landing as {
   fmtTime(ms: number): string;
@@ -123,8 +121,6 @@ const { createAppControl } = (appctl ?? {}) as {
   }): AppControlApi;
 };
 
-// Menu status derivation: pure worst-of badge logic, imported raw-.ts like the modules
-// above so the precedence table (ADR-0017) is verified headless.
 const menuStatusMod = await loadRawTs("../src/web-vue/lib/menuStatus.ts");
 const { badgeLevel: mBadge, soloistLevel: mSoloist, relayLevel: mRelay, webhookLevel: mWebhook, worstBadge: mWorst, soloistText: mText } = (menuStatusMod ?? {}) as {
   badgeLevel(i: any): string;
@@ -135,8 +131,6 @@ const { badgeLevel: mBadge, soloistLevel: mSoloist, relayLevel: mRelay, webhookL
   soloistText(s: any, appLive: boolean, dataConnected: boolean): string;
 };
 
-// A minimal WebSocket stand-in the composable can drive: tests trigger open/close/message
-// by hand and read back what was sent. close() fires onclose to mirror the browser.
 interface FakeSocket {
   url: string;
   readyState: number;
@@ -236,8 +230,6 @@ async function webTest(name: string, dep: unknown, fn: () => void | Promise<void
   await test(name, fn);
 }
 
-// Asserts none of `secrets` appears in the serialized form of `obj` — the recurring
-// "a view/mask/bootstrap must never leak a secret value" invariant, stated once.
 function assertNoLeak(label: string, obj: unknown, secrets: string[]): void {
   const j = typeof obj === "string" ? obj : JSON.stringify(obj);
   for (const s of secrets) assert.ok(!j.includes(s), `${label} leaked ${s}`);
@@ -300,7 +292,6 @@ await test("checkAuth token/tier resolution", async () => {
   ] as const) {
     assert.equal(resolveAuth(req(hdr, url), cfg).tier, want, msg);
   }
-  // Web-session cookie path (different shape) kept explicit.
   assert.equal(
     resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }), authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET })).tier,
     "control",
@@ -309,8 +300,6 @@ await test("checkAuth token/tier resolution", async () => {
 });
 
 
-// sameOrigin: cookie-authed WS upgrades must be same-origin (CSWSH defense). Token
-// clients bypass this; only the tokenless cookie path is gated in proxy's upgrade handler.
 await test("sameOrigin CSWSH guard", async () => {
 assert.equal(sameOrigin(req({ origin: "http://host:8687", host: "host:8687" })), true, "matching origin/host");
 assert.equal(sameOrigin(req({ origin: "http://evil.example", host: "host:8687" })), false, "cross-origin rejected");
@@ -329,7 +318,6 @@ assert.equal(sameOrigin(req({ origin: "http://host:9999", host: "host:8687" })),
 
 const buf = (s: string): RawData => Buffer.from(s) as unknown as RawData;
 await test("wire parsing: decodeFrame + listenParts", async () => {
-// decodeFrame: valid frame decodes; malformed/type-less/non-object/binary are skipped.
 assert.deepEqual(decodeFrame(buf('{"type":"auth_state","logged_in":true}'), false), {
   type: "auth_state",
   message: { type: "auth_state", logged_in: true },
@@ -339,7 +327,6 @@ assert.equal(decodeFrame(buf("{"), false), null, "malformed JSON skipped");
 assert.equal(decodeFrame(buf('{"no":"type"}'), false), null, "type-less frame skipped");
 assert.equal(decodeFrame(buf('"a string"'), false), null, "non-object JSON skipped");
 assert.equal(decodeFrame(buf('{"type":"x"}'), true), null, "binary frame skipped");
-// listenParts: split at the LAST colon (IPv6-safe), error clearly on garbage (not NaN).
 assert.deepEqual(listenParts("0.0.0.0:8687"), { host: "0.0.0.0", port: 8687 }, "host:port splits normally");
 assert.deepEqual(listenParts(":8687"), { host: "0.0.0.0", port: 8687 }, "no host defaults to 0.0.0.0");
 assert.deepEqual(listenParts("[::1]:8687"), { host: "::1", port: 8687 }, "IPv6 literal splits at the port colon and sheds its brackets for server.listen");
@@ -371,7 +358,6 @@ assert.equal(coerceFloat("nope", 0.25), 0.25, "non-numeric falls back to default
 });
 
 
-// safeStrEqual: constant-time compare, length-guarded so timingSafeEqual never throws.
 await test("safeStrEqual constant-time compare", async () => {
 assert.equal(safeStrEqual("abc", "abc"), true, "equal strings match");
 assert.equal(safeStrEqual("abc", "abd"), false, "same-length mismatch rejected");
@@ -379,13 +365,10 @@ assert.equal(safeStrEqual("abc", "abcd"), false, "different lengths rejected wit
 assert.equal(safeStrEqual("", ""), true, "empty equals empty");
 });
 
-// deferred: a promise parked until someone else resolves it — await stays pending until
-// resolve() is called, and the same handle resolves only once.
 await test("deferred external-resolve promise", async () => {
   const d = deferred();
   let settled = false;
   const waiter = d.promise.then(() => { settled = true; });
-  // Not resolved yet: a microtask flush must not settle it.
   await Promise.resolve();
   assert.equal(settled, false, "promise stays pending until resolve() is called");
   d.resolve();
@@ -394,9 +377,6 @@ await test("deferred external-resolve promise", async () => {
   assert.doesNotThrow(() => d.resolve(), "a second resolve() is a harmless no-op");
 });
 
-// makeLog: builds a scoped logger that prefixes an ISO timestamp + `soloist.<scope>` +
-// level before the message and forwards any extra args through unchanged. info (the bare
-// call and .info) goes to console.log; warn/error go to console.error.
 await test("makeLog scoped, timestamped, forwards args", async () => {
   const out: unknown[][] = [];
   const err: unknown[][] = [];
@@ -429,7 +409,6 @@ await test("makeLog scoped, timestamped, forwards args", async () => {
 });
 
 
-// backoffStep: crash-loop backoff doubles up to the cap, resets after a healthy run.
 await test("backoffStep crash-loop backoff", async () => {
 assert.deepEqual(backoffStep(BACKOFF_BASE, 0), { sleep: BACKOFF_BASE, next: BACKOFF_BASE * 2 }, "quick crash sleeps current, doubles next");
 assert.deepEqual(backoffStep(BACKOFF_MAX, 0), { sleep: BACKOFF_MAX, next: BACKOFF_MAX }, "doubling is capped at BACKOFF_MAX");
@@ -490,11 +469,7 @@ assert.equal(resolveWebhookUrl("auth_state", { defaultUrl: "", urls: {}, secret:
 });
 
 
-// WebhookQueue: throttle spacing + FIFO drain, cap-drop (oldest queued evicted, one onDrop),
-// synchronous drain when delayMs is 0, and handler-error isolation (a throwing task never
-// wedges the drain loop).
 await test("WebhookQueue spacing/FIFO/cap-drop/sync/error-isolation", async () => {
-  // throttle spacing + FIFO
   const fires: number[] = [];
   const spaced: (() => void)[] = [];
   const q1 = new WebhookQueue(100, { schedule: (fn, ms) => { assert.equal(ms, 100, "throttle spacing == delayMs"); spaced.push(fn); } });
@@ -507,7 +482,6 @@ await test("WebhookQueue spacing/FIFO/cap-drop/sync/error-isolation", async () =
   spaced.shift()!();
   assert.deepEqual(fires, [1, 2, 3], "queued tasks drain FIFO");
 
-  // cap: oldest queued dropped, exactly one onDrop, the rest still FIFO
   const order: string[] = [];
   const drops: number[] = [];
   const held: (() => void)[] = [];
@@ -518,14 +492,12 @@ await test("WebhookQueue spacing/FIFO/cap-drop/sync/error-isolation", async () =
   while (held.length) held.shift()!();
   assert.deepEqual(order, ["A", "C", "D", "E"], "oldest queued (B) dropped, rest FIFO");
 
-  // delayMs 0: synchronous drain, no timer scheduled
   const sync: number[] = [];
   const q0 = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
   q0.push(() => sync.push(1));
   q0.push(() => sync.push(2));
   assert.deepEqual(sync, [1, 2], "delayMs 0 drains synchronously in order");
 
-  // a throwing task must not wedge the drain loop (item E)
   const seen: number[] = [];
   const qThrow = new WebhookQueue(0, { schedule: () => assert.fail("no timer when delayMs is 0") });
   qThrow.push(() => { throw new Error("boom"); });
@@ -535,7 +507,6 @@ await test("WebhookQueue spacing/FIFO/cap-drop/sync/error-isolation", async () =
 });
 
 
-// WebhookHistory ring buffer + postWebhook capture, redaction, and body cap.
 function fakeFetch(status: number, headers: Record<string, string>, body: string): typeof fetch {
   return (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
 }
@@ -555,12 +526,7 @@ await test("postWebhook records delivery capture shape", async () => {
   assert.ok(d!.durationMs >= 0, "durationMs recorded");
 });
 
-// postWebhook redaction (ADR-0016): the request Authorization header is masked and the raw
-// secret never appears in the recorded delivery; response headers pass an allowlist so
-// vendor/API-key headers and Set-Cookie (a session-fixation vector) never reach a Debug
-// Subscriber, while content-type/date survive.
 await test("postWebhook redaction (request secret + response allowlist)", async () => {
-  // Request-secret redaction: Authorization masked, raw secret absent everywhere.
   const hReq = new WebhookHistory();
   await postWebhook(hReq, "track_changed", "http://t", "{}", "supersecret", fakeFetch(200, { "content-type": "application/json" }, "ok"));
   const dReq = hReq.last()!;
@@ -568,7 +534,6 @@ await test("postWebhook redaction (request secret + response allowlist)", async 
   assert.equal(dReq.reqHeaders["content-type"], "application/json", "content-type request header preserved");
   assertNoLeak("postWebhook delivery", dReq, ["supersecret"]);
 
-  // Response-header allowlist: content-type/date kept; set-cookie, x-api-key, vendor sig dropped.
   const hResp = new WebhookHistory();
   await postWebhook(hResp, "track_changed", "http://t", "{}", "", fakeFetch(200, {
     "content-type": "application/json",
@@ -586,8 +551,6 @@ await test("postWebhook redaction (request secret + response allowlist)", async 
   assertNoLeak("postWebhook respHeaders", dResp.respHeaders, ["leak", "sig"]);
 });
 
-// postWebhook response-body cap boundaries: an oversized body is capped + marked truncated;
-// a short body and a body sized exactly to the cap are recorded verbatim with no marker.
 await test("postWebhook response-body cap boundaries", async () => {
   const cap = async (body: string) => {
     const h = new WebhookHistory();
@@ -595,33 +558,26 @@ await test("postWebhook response-body cap boundaries", async () => {
     return h.last()!.respBody;
   };
 
-  // oversized: capped content + marker, total length is cap + marker length
   const big = await cap("x".repeat(WEBHOOK_RESP_BODY_CAP + 5000));
   assert.ok(big.includes("…[truncated]"), "truncation marker present");
   const capped = big.slice(0, WEBHOOK_RESP_BODY_CAP);
   assert.ok(/^x+$/.test(capped) && capped.length === WEBHOOK_RESP_BODY_CAP, "body content capped at WEBHOOK_RESP_BODY_CAP");
   assert.equal(big.length, WEBHOOK_RESP_BODY_CAP + "…[truncated]".length, "total length is cap + marker length");
 
-  // short: verbatim, no marker
   const short = await cap("short body");
   assert.equal(short, "short body", "short body recorded verbatim");
   assert.ok(!short.includes("…[truncated]"), "no truncation marker for a short body");
 
-  // exactly at the cap: verbatim, no marker (off-by-one guard)
   const exactIn = "x".repeat(WEBHOOK_RESP_BODY_CAP);
   const exact = await cap(exactIn);
   assert.equal(exact, exactIn, "body exactly at the cap recorded verbatim");
   assert.ok(!exact.includes("…[truncated]"), "no marker when body length equals the cap");
 });
 
-// WebhookHistory: the onEntry listener lifecycle (fires on record; idempotent disposer that
-// doesn't disturb other listeners) and the ring buffer (capped at WEBHOOK_HISTORY_CAP=10,
-// oldest evicted first, last() the most recent).
 await test("WebhookHistory ring + listener lifecycle", async () => {
   const mkDelivery = (i: number): WebhookDelivery =>
     ({ at: i, type: "t", url: "u" + i, status: 200, durationMs: 0, reqHeaders: {}, respHeaders: {}, respBody: "", error: null });
 
-  // listener lifecycle: fire on record, dispose (idempotent), other listener unaffected
   const hL = new WebhookHistory();
   let n = 0;
   let m = 0;
@@ -637,7 +593,6 @@ await test("WebhookHistory ring + listener lifecycle", async () => {
   assert.equal(n, 1, "still disposed after a second off() call");
   assert.equal(m, 3, "the other, still-registered listener keeps firing after the first is disposed");
 
-  // ring buffer: capped at 10, oldest evicted, last() is most recent
   const hR = new WebhookHistory();
   for (let i = 0; i < 12; i++) hR.record(mkDelivery(i));
   const entries = hR.entries();
@@ -647,8 +602,6 @@ await test("WebhookHistory ring + listener lifecycle", async () => {
 });
 
 
-// relayView: reports url + auth presence + live status, never the Authorization value; and
-// reads as disabled when there's no url/auth.
 await test("relayView (reports url/auth-presence/status, hides auth; disabled)", async () => {
   const relayCfg = { relay: { url: "wss://relay.example/x", authorization: "Bearer topsecret" } } as unknown as Config;
   const rStatus = { enabled: true, connected: true, lastConnectAt: 123, lastError: null };
@@ -664,7 +617,6 @@ await test("relayView (reports url/auth-presence/status, hides auth; disabled)",
 });
 
 
-// Lyrics Overlay engine: parseLRC + currentIndex (folded in from the prototype).
 await test("Lyrics overlay parseLRC + currentIndex", async () => {
   const lrc = ["[ar:The Weeknd]", "[00:12.50]First line", "[00:15.00]Second line", "[00:15.00]Same time echo", "not a timed line", "[01:03.20]Later"].join("\n");
   const lines = parseLRC(lrc);
@@ -682,8 +634,6 @@ await test("Lyrics overlay parseLRC + currentIndex", async () => {
 });
 
 
-// Overlay bootstrap: embeds only the Read-only Token + Overlay Config subset,
-// never other secrets, and escapes `<` so it can't break out of <script>.
 await test("overlayBootstrap token + overlay only", async () => {
   const ovCfg = {
     proxy: { token: "CONTROL-SECRET", readonlyToken: "RO-TOKEN", listen: "x" },
@@ -700,12 +650,9 @@ await test("overlayBootstrap token + overlay only", async () => {
 });
 
 
-// A base Config File written to a fresh tmp dir per test, so the config tests below are
-// order-independent — no shared, mutate-in-place fixture threaded across test() calls.
 function freshConfigDir(): { dir: string; cfgPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "cfgtest-"));
   const cfgPath = join(dir, "config.yaml");
-  // Values are literal — no ${VAR} interpolation, no env reads.
   writeFileSync(
     cfgPath,
     [
@@ -722,8 +669,6 @@ function freshConfigDir(): { dir: string; cfgPath: string } {
   return { dir, cfgPath };
 }
 
-// loadConfig: literal values (no ${VAR} interpolation), sane section defaults for absent
-// sections, and fail-fast on a missing file.
 await test("loadConfig: literals, section defaults, missing file", async () => {
   const { dir, cfgPath } = freshConfigDir();
   const cfg = loadConfig(cfgPath);
@@ -731,7 +676,6 @@ await test("loadConfig: literals, section defaults, missing file", async () => {
   assert.equal(cfg.soloist.apiKey, "key123", "literal value, no env");
   assert.equal(cfg.proxy.token, "tok123");
   assert.equal(cfg.proxy.listen, "127.0.0.1:9000");
-  // absent-section defaults
   assert.equal(cfg.autoplay, false, "autoplay defaults off when absent");
   assert.equal(cfg.webhooks.defaultUrl, "", "webhooks absent -> empty default_url");
   assert.deepEqual(cfg.webhooks.urls, {}, "webhooks absent -> no urls");
@@ -747,19 +691,13 @@ await test("loadConfig: literals, section defaults, missing file", async () => {
   assert.equal(cfg.relay.url, "", "relay.url absent -> empty (off)");
   assert.equal(cfg.relay.authorization, "", "relay.authorization absent -> empty");
   assert.deepEqual(cfg.overlay, DEFAULT_OVERLAY, "overlay absent -> defaults");
-  // ${VAR} is stored and returned verbatim.
   const litPath = join(dir, "literal.yaml");
   writeFileSync(litPath, ['soloist:', '  device_name: "d"', '  api_key: "${API}"', "  extra_args: []", "proxy:", '  token: "t"'].join("\n"));
   assert.equal(loadConfig(litPath).soloist.apiKey, "${API}", "no interpolation: ${VAR} kept literal");
-  // missing file fails fast
   assert.throws(() => loadConfig(join(dir, "nope.yaml")), ConfigError, "missing file fails fast");
 });
 
 
-// Overlay enum coercion (TEST-M1): enumField coerces motion/effect/alignment/anchor against
-// their allowlists, falling back to the default for an unknown value. A broken allowlist would
-// let an arbitrary string reach the overlay renderer unnoticed — assert each out-of-range value
-// is coerced back to its default, and that a valid value is preserved (so it isn't always-default).
 await test("overlay enum values coerce to defaults", async () => {
   const dir = mkdtempSync(join(tmpdir(), "enum-"));
   const badPath = join(dir, "config.yaml");
@@ -781,9 +719,6 @@ await test("overlay enum values coerce to defaults", async () => {
 });
 
 
-// Snapserver.conf rendering (ADR-0020): {{stream}} -> capture source line, {{snapweb}} ->
-// the enable flag, empty template -> built-in default; and the two render-to-file entry
-// points emit exactly renderSnapserverConf(cfg) (the "restart-to-apply matches" invariant).
 await test("renderSnapserverConf + write paths", async () => {
   const base = defaultConfig();
   const on = renderSnapserverConf({ ...base, streamName: "Party", snapweb: true });
@@ -795,7 +730,6 @@ await test("renderSnapserverConf + write paths", async () => {
   const off = renderSnapserverConf({ ...base, snapweb: false });
   assert.ok(off.includes("enabled = false"), "{{snapweb}} false when snapweb off");
 
-  // An empty template falls back to the built-in default rather than rendering blank.
   const empty = renderSnapserverConf({ ...base, snapcastServerConfig: "" });
   assert.equal(empty, renderSnapserverConf({ ...base, snapcastServerConfig: DEFAULT_SNAPSERVER_CONFIG }), "empty template -> default");
 
@@ -810,9 +744,6 @@ await test("renderSnapserverConf + write paths", async () => {
 });
 
 
-// saveConfig: round-trips preserving comments + changed values, clamps output_delays to the
-// max on load, writes atomically (no temp file left behind), and refuses to persist an
-// invalid config (leaving the file untouched).
 await test("saveConfig round-trip, atomicity, rejection", async () => {
   const { dir, cfgPath } = freshConfigDir();
   const cfg = loadConfig(cfgPath);
@@ -833,10 +764,8 @@ await test("saveConfig round-trip, atomicity, rejection", async () => {
   assert.equal(reloaded.audio.outputDelays.over_range, MAX_OUTPUT_DELAY_MS, "output_delays clamped to MAX_OUTPUT_DELAY_MS on load");
   assert.equal(reloaded.overlay.fontSize, 72, "overlay value persisted");
 
-  // Atomic write leaves no temp file behind.
   assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".tmp-")), [], "no temp file left after save");
 
-  // Invalid config is never persisted (extra_args must be a list).
   const before = readFileSync(cfgPath, "utf8");
   const bad = loadConfig(cfgPath);
   (bad.soloist as { extraArgs: unknown }).extraArgs = "not-a-list";
@@ -845,9 +774,6 @@ await test("saveConfig round-trip, atomicity, rejection", async () => {
 });
 
 
-// ensureSecrets: mints + persists absent secrets, is idempotent once they exist, and on a
-// fresh install (no file yet) also mints proxy.token so control-tier token auth works out of
-// the box after setup.
 await test("ensureSecrets mint/persist/idempotent/fresh", async () => {
   const { dir, cfgPath } = freshConfigDir();
   const secretsCfg = loadConfig(cfgPath);
@@ -861,7 +787,6 @@ await test("ensureSecrets mint/persist/idempotent/fresh", async () => {
   assert.equal(persisted.proxy.readonlyToken, secretsCfg.proxy.readonlyToken, "readonly_token persisted");
   assert.equal(ensureSecrets(cfgPath, persisted), false, "already-set secrets: no rewrite");
 
-  // Fresh install: no config file yet — proxy.token is minted too.
   const freshPath = join(dir, "fresh.yaml");
   const fresh = defaultConfig();
   assert.equal(fresh.proxy.token, "", "precondition: default config has no proxy.token");
@@ -872,11 +797,6 @@ await test("ensureSecrets mint/persist/idempotent/fresh", async () => {
 });
 
 
-// Config API secret handling: maskConfig hides secret values (-> true), configSummary flags
-// presence without leaking, applyApiConfig round-trips (masked-true keeps stored, fresh string
-// updates, masked-false/empty-string keep stored, hot/editable apply, locked fields immutable,
-// bad bodies throw), a plaintext web.password is hashed on the way in, and webhooks.urls is a
-// full-replace map so a dropped URL disappears and stays gone through save.
 await test("config API secret handling (mask/summary/apply/webhook-replace)", async () => {
   const { cfgPath } = freshConfigDir();
   const sCfg = loadConfig(cfgPath);
@@ -921,13 +841,11 @@ await test("config API secret handling (mask/summary/apply/webhook-replace)", as
   assert.throws(() => applyApiConfig(sCfg, "nope"), ConfigError, "non-object body rejected");
   assert.throws(() => applyApiConfig(sCfg, { webhooks: { urls: "nope" } }), ConfigError, "invalid result rejected");
 
-  // A plaintext web.password submitted via PUT (Replace flow) is stored hashed, never cleartext.
   const pwApplied = applyApiConfig(sCfg, { web: { password: "plaintext-pw" } });
   assert.ok(isPasswordHashed(pwApplied.web.password), "PUT plaintext password stored hashed");
   assert.ok(verifyPassword("plaintext-pw", pwApplied.web.password), "hashed password verifies");
   assert.notEqual(pwApplied.web.password, "plaintext-pw", "cleartext password not stored");
 
-  // webhooks.urls full-replace: a dropped URL disappears and the removal persists to file.
   const whCfgBase = loadConfig(cfgPath);
   whCfgBase.webhooks.urls = { track_changed: "http://a", error: "http://b" };
   const whApplied = applyApiConfig(whCfgBase, { webhooks: { urls: { track_changed: "http://a" } } });
@@ -957,8 +875,6 @@ await test("applyApiConfig rejects prototype pollution", async () => {
 
 const SECRET = "sessionsecret";
 const signed = signSession("admin", SECRET);
-// Web Session cookie (web.ts): sign/verify round-trip, tamper rejection (signature + forged
-// payload), malformed/non-finite/expired rejection, and password-rotation invalidation.
 await test("session cookie sign/verify/tamper/expiry", async () => {
   // Mirror web.ts's key derivation (secret + password binding) so we can forge a cookie with a
   // chosen issued-at. Default binding "" matches an unbound signSession/verifySession.
@@ -980,18 +896,14 @@ await test("session cookie sign/verify/tamper/expiry", async () => {
   const macAt = signed.lastIndexOf(".") + 1;
   const tampered = signed.slice(0, macAt) + (signed[macAt] === "A" ? "B" : "A") + signed.slice(macAt + 1);
   assert.equal(verifySession(tampered, SECRET), null, "tampered signature rejected");
-  // Forge a payload for a different user reusing the original MAC — signature won't match.
   const originalMac = signed.slice(signed.lastIndexOf(".") + 1);
   assert.equal(verifySession(`${Buffer.from(`root|${Date.now()}`).toString("base64url")}.${originalMac}`, SECRET), null, "tampered payload rejected");
   assert.equal(verifySession("nodot", SECRET), null, "malformed cookie rejected");
   assert.equal(verifySession(forge("admin|not-a-number"), SECRET), null, "non-finite issued-at rejected");
 
-  // Expiry: older than the max age is rejected even with a valid signature; a recent one is fine.
   assert.equal(verifySession(forge(`admin|${Date.now() - 31 * 24 * 60 * 60 * 1000}`), SECRET), null, "expired session rejected");
   assert.equal(verifySession(forge(`admin|${Date.now() - 24 * 60 * 60 * 1000}`), SECRET), "admin", "1-day-old session still valid");
 
-  // Password rotation: a cookie signed under a different password no longer verifies (the MAC
-  // key folds in the password).
   assert.equal(verifySession(signSession("admin", SECRET, "pw-A"), SECRET, "pw-B"), null, "session signed under a different password is rejected");
 });
 
@@ -999,9 +911,6 @@ await test("session cookie sign/verify/tamper/expiry", async () => {
 const webReq = (cookie?: string) => ({ headers: cookie ? { cookie } : {} }) as unknown as IncomingMessage;
 const webCfg = (u: string, p: string): Config => ({ web: { username: u, password: p, sessionSecret: SECRET } }) as unknown as Config;
 
-// sessionUser gating (web.ts): parseCookies extraction, webConfigured predicate, the cookie
-// -> user path with its rejections (bad secret, other user, no cookie), fail-closed when creds
-// are unset, and password-rotation revocation.
 await test("sessionUser gating (parseCookies/webConfigured/fail-closed/rotation)", async () => {
   assert.deepEqual(parseCookies("a=1; soloist_session=xyz"), { a: "1", soloist_session: "xyz" }, "cookie header parsed");
   assert.deepEqual(parseCookies(undefined), {}, "no cookie header -> empty");
@@ -1017,8 +926,6 @@ await test("sessionUser gating (parseCookies/webConfigured/fail-closed/rotation)
   assert.equal(sessionUser(webReq(), cfgSet), null, "no cookie -> null");
   assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "pw")}`), webCfg("", "")), null, "fail-closed: unset creds reject valid cookie");
 
-  // Rotating the password revokes live sessions: a cookie signed under the old password no
-  // longer authenticates once the stored password changes.
   assert.equal(sessionUser(webReq(`${SESSION_COOKIE}=${signSession("admin", SECRET, "old-pw")}`), webCfg("admin", "new-pw")), null, "password change revokes existing session");
 });
 
@@ -1026,7 +933,6 @@ await test("sessionUser gating (parseCookies/webConfigured/fail-closed/rotation)
 const meta = (over: Partial<import("./hub.js").ClientMeta> = {}): import("./hub.js").ClientMeta =>
   ({ id: "id", remoteAddr: "127.0.0.1", tier: "control", auth: "auth-token", connectedAt: 0, userAgent: "ua", ...over });
 
-// Hub read-only drop + state replay, against a real in-process upstream.
 await test("Hub read-only drop + state replay, against a real in-process upstream", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(upstream, "listening");
@@ -1067,26 +973,19 @@ await test("Hub read-only drop + state replay, against a real in-process upstrea
 });
 
 
-// Client metadata enum, clientList shape, and loggedIn() null-while-down.
-// Hub status getters (resolveAuth enum, clientList/loggedIn/clientCount) and buildProxyStatus
-// (compact webhook summary that never leaks headers/body, ok classification). Both drive a
-// never-connecting hub so upstream is down and loggedIn() is null.
 await test("Hub getters + buildProxyStatus summary", async () => {
-  // auth enum is derived, never the raw token
   const RAWTOK = "CONTROL-SECRET-RAW";
   const cfg = authCfg(RAWTOK, "RO-RAW");
   assert.deepEqual(resolveAuth(req({ authorization: `Bearer ${RAWTOK}` }, "/"), cfg), { tier: "control", auth: "auth-token" }, "control token -> auth-token enum");
   assert.deepEqual(resolveAuth(req({ authorization: `Bearer RO-RAW` }, "/"), cfg), { tier: "readonly", auth: "readonly-token" }, "readonly token -> readonly-token enum");
   assert.deepEqual(resolveAuth(req({}, "/"), cfg), { tier: "none", auth: null }, "no creds -> none/null");
-  // session cookie -> session-cookie enum
   const wc = authCfg(RAWTOK, "RO-RAW", { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
   assert.deepEqual(resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }, "/"), wc), { tier: "control", auth: "session-cookie" }, "cookie -> session-cookie enum");
   // A bogus token alongside a valid cookie still resolves to session-cookie, so the
   // upgrade handler's same-origin gate (keyed on auth) is not bypassed by a junk token.
   assert.deepEqual(resolveAuth(req({ cookie: `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}` }, "/?token=garbage"), wc), { tier: "control", auth: "session-cookie" }, "bogus token + cookie -> session-cookie (CSWSH gate stays armed)");
 
-  // clientList() shape + loggedIn() null while upstream down (never connected)
-  const hub = new SoloistHub("ws://127.0.0.1:1"); // never connects
+  const hub = new SoloistHub("ws://127.0.0.1:1");
   assert.equal(hub.upstreamConnected, false, "upstream not connected");
   assert.equal(hub.loggedIn(), null, "loggedIn() is null while upstream is down");
   assert.equal(hub.clientCount(), 0, "no clients yet");
@@ -1096,29 +995,22 @@ await test("Hub getters + buildProxyStatus summary", async () => {
   const list = hub.clientList();
   assert.equal(list.length, 1, "clientList has one entry");
   assert.deepEqual(list[0], { id: "c1", remoteAddr: "10.0.0.5", tier: "readonly", auth: "readonly-token", connectedAt: 123, userAgent: "TestUA" }, "clientList entry is the full ClientMeta");
-  // the raw token never appears in metadata
   assert.ok(!JSON.stringify(list).includes(RAWTOK), "raw token never stored in client metadata");
   hub.stop();
 
-  // --- buildProxyStatus: compact webhook summary (no headers/body) + ok classification. The
-  // proxy_status frame carries only the last delivery's at/type/status/ok, never its
-  // request/response headers or body (that detail rides the separate `webhooks` stream). ---
-  const hub2 = new SoloistHub("ws://127.0.0.1:1"); // never connects: upstream down, loggedIn null
+  const hub2 = new SoloistHub("ws://127.0.0.1:1");
   const history = new WebhookHistory();
   const relay = { enabled: true, connected: false, lastConnectAt: null, lastError: "boom" };
   const control = new SoloistControl();
   control.setState("running");
 
-  // No deliveries yet: webhook summary is null; soloist reflects control + a down upstream.
   const empty = buildProxyStatus(hub2, relay, history, control);
   assert.equal(empty.webhook, null, "no webhook history -> null summary");
   assert.deepEqual(empty.soloist, { state: "running", upstream: false, loggedIn: null }, "soloist snapshot");
   assert.equal(empty.clients, 0, "no downstream clients");
   assert.equal(empty.relay, relay, "relay status passed straight through");
-  // control absent -> state null rather than throwing.
   assert.equal(buildProxyStatus(hub2, relay, history).soloist.state, null, "no control -> state null");
 
-  // A full delivery with secrets in headers + body collapses to the four-field summary.
   const delivery: WebhookDelivery = {
     at: 1000, type: "now_playing", url: "http://hook.example/deliver", status: 200, durationMs: 5,
     reqHeaders: { authorization: "Bearer ***", "x-token": "REQSECRET" },
@@ -1130,7 +1022,6 @@ await test("Hub getters + buildProxyStatus summary", async () => {
   assert.deepEqual(s.webhook, { at: 1000, type: "now_playing", status: 200, ok: true }, "compact 4-field summary");
   assertNoLeak("proxy_status webhook summary", s, ["REQSECRET", "RESPSECRETBODY", "hook.example", "application/json"]);
 
-  // ok is 2xx-with-a-response only: non-2xx and network errors are not ok.
   history.record({ ...delivery, at: 2000, status: 500 });
   assert.equal(buildProxyStatus(hub2, relay, history, control).webhook?.ok, false, "5xx -> not ok");
   history.record({ ...delivery, at: 3000, status: null, error: "timeout" });
@@ -1139,12 +1030,6 @@ await test("Hub getters + buildProxyStatus summary", async () => {
 });
 
 
-// The Proxy↔client wire contract lives once in wire-contract.ts: every module derives
-// ProxyStatus/ClientMeta/WebhookDelivery/DEBUG_STREAMS from that single source, so a server
-// rename or a new stream can't compile clean on both sides while the wire diverges. This
-// locks the const's identity — re-forking it in appcontrol would break the reference — and
-// pins the shape a real buildProxyStatus() hands the client (the `: ProxyStatus` annotation
-// is the compile-time half of the same guarantee).
 await test("wire contract is single-sourced", () => {
   assert.strictEqual(DEBUG_STREAMS, WIRE_DEBUG_STREAMS, "appcontrol re-exports the shared DEBUG_STREAMS, not a hand-copied fork");
   const relay = { enabled: false, connected: false, lastConnectAt: null, lastError: null };
@@ -1154,9 +1039,6 @@ await test("wire contract is single-sourced", () => {
 });
 
 
-// App-Control upgrade gate: a Debug Subscriber upgrade needs a valid Web Session cookie AND
-// a same-host Origin. Tokens are not accepted; a host mismatch or missing/malformed Origin is
-// rejected; a scheme-only mismatch is NOT a rejection.
 await test("appControlAllowed session+same-host gate", async () => {
   const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
@@ -1169,9 +1051,6 @@ await test("appControlAllowed session+same-host gate", async () => {
 });
 
 
-// Debug Subscriber tier: onSubscribe seeding, subscribe validation, idempotency, safe handling
-// of bad frames, backpressure gating, logout/pw-rotation close, exclusion from the Client
-// Count, and refusal of a cookieless registration.
 await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/recheck/cookieless)", async () => {
   const webCfg = { username: "admin", password: "pw", sessionSecret: AUTH_SECRET };
   const cfg = authCfg(CT, RT, webCfg);
@@ -1193,8 +1072,6 @@ await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/rech
     };
   };
 
-  // onSubscribe: a producer hook fires once per newly-subscribed stream and seeds just that
-  // socket; a repeated subscribe re-fires nothing; a hook throw is isolated.
   const acSeed = new AppControl(cfg);
   acSeed.onSubscribe((stream, send) => {
     if (stream === "frame") throw new Error("boom"); // isolated: must not stop clients being seeded
@@ -1210,26 +1087,22 @@ await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/rech
 
   const ac = new AppControl(cfg);
 
-  // subscribe validates against the fixed set; unknown streams ignored; idempotent.
   const a = fakeWs();
   ac.register(a as unknown as WebSocket, cookie);
   assert.equal(ac.count(), 1, "one debug subscriber registered");
   a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame", "nope", "clients"] })), false);
-  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame"] })), false); // repeat -> no duplicate
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["frame"] })), false);
   ac.publish("frame", { n: 1 });
   assert.deepEqual(a.sent, [JSON.stringify({ stream: "frame", data: { n: 1 } })], "frame delivered once (idempotent subscribe, no duplicate send)");
   ac.publish("proxy_status", { up: true });
   assert.equal(a.sent.length, 1, "not delivered a stream it never subscribed to");
 
-  // malformed / binary / non-subscribe frames are handled safely (no throw, no effect).
   a.emit("message", buf("not json"), false);
-  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] })), true); // binary -> ignored
-  a.emit("message", buf(JSON.stringify({ type: "command", command: "play" })), false); // never a control verb here
+  a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] })), true);
+  a.emit("message", buf(JSON.stringify({ type: "command", command: "play" })), false);
   ac.publish("proxy_status", { up: true });
   assert.equal(a.sent.length, 1, "binary subscribe ignored; malformed/command frames inert");
 
-  // backpressure: past the drop threshold a `frame` update is shed, but other streams flow;
-  // past the hard threshold the socket is closed.
   a.bufferedAmount = BUFFER_DROP_BYTES + 1;
   a.emit("message", buf(JSON.stringify({ type: "subscribe", streams: ["clients"] })), false);
   ac.publish("frame", { n: 2 });
@@ -1241,7 +1114,6 @@ await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/rech
   assert.deepEqual(a.closed, { code: 1013, reason: "slow consumer" }, "hopeless slow consumer closed");
   assert.equal(ac.count(), 0, "closed subscriber removed");
 
-  // Client Count exclusion: a Debug Subscriber never lands on the Hub.
   const hub = new SoloistHub("ws://127.0.0.1:1");
   const b = fakeWs();
   ac.register(b as unknown as WebSocket, cookie);
@@ -1249,17 +1121,15 @@ await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/rech
   assert.equal(hub.clientCount(), 0, "debug subscriber excluded from the Client Count");
   hub.stop();
 
-  // logout closes every socket whose session fingerprint matches this request's cookie.
   ac.closeForRequest(req({ cookie }));
   assert.deepEqual(b.closed, { code: 1008, reason: "logged out" }, "logout closed the matching subscriber");
   assert.equal(ac.count(), 0, "logged-out subscriber removed");
 
-  // periodic re-check closes a socket whose session no longer verifies (password rotation).
   const c = fakeWs();
   ac.register(c as unknown as WebSocket, cookie);
   ac.recheck();
   assert.equal(c.closed === null, true, "valid session survives re-check");
-  webCfg.password = "rotated"; // rotate the password -> every live session is revoked
+  webCfg.password = "rotated";
   ac.recheck();
   assert.equal(c.closed?.code, 1008, "re-check closes a session revoked by password rotation");
 
@@ -1279,9 +1149,6 @@ await test("AppControl Debug Subscriber (seed/subscribe/backpressure/logout/rech
 });
 
 
-// End-to-end over a real socket: the actual upgrade + subscribe + publish round-trip works,
-// and an oversized frame is closed safely by the server's maxPayload (not just by the fake
-// harness). Exercises the real ws frame parser the unit tests bypass.
 await test("AppControl real-socket round-trip + oversized frame closed safely", async () => {
   const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
@@ -1301,9 +1168,6 @@ await test("AppControl real-socket round-trip + oversized frame closed safely", 
   for (let i = 0; i < 100 && ac.count() === 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(ac.count(), 1, "real upgrade registered a debug subscriber");
 
-  // subscribe + publish round-trip over the wire. Poll-publish until the frame arrives rather
-  // than betting a fixed sleep covers the server processing the subscribe (TEST-H3): publishes
-  // before the subscribe registers reach no subscriber and are harmless.
   client.send(JSON.stringify({ type: "subscribe", streams: ["proxy_status"] }));
   const gotMsg = once(client, "message");
   let received: RawData | undefined;
@@ -1317,7 +1181,6 @@ await test("AppControl real-socket round-trip + oversized frame closed safely", 
   assert.ok(received, "subscribed client received a published frame");
   assert.deepEqual(JSON.parse(received.toString()), { stream: "proxy_status", data: { ok: true } }, "published frame arrives over the real socket");
 
-  // oversized frame: server enforces maxPayload and closes without crashing
   const closed = once(client, "close");
   client.send("x".repeat(APP_CONTROL_MAX_PAYLOAD + 100));
   const [code] = (await closed) as [number];
@@ -1330,8 +1193,6 @@ await test("AppControl real-socket round-trip + oversized frame closed safely", 
 });
 
 
-// close() lifecycle (unit): stop() clears the re-check interval, terminates every Debug
-// Subscriber socket, and resolves only once the WebSocketServer has finished closing.
 await test("AppControl.stop() clears the interval, terminates subscribers, and awaits server close", async () => {
   const cfg = authCfg(CT, RT, { username: "admin", password: "pw", sessionSecret: AUTH_SECRET });
   const cookie = `${SESSION_COOKIE}=${signSession("admin", AUTH_SECRET, "pw")}`;
@@ -1351,10 +1212,6 @@ await test("AppControl.stop() clears the interval, terminates subscribers, and a
 });
 
 
-// makeServer App-Control lifecycle (integration): a POST /logout closes every App-Control
-// socket opened under that session (ADR-0016); then close() tears down a live Debug Subscriber,
-// stops the listener accepting connections, and resolves once shutdown completes. Both run
-// against one real makeServer to avoid a second full server spin-up.
 await test("makeServer App-Control lifecycle: logout-close + close teardown", async () => {
   const prevDocker = isDockerMode();
   setDockerMode(false); // no PipeWire fan-out / sink polling under test
@@ -1376,7 +1233,6 @@ await test("makeServer App-Control lifecycle: logout-close + close teardown", as
     return client;
   };
   try {
-    // logout: a POST /logout closes the session's App-Control socket with 1008.
     const c1 = await connect();
     assert.equal(running.appControl.count(), 1, "debug subscriber connected");
     const c1Closed = once(c1, "close");
@@ -1387,12 +1243,11 @@ await test("makeServer App-Control lifecycle: logout-close + close teardown", as
     for (let i = 0; i < 100 && running.appControl.count() !== 0; i++) await new Promise((r) => setTimeout(r, 5));
     assert.equal(running.appControl.count(), 0, "no debug subscribers after logout");
 
-    // close(): a live subscriber is torn down, the listener stops, and a fresh connection is refused.
     const c2 = await connect();
     assert.equal(running.appControl.count(), 1, "debug subscriber connected before close");
     const c2Closed = once(c2, "close");
     await running.close();
-    await c2Closed; // the subscriber socket was terminated by the teardown
+    await c2Closed;
     assert.equal(running.appControl.count(), 0, "no debug subscribers after close");
     const dead = new WebSocket(`ws://127.0.0.1:${port}/`);
     await assert.rejects(once(dead, "open"), "server no longer accepts connections after close");
@@ -1403,10 +1258,6 @@ await test("makeServer App-Control lifecycle: logout-close + close teardown", as
 });
 
 
-// Integration purity (ADR-0016): a Downstream Client on `/`, a Debug Subscriber on /ws/app, and
-// a fake Relay all wired through one real makeServer. A genuine Soloist frame reaches `/` and the
-// Relay byte-for-byte, while every diagnostic (proxy_status, frame, clients, webhooks) stays on the
-// App-Control socket and never leaks to `/` or the Relay.
 await test("integration purity: diagnostics stay on App-Control; genuine frames reach / and Relay verbatim", async () => {
   const prevDocker = isDockerMode();
   setDockerMode(false);
@@ -1474,8 +1325,6 @@ await test("integration purity: diagnostics stay on App-Control; genuine frames 
     const relayUp = () => debugMsgs.some((m) => m.stream === "proxy_status" && (m.data as { relay?: { connected?: boolean } }).relay?.connected === true);
     for (let i = 0; i < 200 && !relayUp(); i++) await new Promise((r) => setTimeout(r, 10));
 
-    // A genuine Soloist frame: broadcast raw to `/` + Relay, mirrored as a `frame` diagnostic, and
-    // (track_changed is a state event with a configured URL) fires a webhook delivery.
     const GENUINE = '{"type":"track_changed","item":{"uri":"spotify:x"}}';
     upConn.send(GENUINE);
 
@@ -1506,8 +1355,6 @@ await test("integration purity: diagnostics stay on App-Control; genuine frames 
 });
 
 
-// Relay bridge: Soloist frames republished verbatim to the Relay Server; frames from
-// the Relay Server forwarded raw into the upstream Soloist socket (full control).
 await test("Relay bridge republishes frames", async () => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   const relaySrv = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -1532,14 +1379,12 @@ await test("Relay bridge republishes frames", async () => {
   // Poll until the relay socket reports OPEN before sending, rather than a fixed settle (TEST-H3).
   for (let i = 0; i < 400 && !relay.status.connected; i++) await new Promise((r) => setTimeout(r, 5));
 
-  // Outbound: a genuine Soloist frame is mirrored verbatim to the Relay Server.
   upConn.send('{"type":"track_changed","item":{"uri":"x"}}');
   for (let i = 0; i < 100 && !gotRelay.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(gotRelay, ['{"type":"track_changed","item":{"uri":"x"}}'], "Soloist frame republished to Relay Server verbatim");
   assert.equal(relay.status.connected, true, "relay reports connected");
   assert.equal(relay.status.enabled, true, "relay reports enabled");
 
-  // Inbound: a Relay Server frame is forwarded raw into the upstream Soloist socket.
   relayConn!.send('{"type":"command","command":"pause"}');
   for (let i = 0; i < 100 && !gotUpstream.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(gotUpstream, ['{"type":"command","command":"pause"}'], "Relay Server frame forwarded raw upstream");
@@ -1551,8 +1396,6 @@ await test("Relay bridge republishes frames", async () => {
 });
 
 
-// buildArgv reflects the Soloist command line; a change to any of the args means
-// the running Soloist is stale and needs a restart.
 await test("buildArgv Soloist command line", async () => {
   const base = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
   assert.deepEqual(
@@ -1561,7 +1404,6 @@ await test("buildArgv Soloist command line", async () => {
     "buildArgv renders the Soloist command line",
   );
 
-  // Docker pin (main.js --pipewire-device) appends when config has no explicit device.
   // try/finally so a failed assertion can't leak the process-global pin into later tests (TEST-M2).
   try {
     setPipewireDeviceOverride("soloist-sink");
@@ -1569,7 +1411,6 @@ await test("buildArgv Soloist command line", async () => {
       buildArgv(base).join(" ").endsWith("--pipewire-device soloist-sink"),
       "buildArgv appends the Docker pipewire pin when config leaves it empty",
     );
-    // An explicit config value wins over the pin.
     const pinned = { ...base, soloist: { ...(base as any).soloist, pipewireDevice: "alsa_x" } } as unknown as Config;
     assert.ok(buildArgv(pinned).includes("alsa_x") && !buildArgv(pinned).includes("soloist-sink"),
       "explicit pipewire_device overrides the Docker pin");
@@ -1633,7 +1474,6 @@ await test("APPLY_STRATEGY matches the real restart detectors", async () => {
   }
 });
 
-// SoloistControl: pending derives from live config vs last-spawned args; restart clears it.
 await test("SoloistControl pending vs applied", async () => {
   const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: "/data", extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:3678" } as unknown as Config;
   const control = new SoloistControl();
@@ -1651,9 +1491,6 @@ await test("SoloistControl pending vs applied", async () => {
 });
 
 
-// Integration: restart aborts the current Soloist run and the supervise loop
-// re-spawns (the Proxy — driven by the same process — is never dropped), while a
-// real shutdown ends the loop.
 await test("supervise restart aborts current run", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-"));
   const logf = join(sdir, "runs.log");
@@ -1689,12 +1526,6 @@ await test("supervise restart aborts current run", async () => {
 });
 
 
-// Supervisor state machine + readiness gate: soloistStatus() tracks the loop's transient
-// phase. Drive a full cycle — park (no acquire while web creds unset) → acquire → run →
-// exit-10 re-acquire → run → exit-1 backoff → shutdown — and assert it visits each boundary
-// in order. Completing first-run setup (creds land) spawns Soloist without a process restart.
-// Records every setState so transient phases (starting/running) are captured without racing
-// the poller.
 await test("supervise state machine transitions + readiness gate", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-state-"));
   // First build "expires" (exit 10 -> re-acquire), second "crashes" (exit 1 -> backoff);
@@ -1705,7 +1536,6 @@ await test("supervise state machine transitions + readiness gate", async () => {
   writeFileSync(crashes, `#!/bin/sh\nsleep 0.2\nexit 1\n`, { mode: 0o755 });
   const builds = [expires, crashes];
   let acq = 0;
-  // Not ready (no web creds) so supervise parks in `waiting` until creds land.
   const stCfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "", password: "", sessionSecret: "" } } as unknown as Config;
   const control = new SoloistControl();
   const history: string[] = [];
@@ -1828,8 +1658,6 @@ await test("supervise retries a transient boot acquire failure instead of wedgin
 });
 
 
-// Shutdown during the boot-acquire backoff must be prompt — the retry sleep is
-// abortable, so an abort mid-backoff ends the loop with Aborted rather than waiting it out.
 await test("supervise abort during boot-acquire backoff shuts down promptly", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-acq-abort-"));
   const cfg = { soloist: { deviceName: "d", apiKey: "k", dataDir: sdir, extraArgs: [], pipewireDevice: "" }, soloistWs: "127.0.0.1:1", web: { username: "u", password: "p", sessionSecret: "" } } as unknown as Config;
@@ -1853,9 +1681,6 @@ await test("supervise abort during boot-acquire backoff shuts down promptly", as
 });
 
 
-// Integration: a restart during crash-loop backoff wakes the sleep early instead of
-// waiting out the (>=1s) backoff cap. A soloist that crashes immediately parks the loop
-// in `backoff`; restart() must re-spawn promptly, not after the full wait.
 await test("supervise restart wakes crash-loop backoff early", async () => {
   const sdir = mkdtempSync(join(tmpdir(), "sup-wake-"));
   const logf = join(sdir, "runs.log");
@@ -1886,7 +1711,6 @@ await test("supervise restart wakes crash-loop backoff early", async () => {
 });
 
 
-// PipeWire fan-out (ADR-0011, ticket T9).
 const pwDump = JSON.stringify([
   { info: { props: { "media.class": "Audio/Sink", "node.name": "soloist-sink", "node.description": "Soloist" } } },
   { info: { props: { "media.class": "Audio/Sink", "node.name": "Spotify", "node.description": "Snapserver" } } },
@@ -1895,9 +1719,6 @@ const pwDump = JSON.stringify([
   { info: { props: { "media.class": "Audio/Source", "node.name": "mic" } } },
   { other: true },
 ]);
-// pipewire sink listing (ADR-0015) + the sink cache. parseSinks filters to real Audio/Sinks;
-// the Docker fan-out response prepends a synthetic Snapcast toggle; the standalone picker does
-// not (no fan-out, no Snapserver-capture exclusion); the cache starts empty ("never" refreshed).
 await test("pipewire sink listing + cache", async () => {
   assert.deepEqual(
     parseSinks(pwDump, ["Spotify"]),
@@ -1956,10 +1777,7 @@ const monitorListing = [
   "  |-> unrelated:playback_FL",
 ].join("\n");
 
-// pipewire routing helpers (pure): target selection, monitor-link parsing, per-output delay
-// selection (ADR-0013), delay-token sanitisation + collision safety, and filter-chain conf gen.
 await test("pipewire routing helpers (targets/monitors/delays/tokens/filter-conf)", async () => {
-  // desiredTargets
   assert.deepEqual(desiredTargets(dcfg(true, ["alsa_x"])), ["Spotify", "alsa_x"], "desiredTargets: snapcast->streamName + hardware");
   assert.deepEqual(desiredTargets(dcfg(false, ["alsa_x"])), ["alsa_x"], "desiredTargets: snapcast off drops stream node");
   assert.deepEqual(
@@ -1968,16 +1786,13 @@ await test("pipewire routing helpers (targets/monitors/delays/tokens/filter-conf
     "desiredTargets: reserved/internal names filtered, deduped",
   );
 
-  // parseMonitorTargets: only soloist-sink monitor links
   assert.deepEqual(parseMonitorTargets(monitorListing), ["old_sink"], "parseMonitorTargets: only soloist-sink monitor links");
   assert.deepEqual(parseMonitorTargets(""), [], "parseMonitorTargets: empty -> []");
 
-  // desiredDelays: only enabled hardware outputs with >0ms delay
   assert.deepEqual(desiredDelays(dcfg(true, ["alsa_x", "alsa_y"])), {}, "desiredDelays: no outputDelays configured -> {}");
   const withDelay = { audio: { snapcast: true, outputs: ["alsa_x", "alsa_y", "snapcast"], outputDelays: { alsa_x: 250, alsa_y: 0, ghost: 10 } }, streamName: "Spotify" } as unknown as Config;
   assert.deepEqual(desiredDelays(withDelay), { alsa_x: 250 }, "desiredDelays: only enabled hardware outputs with >0ms; snapcast/absent excluded");
 
-  // buildDelayTokens: sanitise unsafe chars + collision suffixing
   const tokens = buildDelayTokens({ "alsa_output.hw:0": 250, "alsa/weird name!": 100 });
   assert.equal(tokens.get("alsa_output.hw:0"), "alsa-output-hw-0", "buildDelayTokens: sanitizes to safe token");
   assert.equal(tokens.get("alsa/weird name!"), "alsa-weird-name", "buildDelayTokens: strips/collapses unsafe chars");
@@ -1985,7 +1800,6 @@ await test("pipewire routing helpers (targets/monitors/delays/tokens/filter-conf
   assert.equal(collide.get("a!b"), "a-b", "buildDelayTokens: first owner keeps the base token");
   assert.equal(collide.get("a?b"), "a-b-2", "buildDelayTokens: collision gets a -2 suffix");
 
-  // generateFilterChainConf: self-contained delay node, autoconnect off, ms -> seconds
   const conf = generateFilterChainConf({ alsa_x: 250 }, buildDelayTokens({ alsa_x: 250 }));
   assert.ok(conf.includes("libpipewire-module-protocol-native"), "generateFilterChainConf: self-contained (protocol-native)");
   assert.ok(conf.includes("libpipewire-module-client-node"), "generateFilterChainConf: self-contained (client-node)");
@@ -1997,8 +1811,6 @@ await test("pipewire routing helpers (targets/monitors/delays/tokens/filter-conf
 });
 
 
-// reconcileOutputs (no delay): links desired (Snapcast + hardware), unlinks the deselected
-// old_sink, and flags a configured output whose node never appears.
 await test("reconcileOutputs link/unlink/missing", async () => {
   const calls: string[] = [];
   const run: Runner = async (cmd, args) => {
@@ -2015,7 +1827,6 @@ await test("reconcileOutputs link/unlink/missing", async () => {
   assert.ok(calls.includes("pw-link soloist-sink:monitor_FR alsa_x:playback_FR"), "reconcile: hardware FR linked");
   assert.ok(calls.includes("pw-link -d soloist-sink:monitor_FL old_sink:playback_FL"), "reconcile: deselected FL unlinked");
 
-  // a configured output whose node never appears is skipped and flagged missing.
   const runAbsent: Runner = async (_cmd, args) => (args.includes("-l") ? "" : "");
   const resAbsent = await reconcileOutputs(dcfg(false, ["ghost"]), { run: runAbsent, retries: 1, intervalMs: 0 });
   assert.deepEqual(resAbsent.missing, ["ghost"], "reconcile: absent node flagged missing");
@@ -2023,10 +1834,6 @@ await test("reconcileOutputs link/unlink/missing", async () => {
 });
 
 
-// reconcileOutputs (delay lifecycle, ADR-0013): a delayed output routes through a filter-chain
-// child spawned once (not per output), reused on an unchanged map, and killed when the delay is
-// removed; with no delays configured the topology is identical to pre-ADR-0013 (ADR-0011) and
-// no child is ever spawned.
 await test("reconcileOutputs delay lifecycle + no-delay parity", async () => {
   const calls: string[] = [];
   const spawnedCmds: string[] = [];
@@ -2050,18 +1857,15 @@ await test("reconcileOutputs delay lifecycle + no-delay parity", async () => {
   assert.ok(calls.includes("pw-link output.soloist-delay-alsa-x:output_FL alsa_x:playback_FL"), "reconcile+delay: filter output -> hw sink");
   assert.ok(!calls.includes("pw-link soloist-sink:monitor_FL alsa_x:playback_FL"), "reconcile+delay: no direct link for a delayed output");
 
-  // Unchanged delay map on the next reconcile -> no respawn.
   await reconcileOutputs(delayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
   assert.equal(spawnedCmds.length, 1, "reconcile+delay: same delay map does not respawn the child");
 
-  // Delay removed -> child killed, no new spawn, direct link used.
   const undelayedCfg = { audio: { snapcast: false, outputs: ["alsa_x"], outputDelays: { alsa_x: 0 } }, streamName: "Spotify" } as unknown as Config;
   const res3 = await reconcileOutputs(undelayedCfg, { run, spawn: spawner, retries: 1, intervalMs: 0 });
   assert.equal(killed, 1, "reconcile: delay dropped to 0 kills the running filter-chain child");
   assert.equal(spawnedCmds.length, 1, "reconcile: dropping to 0 does not spawn a new child");
   assert.deepEqual(res3.linked, ["alsa_x"], "reconcile: output relinks directly once its delay is gone");
 
-  // No delay configured at all -> identical direct-link topology; must never spawn a child.
   const noDelayCalls: string[] = [];
   const noDelayRun: Runner = async (cmd, args) => {
     noDelayCalls.push([cmd, ...args].join(" "));
@@ -2076,8 +1880,6 @@ await test("reconcileOutputs delay lifecycle + no-delay parity", async () => {
 });
 
 
-// Sample built to the real Soloist Entity schema (decorations.identity/creators/
-// parent/visual_identity/playback).
 const entity = (name: string, artist: string, album: string, durationMs: number, covers: { url: string; size: string }[] = []) => ({
   uri: "spotify:track:x",
   entity_type: "track",
@@ -2090,17 +1892,13 @@ const entity = (name: string, artist: string, album: string, durationMs: number,
   },
 });
 
-// frame.js wire decoders (ADR-0014 seam): the framework-free Soloist frame readers, plus
-// fmtTime and the playback-anchor math. One block over the shared `entity()` fixture.
 await test("frame.js wire decoders", async () => {
-  // fmtTime: mm:ss, seconds zero-padded, negatives/garbage clamp to zero.
   assert.equal(fmtTime(0), "0:00");
   assert.equal(fmtTime(194000), "3:14");
   assert.equal(fmtTime(9000), "0:09", "seconds zero-padded");
   assert.equal(fmtTime(-5), "0:00", "negatives clamp to zero");
   assert.equal(fmtTime("nope" as unknown as number), "0:00", "non-numeric clamps to zero");
 
-  // readTrack / entityToTrack: Entity decorations -> flat track.
   const item = entity("Blinding Lights", "The Weeknd", "After Hours", 200000, [
     { url: "https://img/small", size: "small" },
     { url: "https://img/large", size: "large" },
@@ -2114,8 +1912,6 @@ await test("frame.js wire decoders", async () => {
   assert.equal(entityToTrack(null), null, "entityToTrack: null item -> null");
   assert.equal(entityToTrack(entity("", "", "", 0)), null, "entityToTrack: no title and no artist -> null");
 
-  // pickCover fallback chain (large > default > xlarge > small > covers[0]), exercised
-  // through entityToTrack.art.
   const cover = (covers: { url: string; size: string }[]) => entityToTrack(entity("t", "a", "", 0, covers))!.art;
   assert.equal(cover([{ url: "u-default", size: "default" }, { url: "u-xlarge", size: "xlarge" }]), "u-default", "pickCover: default beats xlarge");
   assert.equal(cover([{ url: "u-xlarge", size: "xlarge" }, { url: "u-small", size: "small" }]), "u-xlarge", "pickCover: xlarge beats small");
@@ -2123,7 +1919,6 @@ await test("frame.js wire decoders", async () => {
   assert.equal(cover([{ url: "u-first", size: "weird" }]), "u-first", "pickCover: unknown size falls back to covers[0].url");
   assert.equal(cover([]), "", "pickCover: no covers -> empty string");
 
-  // readPlayback: status/anchor/volume, position_sync (no status), absent position -> nulls.
   assert.deepEqual(
     readPlayback({ type: "playback_state", status: "paused", position: { position_ms: 4200, timestamp_ms: 1788460353479, speed: 0 }, volume: 55 }),
     { positionMs: 4200, timestampMs: 1788460353479, speed: 0, playing: false, volume: 55 },
@@ -2138,7 +1933,6 @@ await test("frame.js wire decoders", async () => {
   assert.equal(readPlayback({ volume: "loud" }).volume, null, "readPlayback: non-number volume -> null");
   assert.equal(readPlayback({ position: { position_ms: 1, timestamp_ms: 2, speed: "fast" } }).speed, null, "readPlayback: non-number speed -> null");
 
-  // readQueue: upcoming list, missing item -> placeholder track (not null), no upcoming -> null.
   assert.deepEqual(
     readQueue({ type: "queue_changed", upcoming: [{ uid: "a", source: "context", item: entity("Levitating", "Dua Lipa", "", 203000) }] }),
     [{ uri: "spotify:track:x", title: "Levitating", artist: "Dua Lipa", album: "", durationMs: 203000, art: "" }],
@@ -2151,8 +1945,6 @@ await test("frame.js wire decoders", async () => {
   );
   assert.equal(readQueue({ type: "track_changed" }), null, "readQueue: no upcoming -> null");
 
-  // applyAnchor: a positioned frame re-anchors verbatim; a status-only frame re-anchors at
-  // the currently-extrapolated position; a position frame with no timestamp anchors to now.
   const anchor = { anchorMs: 0, anchorAt: 0, speed: 0 };
   applyAnchor(anchor, { positionMs: 5000, timestampMs: 111, speed: 1, playing: undefined, volume: null });
   assert.deepEqual({ ms: anchor.anchorMs, at: anchor.anchorAt, s: anchor.speed }, { ms: 5000, at: 111, s: 1 }, "applyAnchor: positioned frame re-anchors verbatim");
@@ -2188,8 +1980,6 @@ await test("hashPassword / verifyPassword", async () => {
 });
 
 
-// Shared mock req/res for the setup-handler tests below. fakeRes captures the response
-// body; setupReq builds an IncomingMessage with a readable body stream.
 function fakeRes() {
   let resolveDone!: () => void;
   const done = new Promise<void>((r) => (resolveDone = r));
@@ -2222,9 +2012,6 @@ const setupReq = (method: string, url: string, body = ""): IncomingMessage => {
   return r as IncomingMessage;
 };
 
-// First-run setup gating: creds unset -> only /setup served, page navigations redirect
-// there and API calls fail closed; POST /setup sets creds + logs the operator in; then
-// /setup is unreachable.
 await test("first-run setup gating", async () => {
   const call = (r: ReturnType<typeof fakeRes>, req: IncomingMessage, cfg: Config) =>
     handleWebRequest(req, r as unknown as ServerResponse, cfg, setupCfgPath);
@@ -2252,7 +2039,6 @@ await test("first-run setup gating", async () => {
     assert.equal(r.statusCode, 503, `${p} fails closed in setup mode`);
   }
 
-  // Page navigations (not /api) land on the Setup Page instead of a dead-end notice.
   for (const p of ["/login", "/settings", "/lyrics"]) {
     r = fakeRes();
     call(r, setupReq("GET", p), scfg);
@@ -2260,7 +2046,6 @@ await test("first-run setup gating", async () => {
     assert.equal(r.headers.location, "/setup", `GET ${p} -> /setup`);
   }
 
-  // POST /setup with mismatched passwords: error redirect, creds stay unset.
   r = fakeRes();
   call(r, setupReq("POST", "/setup", "username=admin&password=pw1&confirm=pw2"), scfg);
   await r.done;
@@ -2268,8 +2053,6 @@ await test("first-run setup gating", async () => {
   assert.equal(r.headers.location, "/setup?error=1", "mismatch -> setup error");
   assert.equal(webConfigured(scfg), false, "mismatch did not set creds");
 
-  // POST /setup with a matching but too-short password (UX-M8): server rejects it even
-  // though the client guard could be bypassed, and creds stay unset.
   r = fakeRes();
   call(r, setupReq("POST", "/setup", "username=admin&password=short&confirm=short"), scfg);
   await r.done;
@@ -2277,7 +2060,6 @@ await test("first-run setup gating", async () => {
   assert.equal(r.headers.location, "/setup?error=1", "short password -> setup error");
   assert.equal(webConfigured(scfg), false, "short password did not set creds");
 
-  // POST /setup with valid input: sets creds, writes file, logs the operator straight in.
   r = fakeRes();
   call(r, setupReq("POST", "/setup", "username=dj&password=hunter2x&confirm=hunter2x"), scfg);
   await r.done;
@@ -2295,21 +2077,17 @@ await test("first-run setup gating", async () => {
   assert.ok(isPasswordHashed(savedSetup.web.password) && verifyPassword("hunter2x", savedSetup.web.password), "setup password persisted hashed + verifies");
   assert.equal(soloistReady(scfg), false, "creds only: soloist still not ready (args absent)");
 
-  // Setup done: the Setup Page is no longer reachable.
   r = fakeRes();
   call(r, setupReq("GET", "/setup"), scfg);
   assert.equal(r.statusCode, 302, "configured: /setup redirects");
   assert.equal(r.headers.location, "/", "configured: /setup -> /");
 
-  // With web creds + soloist args, supervision is allowed to start.
   scfg.soloist.deviceName = "Speaker";
   scfg.soloist.apiKey = "key";
   assert.equal(soloistReady(scfg), true, "web creds + soloist args -> ready");
 });
 
 
-// Setup TOCTOU guard (item D): two concurrent POST /setup for the same config path
-// racing the webConfigured() check must not both save.
 await test("setup TOCTOU guard", async () => {
   const raceDir = mkdtempSync(join(tmpdir(), "setup-race-"));
   const racePath = join(raceDir, "config.yaml");
@@ -2337,9 +2115,6 @@ await test("setup TOCTOU guard", async () => {
 });
 
 
-// POST /login (TEST-H1): the primary interactive auth path — password verify, error redirect,
-// cookie issuance. Setup and logout are covered elsewhere; a regression here (accepting any
-// password, or not binding the cookie to the password) would otherwise ship green.
 await test("POST /login: valid creds issue a bound session cookie; bad creds rejected", async () => {
   const dir = mkdtempSync(join(tmpdir(), "login-"));
   const cfgPath = join(dir, "config.yaml");
@@ -2354,7 +2129,6 @@ await test("POST /login: valid creds issue a bound session cookie; bad creds rej
     return r;
   };
 
-  // Valid creds: 302 to / plus a Set-Cookie that verifySession accepts for this user.
   let r = login("username=dj&password=hunter2x");
   await r.done;
   assert.equal(r.statusCode, 302, "valid login redirects");
@@ -2364,14 +2138,12 @@ await test("POST /login: valid creds issue a bound session cookie; bad creds rej
   const token = String(cookie).slice(SESSION_COOKIE.length + 1).split(";")[0];
   assert.equal(verifySession(token, cfg.web.sessionSecret, cfg.web.password), "dj", "issued cookie authenticates the user");
 
-  // Wrong password: error redirect, no cookie.
   r = login("username=dj&password=wrong");
   await r.done;
   assert.equal(r.statusCode, 302, "bad password redirects");
   assert.equal(r.headers.location, "/login?error=1", "bad password -> /login?error=1");
   assert.equal(r.headers["set-cookie"], undefined, "bad password issues no cookie");
 
-  // Wrong username: same rejection, no cookie.
   r = login("username=mallory&password=hunter2x");
   await r.done;
   assert.equal(r.headers.location, "/login?error=1", "wrong username -> /login?error=1");
@@ -2380,9 +2152,6 @@ await test("POST /login: valid creds issue a bound session cookie; bad creds rej
 });
 
 
-// HTTP /api/* route wrapping (TEST-M4): the auth gate, body parsing, save-on-PUT and status
-// codes around the (separately unit-tested) pure functions. A regression in the authed PUT path
-// (e.g. saving without an auth check) would otherwise slip past the fail-closed-only coverage.
 await test("HTTP /api/* routes: authed PUT /api/config persists, unauth 401, GET /api/secret", async () => {
   const dir = mkdtempSync(join(tmpdir(), "api-"));
   const cfgPath = join(dir, "config.yaml");
@@ -2402,7 +2171,6 @@ await test("HTTP /api/* routes: authed PUT /api/config persists, unauth 401, GET
     return r;
   };
 
-  // Authed PUT /api/config: validates, persists, applies live, returns the masked config.
   let r = call("PUT", "/api/config", { cookie, body: JSON.stringify({ autoplay: true }) });
   await r.done;
   assert.equal(r.statusCode, 200, "authed PUT /api/config -> 200");
@@ -2410,14 +2178,11 @@ await test("HTTP /api/* routes: authed PUT /api/config persists, unauth 401, GET
   assert.equal(cfg.autoplay, true, "PUT applied to the live config in place");
   assert.equal(loadConfig(cfgPath).autoplay, true, "PUT persisted to disk");
 
-  // Unauthenticated PUT: no session cookie -> 401, and the live config is untouched.
   r = call("PUT", "/api/config", { body: JSON.stringify({ autoplay: false }) });
   await r.done;
   assert.equal(r.statusCode, 401, "unauth PUT /api/config -> 401");
   assert.equal(cfg.autoplay, true, "unauth PUT did not mutate the live config");
 
-  // GET /api/secret (session-gated): authed reveal returns the allowlisted plaintext; a
-  // non-revealable key 404s. Synchronous route, so the body is set before call() returns.
   r = call("GET", "/api/secret?section=proxy&key=token", { cookie });
   assert.equal(r.statusCode, 200, "authed GET /api/secret -> 200");
   assert.equal(JSON.parse(r.body).value, "proxytok", "reveals the requested allowlisted secret");
@@ -2428,9 +2193,6 @@ await test("HTTP /api/* routes: authed PUT /api/config persists, unauth 401, GET
 
 
 await webTest("highlightJson escapes XSS payloads to inert text", hl, async () => {
-  // The two canonical break-out attempts (ADR-0016): an attribute-handler injection and
-  // a tag that tries to close hljs's own <pre><code> wrapper. Both must come back with
-  // every raw angle bracket from the input HTML-escaped.
   for (const payload of ['<img src=x onerror=alert(1)>', '</code></pre><script>alert(1)</script>']) {
     const out = await highlightJson(JSON.stringify({ v: payload }));
     // hljs wraps tokens in its own <span class="hljs-…"> tags; strip those and any of its
@@ -2444,8 +2206,6 @@ await webTest("highlightJson escapes XSS payloads to inert text", hl, async () =
 });
 
 await webTest("hljs + theme CSS live in the Debug async chunk, not any entry bundle", !BACKEND_ONLY, async () => {
-  // manifest: true (vite.config.ts) lets us prove the code-split from the emitted graph
-  // rather than by eyeballing bundle sizes (ADR-0018).
   const webDir = new URL("./web/", import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL(".vite/manifest.json", webDir), "utf8")) as Record<
     string,
@@ -2461,10 +2221,8 @@ await webTest("hljs + theme CSS live in the Debug async chunk, not any entry bun
   assert.ok(hljsKeys.some((k) => k.endsWith("/languages/json.js")), "hljs json grammar must be a manifest chunk");
   for (const k of hljsKeys) assert.equal(manifest[k].isDynamicEntry, true, `${k} must be an async chunk`);
 
-  // Debug pulls hljs core + json only via dynamicImports (the await import() in the helper).
   for (const k of hljsKeys) assert.ok((debug.dynamicImports ?? []).includes(k), `Debug chunk must dynamic-import ${k}`);
 
-  // No entry bundle may reach hljs through *static* imports (transitive walk).
   for (const [key, rec] of Object.entries(manifest)) {
     if (!rec.isEntry) continue;
     const seen = new Set<string>();
@@ -2478,17 +2236,12 @@ await webTest("hljs + theme CSS live in the Debug async chunk, not any entry bun
     }
   }
 
-  // The theme CSS rides the Debug chunk and actually carries hljs rules.
   assert.ok(debug.css?.length, "Debug chunk must ship a CSS asset (the hljs theme)");
   const themeCss = readFileSync(new URL(debug.css![0], webDir), "utf8");
   assert.ok(themeCss.includes(".hljs"), "Debug chunk CSS must contain hljs theme rules");
 });
 
 
-// useAppControl synchronous lifecycle: idempotent start, always subscribes proxy_status
-// app-wide, tracks status/stale (never green while blind), ignores malformed frames, rings
-// the frame buffer, dumps-then-appends webhooks, and reseeds a reopened subscription from the
-// retained master buffers. No timers — driven entirely by the fake socket.
 await webTest("useAppControl sync lifecycle (status/stale/rings/reseed)", appctl, async () => {
   const { factory, sockets } = fakeSocketFactory();
   const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1, frameRing: 3, webhookRing: 5 });
@@ -2508,18 +2261,14 @@ await webTest("useAppControl sync lifecycle (status/stale/rings/reseed)", appctl
   assert.deepEqual(ac.status.value, st, "status reflects the latest proxy_status");
   assert.equal(ac.stale.value, false, "a fresh proxy_status clears stale");
 
-  // malformed / non-string frames are ignored without disturbing state.
   sockets[0].raw("not json");
   sockets[0].raw({ not: "a string" });
   sockets[0].deliver("proxy_status", { junk: true } as any);
   assert.deepEqual(ac.status.value, { junk: true }, "a well-formed proxy_status still applies; malformed frames were inert");
 
-  // frame ring: oldest evicted at cap.
   for (let i = 0; i < 5; i++) sockets[0].deliver("frame", { n: i });
   assert.deepEqual(s.frames.map((f: any) => f.n), [2, 3, 4], "frame ring keeps only the last frameRing items, oldest evicted");
 
-  // webhooks: on-subscribe history dump (array) replaces; the dump is itself ring-capped;
-  // subsequent single deliveries append.
   sockets[0].deliver("webhooks", [{ at: 1 }, { at: 2 }]);
   assert.deepEqual(s.webhooks.map((w: any) => w.at), [1, 2], "on-subscribe history dump replaces the webhooks buffer");
   sockets[0].deliver("webhooks", { at: 3 });
@@ -2540,10 +2289,6 @@ await webTest("useAppControl sync lifecycle (status/stale/rings/reseed)", appctl
 });
 
 
-// useAppControl timer-driven lifecycle: reconnect resubscribes only still-live streams,
-// buffers persist, a disposed subscription leaks no listener (disposer idempotent), and a
-// wedged-but-open socket ages status out to stale. Kept separate from the synchronous cases
-// because it drives real setTimeout/setInterval.
 await webTest("useAppControl reconnect & heartbeat age-out", appctl, async () => {
   const { factory, sockets } = fakeSocketFactory();
   const ac = createAppControl({ url: "ws://x/ws/app", socketFactory: factory, backoffBaseMs: 1, staleMs: 20 });
@@ -2576,7 +2321,6 @@ await webTest("useAppControl reconnect & heartbeat age-out", appctl, async () =>
   assert.equal(a.frames.length, 1, "disposed A gets nothing after reconnect (no leaked listener)");
   assert.deepEqual(b.clients.map((c: any) => c.id), ["c1", "c2"], "B's buffer persists across reconnect and keeps updating");
 
-  // Heartbeat age-out: a wedged-but-open socket never lingers green.
   sockets[1].deliver("proxy_status", { soloist: { state: null, upstream: true, loggedIn: null }, clients: 0, relay: emptyRelay, webhook: null });
   assert.equal(ac.stale.value, false, "fresh status is not stale");
   assert.equal(ac.connected.value, true, "socket is connected");
@@ -2587,16 +2331,12 @@ await webTest("useAppControl reconnect & heartbeat age-out", appctl, async () =>
 });
 
 
-// menuStatus derivation (ADR-0017): worst-of badge precedence, per-line trust (lines are
-// only trustworthy while app-control is live), and the worstBadge primitive underneath.
 await webTest("menuStatus derivation & precedence (ADR-0017)", menuStatusMod, async () => {
-  // worstBadge primitive: highest severity wins, empty -> green.
   assert.equal(mWorst(["green", "green"]), "green");
   assert.equal(mWorst(["green", "amber", "green"]), "amber");
   assert.equal(mWorst(["amber", "red", "green"]), "red");
   assert.equal(mWorst([]), "green", "no lines defaults to green");
 
-  // Composite badge precedence.
   const okSoloist = { state: "running", upstream: true, loggedIn: true };
   const base = { appLive: true, dataConnected: true, soloist: okSoloist, relay: { enabled: false, connected: false }, webhookOk: null };
   assert.equal(mBadge(base), "green", "all healthy is green");
@@ -2611,7 +2351,6 @@ await webTest("menuStatus derivation & precedence (ADR-0017)", menuStatusMod, as
   assert.equal(mBadge({ ...base, webhookOk: false }), "amber", "failed webhook is amber");
   assert.equal(mBadge({ ...base, relay: { enabled: true, connected: true }, webhookOk: true }), "green", "healthy relay + webhook is green");
 
-  // Per-line trust: while app-control is stale, lines read red/Unknown and amber is suppressed.
   const soloist = { state: "running", upstream: true, loggedIn: true };
   assert.equal(mSoloist(soloist, false, true), "red", "soloist line is red when app-control is stale");
   assert.equal(mText(soloist, false, true), "Unknown", "soloist text is Unknown when stale");
@@ -2623,9 +2362,6 @@ await webTest("menuStatus derivation & precedence (ADR-0017)", menuStatusMod, as
   assert.equal(mText(soloist, true, false), "Disconnected", "data stream down shows Disconnected");
 });
 
-// trySave gates the Enter-to-save path: no PUT when the working copy is clean or a
-// save is in flight, one PUT when dirty. Global fetch is stubbed (useConfig calls it
-// directly); the composable is a module singleton so we drive its reactive config.
 await webTest("useConfig.trySave guards the Enter-to-save path", useConfigMod, async () => {
   const { config, trySave, dirty, status } = loadUseConfig();
   const origFetch = globalThis.fetch;
@@ -2688,8 +2424,6 @@ await webTest("useConfig.save surfaces failures and recovers", useConfigMod, asy
     assert.equal(error.value, "", "the error message clears on a successful save");
     assert.equal(dirty.value, false, "a successful save reconciles the working copy");
 
-    // A restart that succeeds must clear a lingering error so the save bar doesn't keep
-    // showing a stale red message after the underlying failure is resolved.
     status.value = "error";
     error.value = "Restart failed — boom";
     await restartSoloist();
@@ -2704,9 +2438,6 @@ await webTest("useConfig.save surfaces failures and recovers", useConfigMod, asy
   }
 });
 
-// beforeUnloadGuard warns on tab-close/back-nav/reload only while edits are unsaved
-// (UX-H3): a clean working copy leaves the event untouched (no spurious prompt); a dirty
-// one calls preventDefault and sets returnValue, the two signals a browser needs to prompt.
 await webTest("useConfig.beforeUnloadGuard guards unsaved edits", useConfigMod, async () => {
   const { config, dirty } = loadUseConfig();
   const snapshot = JSON.parse(JSON.stringify(config));
@@ -2757,14 +2488,7 @@ await webTest("useConfig.dirtyCount counts changed fields", useConfigMod, async 
   }
 });
 
-// main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1): parseMainArgs
-// covers node:util parseArgs option shapes (bare/--config/--docker/--pipewire-device/
-// combined), applyRuntimeFlags covers the docker/pipewire-device -> runtime wiring
-// (including that docker:false never clears an already-set docker mode — it only ever
-// sets true), and installShutdownHandlers covers that both SIGINT and SIGTERM get wired
-// to the same shutdown callback.
 await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)", async () => {
-  // parseMainArgs
   const none = parseMainArgs([]);
   assert.equal(none.docker, false, "no args -> docker false");
   assert.equal(none.config, undefined, "no args -> config undefined");
@@ -2794,7 +2518,6 @@ await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)
   assert.equal(isDockerMode(), true, "applyRuntimeFlags(docker:true) enables docker mode");
   assert.equal(getPipewireDeviceOverride(), "dev.x", "applyRuntimeFlags sets the pipewire device override");
 
-  // docker:false never clears an already-set docker mode — applyRuntimeFlags only ever sets true.
   applyRuntimeFlags({ docker: false });
   assert.equal(isDockerMode(), true, "applyRuntimeFlags(docker:false) does not clear an already-set docker mode");
 
@@ -2802,7 +2525,6 @@ await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)
   setDockerMode(false);
   setPipewireDeviceOverride("");
 
-  // installShutdownHandlers
   const handlers: Record<string, (...a: unknown[]) => void> = {};
   const fakeProc = {
     on(event: string, fn: (...a: unknown[]) => void) {
@@ -2818,8 +2540,6 @@ await test("main.ts arg parsing, runtime-flag wiring & signal handling (TEST-L1)
   handlers.SIGINT();
   assert.equal(controller.signal.aborted, true, "invoking the SIGINT handler aborts the controller");
 
-  // SIGTERM handler is likewise present and callable (fresh controller, since the first is
-  // already aborted).
   const controller2 = new AbortController();
   const handlers2: Record<string, (...a: unknown[]) => void> = {};
   installShutdownHandlers(
@@ -2863,9 +2583,6 @@ await test("shutdown watchdog force-exits a hung teardown (ARCH-L3)", async () =
   assert.ok(logs.some((m) => m.includes("forcing exit")), "watchdog logs the forced exit");
 });
 
-// SoloistRelay lifecycle (ADR-0012): the run loop must short-circuit when no url is
-// configured, reconnect after a live relay drops mid-run, and back off between dials while
-// the relay stays unreachable. Drives the real SoloistRelay against real ws/tcp servers.
 const waitUntil = async (pred: () => boolean, tries = 400): Promise<void> => {
   for (let i = 0; i < tries && !pred(); i++) await new Promise((r) => setTimeout(r, 10));
 };
@@ -2890,7 +2607,6 @@ await test("SoloistRelay: empty url short-circuits — disabled, never dials", a
     assert.equal(relay.status.connected, false, "disabled relay is never connected");
     assert.equal(dials, 0, "disabled relay never dials");
 
-    // Pointing the url at the server lifts the short-circuit: apply() must now dial it.
     cfg.relay.url = `ws://127.0.0.1:${port}`;
     relay.apply();
     await waitUntil(() => relay.status.connected);
@@ -2920,7 +2636,7 @@ await test("SoloistRelay: reconnects after the relay server drops mid-run", asyn
     assert.equal(relay.status.connected, true, "relay connects to the live server");
     assert.equal(serverConns.length, 1, "exactly one dial before the drop");
 
-    serverConns[0].close(); // drop the relay connection mid-run
+    serverConns[0].close();
     await waitUntil(() => !relay.status.connected);
     assert.equal(relay.status.connected, false, "relay observes the drop");
 

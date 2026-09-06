@@ -1,7 +1,3 @@
-// Framework-free status derivation for the Menu (ADR-0014 lib seam). The worst-of badge
-// precedence (ADR-0017) lives here as pure functions so it is unit-tested headless; the Vue
-// component only feeds reactive inputs in.
-
 import type { RelayStatus } from "../../wire-contract";
 
 export type BadgeLevel = "green" | "amber" | "red";

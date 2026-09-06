@@ -1,7 +1,3 @@
-// Outbound Webhook subsystem: maps Soloist state events to operator URLs, delivers
-// best-effort through a throttled drop-oldest queue, and records a global delivery
-// history ring buffer.
-
 import type { Config, WebhooksConfig } from "./config.js";
 import type { SoloistHub } from "./hub.js";
 import { makeLog } from "./log.js";

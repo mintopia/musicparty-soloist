@@ -1,6 +1,5 @@
-// Soloist wire-format readers + playback-position anchor math. Framework-free and
-// DOM-free so selftest can import them headless in Node (ADR-0014). Ported verbatim
-// from src/web/frame.js + playback.js; the WS/reactive wiring lives in usePlayback.
+// Soloist wire-format readers + playback-position anchor math. Kept framework-free and
+// DOM-free so selftest can import them headless in Node.
 
 export interface Track {
   uri: string;

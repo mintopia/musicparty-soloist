@@ -24,7 +24,7 @@ const { revealSecret } = useConfig();
 
 const revealed = ref(false);
 const revealedValue = ref("");
-const show = ref(false); // whether the new-value input is unmasked
+const show = ref(false);
 const id = useId();
 
 function edit() {

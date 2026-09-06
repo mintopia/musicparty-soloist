@@ -5,9 +5,6 @@ import { fetchSyncedLyrics } from "../lib/overlay-engine";
 import Marquee from "./Marquee.vue";
 import { PhMicrophoneStage, PhSkipBack, PhPlay, PhPause, PhSkipForward, PhSpeakerSimpleHigh, PhSpeakerSimpleX } from "@phosphor-icons/vue";
 
-// Top-bar mini-player. Ported from the #miniPlayer half of renderNowPlaying + wireStatic
-// (src/web/app.js): art/title/artist, play/prev/next, a volume popover, and the synced-
-// lyrics marker. Shown only when a track is present; dims when the anchor is stale.
 const { state, positionMs, isStale, sendCommand } = usePlayback();
 
 const track = computed(() => state.track);

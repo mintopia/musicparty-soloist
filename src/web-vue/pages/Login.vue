@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import AuthShell from "../components/AuthShell.vue";
-// Standalone auth entry (ADR-0014): a native form POST to /login — the server owns the
-// 302 redirect and sets ?error=1 on a bad credential, which we surface as the banner.
+// Native form POST to /login — the server owns the 302 redirect and sets ?error=1 on a
+// bad credential, which we surface as the banner.
 const showError = ref(false);
 
 // Reveal after mount, not during the first render: a role=alert present in the initial

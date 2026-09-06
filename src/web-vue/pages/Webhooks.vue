@@ -18,7 +18,6 @@ const webhooks = computed(() => config.webhooks as {
   defaultUrl: string; delayMs: number; urls: Record<string, string>; secret: string | boolean;
 });
 
-// Editing the reactive config auto-marks dirty via useConfig's `dirty` computed.
 const delayMs = computed({
   get: () => webhooks.value.delayMs,
   set: (v) => { webhooks.value.delayMs = Number(v) || 0; },

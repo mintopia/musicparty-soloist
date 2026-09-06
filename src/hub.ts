@@ -1,7 +1,5 @@
-// The Soloist domain core: fans a single upstream Soloist control WS out to every
-// Downstream Client, replays latest state on join, and reconnects with backoff. Kept
-// free of HTTP wiring so relay.ts/webhooks.ts can depend on it without cycling through
-// the proxy composition root (ADR-0001).
+// Kept free of HTTP wiring so relay.ts/webhooks.ts can depend on it without cycling
+// through the proxy composition root.
 
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocket, type RawData } from "ws";
@@ -105,7 +103,7 @@ export class SoloistHub {
   }
 
   async forward(client: WebSocket, data: RawData, isBinary: boolean): Promise<void> {
-    if (this.clients.get(client)?.tier === "readonly") return; // read-only tier never reaches upstream
+    if (this.clients.get(client)?.tier === "readonly") return;
     const ac = new AbortController();
     const timeout = sleep(HUB_READY_TIMEOUT * 1000, "timeout" as const, { signal: ac.signal }).catch(
       () => "aborted" as const,

@@ -1,8 +1,3 @@
-// Web Session crypto + cookie primitives (ADR-0009). A leaf module: depends only on
-// config + crypto + util, so the auth trust primitive (auth.ts), the App-Control gate
-// (appcontrol.ts) and the router (web.ts) consume session logic without inheriting the
-// router's dependency cone.
-
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Config } from "./config.js";
@@ -12,7 +7,7 @@ export const SESSION_COOKIE = "soloist_session";
 
 // Session cookie carries an issued-at timestamp so a signed cookie can't be replayed
 // forever with no revocation — anything older than this is rejected outright.
-const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Derives the MAC key from the session secret AND the current password, so rotating the
 // password (e.g. because it leaked) revokes every live session. The password stays in the
@@ -64,7 +59,6 @@ export function webConfigured(cfg: Config): boolean {
   return cfg.web.username !== "" && cfg.web.password !== "";
 }
 
-// Configured username who owns a valid Web Session on this request, else null.
 export function sessionUser(req: IncomingMessage, cfg: Config): string | null {
   if (!webConfigured(cfg)) return null;
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];

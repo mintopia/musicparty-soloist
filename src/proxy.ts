@@ -1,4 +1,4 @@
-// Fronts Soloist's unauthenticated localhost-only control WS with token auth (ADR-0001).
+// Fronts Soloist's unauthenticated localhost-only control WS with token auth.
 
 import { createServer, type Server, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -81,7 +81,7 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   // that volume against Soloist's delayed initial-volume reset for a short window.
   let awaitingState = false;
   let target: number | null = null; // volume to hold after activation, null once settled
-  let corrected = false; // have we pushed back against a reset yet
+  let corrected = false;
   let deadline = 0;
   const stopRestore = () => {
     target = null;
@@ -96,8 +96,6 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   hub.observe((frame) => {
     if (!cfg.autoplay) return;
     if (frame.type === "error") log.error("autoplay: upstream error frame: %s", frame.raw);
-    // Hold the preserved volume: correct any off-target value the reset introduces, and stop
-    // once we've corrected and seen it settle back (or the window closes).
     if (target !== null) {
       if (Date.now() > deadline) {
         stopRestore();
@@ -133,15 +131,13 @@ function attachAutoplay(hub: SoloistHub, cfg: Config): void {
   });
 }
 
-// A delivery "succeeded" only if it got a response with a 2xx status; a network/timeout
-// error (status null) or any non-2xx counts as not ok.
 function webhookOk(d: WebhookDelivery): boolean {
   return d.error === null && d.status !== null && d.status >= 200 && d.status < 300;
 }
 
 // Compact Proxy Status snapshot for the `proxy_status` diagnostic stream. The webhook field
 // carries the last delivery's summary only — timestamp, type, HTTP status, ok — never its
-// headers or body; full-detail webhook history rides the separate `webhooks` stream (ADR-0016).
+// headers or body; full-detail webhook history rides the separate `webhooks` stream.
 export function buildProxyStatus(
   hub: SoloistHub,
   relay: RelayStatus,
@@ -168,7 +164,7 @@ interface DiagnosticsHandles {
 }
 
 // Diagnostic streams over the App-Control WS: Debug Subscribers only, never
-// hub.broadcastMessage (that is the pure `/` Downstream path) or the Relay (ADR-0016).
+// hub.broadcastMessage (that is the pure `/` Downstream path) or the Relay.
 function wireDiagnostics(
   hub: SoloistHub,
   relay: SoloistRelay,
@@ -177,9 +173,7 @@ function wireDiagnostics(
   control: SoloistControl | undefined,
 ): DiagnosticsHandles {
   const publishProxyStatus = () => appControl.publish("proxy_status", buildProxyStatus(hub, relay.status, history, control));
-  // frame: every upstream Soloist frame mirrored out (output only — clients never feed this).
   hub.observe((frame) => appControl.publish("frame", frame.message));
-  // webhooks: live full-detail deliveries as they land (initial dump handled on subscribe).
   const unlistenWebhooks = history.onEntry((d) => appControl.publish("webhooks", d));
   // On subscribe, seed the new socket with the current snapshot so a diagnostics UI paints
   // immediately instead of waiting for the next change/heartbeat.
@@ -271,11 +265,6 @@ interface TeardownDeps {
   server: Server;
 }
 
-// Ordered teardown: stop the proxy_status heartbeat and drop the webhook observer,
-// stop the Hub (ends its reconnect loop and disposes every observer subscription),
-// stop the Relay, then tear down the App-Control tier — clear its re-check interval,
-// terminate every Debug Subscriber socket, and await its WebSocketServer close —
-// before closing the Downstream WSS and HTTP server.
 function buildTeardown(deps: TeardownDeps): () => Promise<void> {
   return async () => {
     clearInterval(deps.statusTimer);
@@ -318,7 +307,7 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
   const relayRun = relay.run();
   relayRun.catch((e) => log.error("relay crashed: %s", (e as Error).message));
 
-  // Docker only (ADR-0011/0015): the Snapcast + hardware fan-out and its sink cache. In
+  // Docker only: the Snapcast + hardware fan-out and its sink cache. In
   // standalone there is no soloist-sink to reconcile — Soloist outputs to its device direct.
   if (isDockerMode()) {
     // Boot-time fan-out: link soloist-sink:monitor to the configured Audio Outputs.

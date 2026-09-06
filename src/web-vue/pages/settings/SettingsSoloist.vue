@@ -10,7 +10,6 @@ import ToggleSwitch from "../../components/ToggleSwitch.vue";
 const { config, summary, secretSet, loaded } = useConfig();
 const c = config as any;
 
-// Standalone-only PipeWire output-device picker (ADR-0015).
 interface PwSink { name: string; description: string }
 const sinks = ref<PwSink[]>([]);
 const sinksLoading = ref(false);

@@ -1,6 +1,3 @@
-// Auth-tier resolution for the Proxy: a presented Auth/Read-only Token, or a Web
-// Session cookie (ADR-0001, ADR-0009).
-
 import type { IncomingMessage } from "node:http";
 import type { Config } from "./config.js";
 import { sessionUser } from "./session.js";

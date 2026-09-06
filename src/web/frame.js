@@ -1,7 +1,5 @@
-// Soloist wire-format readers + playback-position anchor math. The vanilla Lyrics
-// Overlay (overlay.js) imports these directly; the Vue app carries a typed port in
-// src/web-vue/lib/wire.ts. selftest imports this module headless (ADR-0014 seam) —
-// the framework-free source of truth for the Soloist frame shape (proxy.ts STATE_EVENTS).
+// Readers for the Soloist wire format. src/web-vue/lib/wire.ts is a typed port of
+// this module — keep the two in sync when the Soloist frame shape changes.
 
 // A Soloist Entity's decorations -> flat track (Soloist WebSocket API): title =
 // identity.name, artists = creators[].entity.identity.name, album =

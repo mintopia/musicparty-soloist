@@ -1,10 +1,3 @@
-// App-Control WebSocket + Debug Subscriber tier (ADR-0016). A separate, operator-only
-// diagnostics channel that lives alongside the Downstream Client flow but never touches
-// it: a Debug Subscriber is registered here, never on the Hub, so it is never counted in
-// the Client Count and never forwards a frame upstream. It only *observes* the diagnostic
-// streams it subscribes to. Auth is session-cookie + same-host only (no tokens): browsers
-// carrying the operator's ambient session, gated against CSWSH by sameOrigin.
-
 import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -23,8 +16,6 @@ export const APP_CONTROL_PATH = "/ws/app";
 // hostile peer from buffering a large inbound frame. ws closes the socket (1009) itself.
 export const APP_CONTROL_MAX_PAYLOAD = 4096;
 
-// The fixed set of diagnostic streams a Debug Subscriber may subscribe to. This tier owns
-// the subscription protocol and fan-out; the producers that feed these streams live elsewhere.
 export { DEBUG_STREAMS };
 export type { DebugStream };
 const VALID_STREAMS = new Set<string>(DEBUG_STREAMS);
@@ -77,8 +68,6 @@ export class AppControl {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.register(ws, req.headers.cookie ?? ""));
   }
 
-  // Registers an already-authenticated socket as a Debug Subscriber: fingerprints its session
-  // cookie for logout matching, starts it with no subscriptions, and arms the lifecycle re-check.
   register(ws: WebSocket, cookieHeader: string): void {
     const fingerprint = sessionFingerprint(cookieHeader);
     if (!fingerprint) {
@@ -100,12 +89,12 @@ export class AppControl {
   }
 
   private onMessage(sub: Subscriber, data: RawData, isBinary: boolean): void {
-    if (isBinary) return; // binary frames are never valid control frames — drop, don't crash
+    if (isBinary) return;
     let msg: unknown;
     try {
       msg = JSON.parse(data.toString());
     } catch {
-      return; // malformed JSON — drop safely
+      return;
     }
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
     const m = msg as Record<string, unknown>;
@@ -126,15 +115,10 @@ export class AppControl {
     }
   }
 
-  // Register a producer hook fired once per newly-subscribed stream, handed a `send` that
-  // pushes an initial snapshot to just that socket (buffer-gated like publish). Producers
-  // that only push on change live outside; this covers the on-subscribe dump.
   onSubscribe(cb: (stream: DebugStream, send: (data: unknown) => void) => void): void {
     this.subscribeHooks.add(cb);
   }
 
-  // Fan a diagnostic frame out to every subscriber of `stream`, gated on each socket's
-  // buffer so a slow consumer can never grow Proxy memory unbounded.
   publish(stream: DebugStream, data: unknown): void {
     if (this.subs.size === 0) return;
     const raw = JSON.stringify({ stream, data });
@@ -143,9 +127,6 @@ export class AppControl {
     }
   }
 
-  // Buffer-gated send of an already-serialized `{stream,data}` payload to one subscriber:
-  // closes a hopelessly-behind socket, sheds high-rate `frame` updates past the drop
-  // threshold first, otherwise sends. Shared by publish (fan-out) and on-subscribe snapshots.
   private deliver(sub: Subscriber, stream: DebugStream, raw: string): void {
     if (sub.ws.readyState !== WebSocket.OPEN) return;
     const buffered = sub.ws.bufferedAmount;
@@ -154,21 +135,16 @@ export class AppControl {
       this.close(sub, 1013, "slow consumer");
       return;
     }
-    if (buffered > BUFFER_DROP_BYTES && stream === "frame") return; // shed high-rate frames first
+    if (buffered > BUFFER_DROP_BYTES && stream === "frame") return;
     sub.ws.send(raw);
   }
 
-  // Close every Debug Subscriber whose session cookie matches this request's — POST /logout
-  // calls this before clearing the cookie so a logged-out session keeps no live socket.
   closeForRequest(req: IncomingMessage): void {
     const fp = sessionFingerprint(req.headers.cookie);
     if (!fp) return;
     for (const sub of this.subs) if (sub.fingerprint === fp) this.close(sub, 1008, "logged out");
   }
 
-  // Re-validate every socket: closes any past its max lifetime or whose session no longer
-  // verifies (expiry or password rotation). Driven by the interval timer; also callable
-  // directly to force an immediate sweep.
   recheck(): void {
     const now = Date.now();
     for (const sub of this.subs) {
@@ -189,9 +165,6 @@ export class AppControl {
     return this.subs.size;
   }
 
-  // Full teardown: clear the re-check interval, close every Debug Subscriber socket, and
-  // resolve only once the WebSocketServer has finished closing, so a caller (RunningProxy.close)
-  // can await a clean shutdown with no lingering timer or open socket.
   stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);

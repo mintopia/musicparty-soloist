@@ -1,8 +1,3 @@
-// A persistent outbound WS bridge to a single Relay Server (ADR-0012): republishes
-// every Soloist->downstream frame verbatim, and forwards every received frame raw to
-// the upstream Soloist socket (full control). Reconnects with backoff while a url is
-// configured; re-dials live when url/authorization changes (apply()).
-
 import { WebSocket, type RawData } from "ws";
 import type { Config } from "./config.js";
 import type { SoloistHub } from "./hub.js";
@@ -29,7 +24,6 @@ export class SoloistRelay {
   constructor(hub: SoloistHub, private cfg: Config) {
     this.appliedUrl = cfg.relay.url;
     this.appliedAuth = cfg.relay.authorization;
-    // Outbound: mirror what a Downstream Client observes, unfiltered, verbatim.
     hub.observe((frame) => {
       const c = this.conn;
       if (c && c.readyState === WebSocket.OPEN) c.send(frame.raw);
@@ -76,7 +70,7 @@ export class SoloistRelay {
         this.status.enabled = url !== "";
         if (!url) {
           this.status.connected = false;
-          return false; // park until apply()/stop()
+          return false;
         }
         return true;
       },

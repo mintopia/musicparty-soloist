@@ -1,6 +1,5 @@
 import { reactive, ref, computed } from "vue";
 
-// Masked config: sections of key -> value; a set secret masks to `true`.
 export type Config = Record<string, Record<string, unknown>>;
 export interface Summary {
   pendingRestart?: boolean;
@@ -32,19 +31,16 @@ async function apiError(res: Response, method?: string): Promise<string> {
   return `${method || "GET"} failed (${res.status})`;
 }
 
-// Module-level singleton: the topbar save bar, restart banner, and the Settings view
-// all read one working copy. No Pinia (ADR-0014) — a shared reactive object suffices.
 const config = reactive<Config>({});
-const saved = ref<string>("{}"); // JSON snapshot of the last loaded/saved state
+const saved = ref<string>("{}");
 const summary = reactive<Summary>({});
 const secretSet = reactive<Record<string, boolean>>({});
 const status = ref<SaveStatus>("idle");
-const error = ref<string>(""); // human message shown in the save bar while status === "error"
+const error = ref<string>("");
 const loaded = ref(false);
 
 const dirty = computed(() => JSON.stringify(config) !== saved.value);
 
-// Count of changed leaf fields vs the last saved snapshot, for the discard-confirm prompt.
 const dirtyCount = computed(() => {
   let prevCfg: Config;
   try { prevCfg = JSON.parse(saved.value) as Config; } catch { return 0; }
@@ -152,8 +148,6 @@ async function discard() {
   }
 }
 
-// Enter-to-save from a settings <form>: mirror the save bar's disabled guard
-// (skip when nothing changed or a save is already in flight).
 function trySave() {
   if (dirty.value && status.value !== "saving") save();
 }
@@ -182,8 +176,6 @@ async function restartSnapcast() {
   }
 }
 
-// Fetch one allowlisted secret's plaintext for the reveal toggle (server 404s any
-// key outside REVEALABLE). Kept here so all config API calls share the `api` helper.
 async function revealSecret(section: string, key: string): Promise<string> {
   const r = await api(`/api/secret?section=${encodeURIComponent(section)}&key=${encodeURIComponent(key)}`);
   return r.value as string;

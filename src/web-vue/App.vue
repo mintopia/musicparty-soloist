@@ -21,8 +21,7 @@ const standalone = computed(() => cfg.summary.dockerMode === false);
 // (pre-load) as enabled so the link never flickers out on the existing container UI.
 const snapwebEnabled = computed(() => cfg.summary.snapweb !== false);
 
-// Top-level surfaces. Audio + Webhooks now live inside Settings (master-detail); Debug is
-// promoted from the menu. `exact` keeps "/" from matching every nested route.
+// `exact` keeps "/" from matching every nested route.
 const tabs = [
   { to: "/", label: "Now Playing", exact: true },
   { to: "/lyrics", label: "Lyrics" },
@@ -38,13 +37,11 @@ function isActive(t: { to: string; exact?: boolean }) {
 }
 
 // Snapweb (Snapcast web UI) runs on the deployment host's port 1780 (docker-compose).
-// Lives in the menu now, not the top bar.
 const snapwebUrl = `http://${location.hostname}:1780`;
 const showSnapweb = computed(() => !standalone.value && snapwebEnabled.value);
 
-// Save bar: hidden when clean/idle; "Saving…" mid-flight; the failure message when a save
-// errored (checked before dirty, since a failed save leaves edits dirty); "Unsaved changes"
-// when dirty; "Saved" briefly after a successful save.
+// Error is checked before dirty: a failed save leaves edits dirty, so the failure
+// message must win over the "Unsaved changes" label.
 const saveLabel = computed(() => {
   if (cfg.status.value === "saving") return "Saving…";
   if (cfg.status.value === "error") return cfg.error.value || "Save failed — retry";
@@ -136,7 +133,6 @@ function confirmDiscard() {
 <style scoped>
 .shell { min-height: 100vh; display: flex; flex-direction: column; }
 
-/* Docked, full-bleed top bar (vanilla #topbar). */
 .topbar {
   position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 14px;
   padding: 9px 20px; background: var(--bar);
@@ -163,7 +159,6 @@ function confirmDiscard() {
 .spacer { flex: 1; }
 .snapweb { text-decoration: none; }
 
-/* Centered content column (vanilla .wrap). */
 .wrap { flex: 1; width: 100%; max-width: 1200px; margin: 0 auto; padding: 24px 30px; }
 
 .banner {
@@ -174,7 +169,6 @@ function confirmDiscard() {
 }
 :root[data-theme="dark"] .banner { border-color: #6b5121; }
 
-/* Docked, full-bleed save bar (vanilla #saveBar). */
 .savebar {
   position: sticky; bottom: 0; z-index: 30; display: flex; align-items: center; justify-content: flex-end; gap: 18px;
   padding: 12px 22px; background: var(--savebar);
@@ -190,15 +184,11 @@ function confirmDiscard() {
 .save-actions { display: flex; gap: 8px; }
 
 @media (max-width: 860px) {
-  /* Mobile collapses to hamburger-only: the horizontal nav and mini-player drop out, the
-     menu carries the sections (App-Menu renders them below this breakpoint). */
   .topbar { gap: 8px 10px; padding: 8px 13px; }
   .nav { display: none; }
   .wrap { padding: 18px 15px; }
 }
 
-/* First modal in the app. Native <dialog> gives focus-trap, ESC-to-cancel and backdrop for
-   free; tokens match the menu/auth floating-panel treatment (--sh2). */
 .confirm {
   border: 1px solid var(--line2); border-radius: 16px; background: var(--card); color: var(--txt);
   box-shadow: var(--sh2); padding: 22px; max-width: 380px; width: calc(100% - 40px);
