@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { ConfigError, DEFAULT_CONFIG_PATH, defaultConfig, ensureSecrets, loadConfig, soloistReady } from "./config.js";
@@ -121,7 +121,11 @@ async function main(): Promise<number> {
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compare the resolved real path, not argv[1] verbatim: when launched through an npm bin
+// symlink (npx / global install) argv[1] is the .bin/soloist-proxy link, while
+// import.meta.url is the realpath'd module — without realpathSync they never match and
+// main() silently no-ops.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().then(
     (code) => process.exit(code),
     (err) => {

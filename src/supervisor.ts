@@ -154,10 +154,6 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
   control?.setState("acquiring");
 
-  // Acquire with the crash-loop backoff so a transient CDN fault never escapes to crash the
-  // process. Used for the boot acquire and the periodic build-expiry reacquire alike; a
-  // threaded shutdown aborts the in-flight fetch (see download) and the abortable backoff
-  // sleep, so SIGTERM stays prompt and surfaces as Aborted rather than a spurious crash.
   const acquireWithRetry = async (force: boolean): Promise<string> => {
     let backoff = BACKOFF_BASE;
     while (true) {

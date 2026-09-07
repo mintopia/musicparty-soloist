@@ -15,10 +15,6 @@ const HUB_BACKOFF_BASE = 0.5;
 const HUB_BACKOFF_MAX = 30.0;
 const HUB_READY_TIMEOUT = 5.0;
 
-// Downstream backpressure (mirrors appcontrol): a stalled/half-open client makes ws buffer
-// high-rate upstream frames unbounded → heap growth. Drop frames for a client past the soft
-// cap, close it past the hard cap; on reconnect the latestState replay in register() catches
-// it back up.
 const HUB_BUFFER_DROP_BYTES = 1024 * 1024;
 const HUB_BUFFER_CLOSE_BYTES = 8 * 1024 * 1024;
 
