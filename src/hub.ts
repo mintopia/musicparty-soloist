@@ -15,6 +15,13 @@ const HUB_BACKOFF_BASE = 0.5;
 const HUB_BACKOFF_MAX = 30.0;
 const HUB_READY_TIMEOUT = 5.0;
 
+// Downstream backpressure (mirrors appcontrol): a stalled/half-open client makes ws buffer
+// high-rate upstream frames unbounded → heap growth. Drop frames for a client past the soft
+// cap, close it past the hard cap; on reconnect the latestState replay in register() catches
+// it back up.
+const HUB_BUFFER_DROP_BYTES = 1024 * 1024;
+const HUB_BUFFER_CLOSE_BYTES = 8 * 1024 * 1024;
+
 export interface UpstreamFrame {
   type: string;
   message: Record<string, unknown>;
@@ -135,7 +142,15 @@ export class SoloistHub {
     // Skip rather than delete: the proxy's onGone handler already calls unregister() on
     // socket close/error, so this map is cleaned up there — pruning here too would race it.
     for (const client of this.clients.keys()) {
-      if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const buffered = client.bufferedAmount;
+      if (buffered > HUB_BUFFER_CLOSE_BYTES) {
+        log.warn("closing slow downstream client: %d bytes buffered", buffered);
+        client.close(1013, "slow consumer");
+        continue;
+      }
+      if (buffered > HUB_BUFFER_DROP_BYTES) continue;
+      client.send(data, { binary: isBinary });
     }
   }
 

@@ -154,31 +154,34 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
   mkdirSync(cfg.soloist.dataDir, { recursive: true });
   control?.setState("acquiring");
 
-  // Boot acquire runs before the restart loop, so a transient CDN fault here would otherwise
-  // wedge startup forever. Retry with the same crash-loop backoff; a threaded shutdown aborts
-  // the in-flight fetch (see download) and an abortable backoff sleep, so SIGTERM stays prompt.
-  let backoff = BACKOFF_BASE;
-  let binary: string;
-  while (true) {
-    if (signal.aborted) throw new Aborted();
-    try {
-      binary = await acquire();
-      break;
-    } catch (err) {
+  // Acquire with the crash-loop backoff so a transient CDN fault never escapes to crash the
+  // process. Used for the boot acquire and the periodic build-expiry reacquire alike; a
+  // threaded shutdown aborts the in-flight fetch (see download) and the abortable backoff
+  // sleep, so SIGTERM stays prompt and surfaces as Aborted rather than a spurious crash.
+  const acquireWithRetry = async (force: boolean): Promise<string> => {
+    let backoff = BACKOFF_BASE;
+    while (true) {
       if (signal.aborted) throw new Aborted();
-      const { sleep: waitS, next } = backoffStep(backoff, 0);
-      log.error("soloist acquisition failed (%s); retrying in %ss", (err as Error).message, waitS);
-      control?.setState("backoff");
       try {
-        await sleep(waitS * 1000, undefined, { signal });
-      } catch {
-        throw new Aborted();
+        return await acquire(force);
+      } catch (err) {
+        if (signal.aborted) throw new Aborted();
+        const { sleep: waitS, next } = backoffStep(backoff, 0);
+        log.error("soloist acquisition failed (%s); retrying in %ss", (err as Error).message, waitS);
+        control?.setState("backoff");
+        try {
+          await sleep(waitS * 1000, undefined, { signal });
+        } catch {
+          throw new Aborted();
+        }
+        backoff = next;
+        control?.setState("acquiring");
       }
-      backoff = next;
-      control?.setState("acquiring");
     }
-  }
-  backoff = BACKOFF_BASE;
+  };
+
+  let binary = await acquireWithRetry(false);
+  let backoff = BACKOFF_BASE;
 
   while (true) {
     if (signal.aborted) throw new Aborted();
@@ -213,7 +216,7 @@ export async function supervise(cfg: Config, opts: SuperviseOptions = {}): Promi
     if (code === EXIT_EXPIRED) {
       log("soloist build expired (exit 10); re-acquiring binary");
       control?.setState("expired-reacquiring");
-      binary = await acquire(true);
+      binary = await acquireWithRetry(true);
       backoff = BACKOFF_BASE;
       continue;
     }

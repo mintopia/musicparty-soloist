@@ -1,6 +1,6 @@
 {
   "name": "@mintopia/musicparty-soloist",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Authenticating WebSocket proxy + supervisor for Spotify Soloist.",
   "license": "MIT",
   "author": "Jessica Smith <jess@mintopia.net>",
@@ -36,11 +36,11 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@phosphor-icons/vue": "^2.2.1",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@phosphor-icons/vue": "^2.2.1",
     "@types/node": "^26.4.1",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^6.0.8",

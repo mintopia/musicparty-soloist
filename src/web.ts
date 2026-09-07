@@ -19,7 +19,7 @@ const MAX_BODY = 8 * 1024;
 const WEB_DIR = fileURLToPath(new URL("./web/", import.meta.url));
 const WEB_ROOT = resolve(WEB_DIR);
 
-const APP_PATHS = new Set(["/", "/audio", "/webhooks", "/debug", "/lyrics", "/settings"]);
+const APP_PATHS = new Set(["/", "/debug", "/lyrics", "/settings"]);
 
 // Secrets the Landing Page may reveal on demand (eye toggle), each with a typed
 // accessor keyed by its "section.key". Deliberately not the password (a scrypt hash)

@@ -17,6 +17,12 @@ const SECRET_FIELDS: [string, string][] = [
 
 async function api(path: string, opts?: RequestInit) {
   const res = await fetch(path, { credentials: "same-origin", ...opts });
+  // Session lapsed: the cookie gate returns 401 on every /api call once expired. Bounce to
+  // the login page rather than letting callers swallow the error and strand a stale console.
+  if (res.status === 401 && typeof window !== "undefined") {
+    window.location.assign("/login");
+    throw new Error("session expired");
+  }
   if (!res.ok) throw new Error(await apiError(res, opts?.method));
   return res.json();
 }
