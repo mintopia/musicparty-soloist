@@ -23,8 +23,8 @@ This was originally built to accompany [Music Party](https://github.com/mintopia
 
 ![Now Playing Page Screenshot](docs/screenshots/landing.png "Now Playing")
 ![Lyrics Settings Page Screenshot](docs/screenshots/lyrics.png "Lyrics Settings")
-![Soloist Settings Screenshot](docs/screenshots/debug.png "Soloist Settings (Docker)")
-![Audio Settings Screenshot](docs/screenshots/debug.png "Audio Settings (Docker)")
+![Soloist Settings Screenshot](docs/screenshots/settings-soloist.png "Soloist Settings (Docker)")
+![Audio Settings Screenshot](docs/screenshots/settings-audio.png "Audio Settings (Docker)")
 ![Debug Page Screenshot](docs/screenshots/debug.png "Debug")
 
 ## Installation
