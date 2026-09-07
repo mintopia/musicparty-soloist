@@ -36,7 +36,6 @@ import {
   desiredDelays,
   buildDelayTokens,
   generateFilterChainConf,
-  pipewireSinksResponse,
   reconcileOutputs,
   SNAPCAST_KEY,
   DELAY_PREFIX,
@@ -144,7 +143,6 @@ interface FakeSocket {
   open(): void;
   deliver(stream: string, data: unknown): void;
   raw(data: unknown): void;
-  error(): void;
 }
 function fakeSocketFactory() {
   const sockets: FakeSocket[] = [];
@@ -156,7 +154,6 @@ function fakeSocketFactory() {
       open() { this.readyState = 1; this.onopen?.(); },
       deliver(stream, data) { this.onmessage?.({ data: JSON.stringify({ stream, data }) }); },
       raw(data) { this.onmessage?.({ data }); },
-      error() { this.onerror?.(); },
     };
     sockets.push(s);
     return s;
@@ -1726,10 +1723,6 @@ await test("pipewire sink listing + cache", async () => {
     "parseSinks: Audio/Sink only; soloist-sink + Snapserver capture node excluded; description falls back to name",
   );
   assert.deepEqual(parseSinks("not json"), [], "parseSinks: bad JSON -> []");
-
-  const sinksResp = pipewireSinksResponse([{ name: "alsa_output.hw_0", description: "Speakers" }]);
-  assert.equal(sinksResp[0].name, SNAPCAST_KEY, "pipewireSinksResponse: synthetic Snapcast toggle first");
-  assert.equal(sinksResp[1].name, "alsa_output.hw_0", "pipewireSinksResponse: real sinks follow");
 
   const standalone = parseSinks(pwDump);
   assert.ok(!standalone.some((s) => s.name === SNAPCAST_KEY), "standalone list has no synthetic Snapcast entry");

@@ -255,28 +255,6 @@ function handleUpgrade(
   });
 }
 
-interface TeardownDeps {
-  statusTimer: ReturnType<typeof setInterval>;
-  unlistenWebhooks: () => void;
-  hub: SoloistHub;
-  relay: SoloistRelay;
-  appControl: AppControl;
-  wss: WebSocketServer;
-  server: Server;
-}
-
-function buildTeardown(deps: TeardownDeps): () => Promise<void> {
-  return async () => {
-    clearInterval(deps.statusTimer);
-    deps.unlistenWebhooks();
-    deps.hub.stop();
-    deps.relay.stop();
-    await deps.appControl.stop();
-    deps.wss.close();
-    await new Promise<void>((res) => deps.server.close(() => res()));
-  };
-}
-
 export function makeServer(cfg: Config, configPath: string, control?: SoloistControl): Promise<RunningProxy> {
   const { host, port } = listenParts(cfg.proxy.listen);
   const hub = new SoloistHub(() => `ws://${cfg.soloistWs}`);
@@ -325,7 +303,15 @@ export function makeServer(cfg: Config, configPath: string, control?: SoloistCon
         server,
         hub,
         appControl,
-        close: buildTeardown({ statusTimer, unlistenWebhooks, hub, relay, appControl, wss, server }),
+        close: async () => {
+          clearInterval(statusTimer);
+          unlistenWebhooks();
+          hub.stop();
+          relay.stop();
+          await appControl.stop();
+          wss.close();
+          await new Promise<void>((res) => server.close(() => res()));
+        },
       });
     });
   });

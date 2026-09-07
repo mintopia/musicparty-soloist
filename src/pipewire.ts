@@ -74,10 +74,6 @@ export function parseSinks(pwDumpJson: string, exclude: string[] = []): PwSink[]
   return sinks;
 }
 
-export function pipewireSinksResponse(sinks: PwSink[]): PwSink[] {
-  return [{ name: SNAPCAST_KEY, description: "Snapcast" }, ...sinks];
-}
-
 export function desiredTargets(cfg: Config): string[] {
   const targets: string[] = [];
   if (cfg.audio.snapcast) targets.push(cfg.streamName);
@@ -341,7 +337,7 @@ async function runReconcile(cfg: Config, opts: ReconcileOptions): Promise<Reconc
 
 export async function listPipewireSinks(cfg: Config, run: Runner = defaultRun): Promise<PwSink[]> {
   const dump = await run("pw-dump", []);
-  return pipewireSinksResponse(parseSinks(dump, [cfg.streamName]));
+  return [{ name: SNAPCAST_KEY, description: "Snapcast" }, ...parseSinks(dump, [cfg.streamName])];
 }
 
 // Real hardware Audio/Sink nodes only — no synthetic Snapcast entry and no

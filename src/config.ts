@@ -47,10 +47,6 @@ export function verifyPassword(plain: string, stored: string): boolean {
     }
     return expected.length === got.length && timingSafeEqual(got, expected);
   }
-  return verifyLegacyCleartext(plain, stored);
-}
-
-function verifyLegacyCleartext(plain: string, stored: string): boolean {
   return safeStrEqual(plain, stored);
 }
 

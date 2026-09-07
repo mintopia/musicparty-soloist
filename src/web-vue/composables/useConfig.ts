@@ -156,25 +156,18 @@ async function refreshSummary() {
   Object.assign(summary, await api("/api/config-summary"));
 }
 
-async function restartSoloist() {
+async function restart(path: string, failMsg: string) {
   try {
-    await api("/api/restart-soloist", { method: "POST" });
+    await api(path, { method: "POST" });
     await refreshSummary();
     clearError();
   } catch (e) {
-    fail("Restart failed", e);
+    fail(failMsg, e);
   }
 }
 
-async function restartSnapcast() {
-  try {
-    await api("/api/restart-snapcast", { method: "POST" });
-    await refreshSummary();
-    clearError();
-  } catch (e) {
-    fail("Snapcast restart failed", e);
-  }
-}
+const restartSoloist = () => restart("/api/restart-soloist", "Restart failed");
+const restartSnapcast = () => restart("/api/restart-snapcast", "Snapcast restart failed");
 
 async function revealSecret(section: string, key: string): Promise<string> {
   const r = await api(`/api/secret?section=${encodeURIComponent(section)}&key=${encodeURIComponent(key)}`);
